@@ -13,8 +13,8 @@
     "windows": [
       {
         "title": "Foundry",
-        "minWidth": 1440,
-        "minHeight": 998,
+        "width": 1440,
+        "height": 998,
         "resizable": true,
         "fullscreen": false,
         "decorations": false,
