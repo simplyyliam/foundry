@@ -13,10 +13,13 @@
     "windows": [
       {
         "title": "Foundry",
-        "width": 800,
-        "height": 600,
+        "width": 1440,
+        "height": 998,
         "resizable": true,
-        "fullscreen": false
+        "fullscreen": false,
+        "decorations": false,
+        "transparent": true,
+        "shadow": false
       }
     ],
     "security": {

@@ -1,0 +1,1 @@
+export { default as StandaloneLayout } from "./layout/StandaloneLayout"

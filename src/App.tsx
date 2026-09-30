@@ -1,7 +1,8 @@
+import { RouterProvider } from "react-router";
+import { RouterBrowser } from "./Router";
+
 export default function App() {
   return (
-    <div className="flex items-center justify-center w-full h-screen">
-      Hello foundry
-    </div>
+    <RouterProvider router={RouterBrowser}/>
   )
 }

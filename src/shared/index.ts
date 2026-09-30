@@ -1,0 +1,1 @@
+export { WindowFrame } from "./components/WindowFrame";
