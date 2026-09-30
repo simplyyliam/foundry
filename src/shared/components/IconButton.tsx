@@ -81,9 +81,9 @@ export function IconButton({
       aria-busy={loading || undefined}
       disabled={disabled || loading}
       className={cn(
-        "flex items-center",
+        "flex items-center rounded-xl",
         stretch && "flex-1",
-         rounded ? "rounded-full" : "rounded-xl",
+        rounded && "rounded-full",
         className,
       )}
     >
