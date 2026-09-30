@@ -27,7 +27,10 @@ export const Apptitlebar = () => {
 
   return (
     <div
-      className="relative -mx-1.5 -mt-1.5 shrink-0"
+      className={cn(
+        "relative -mx-1.5 -mt-1.5 shrink-0 pb-1.5",
+        visible ? "pb-0" : "pb-1.5"
+      )}
       onMouseEnter={show}
       onMouseLeave={hide}
     >
