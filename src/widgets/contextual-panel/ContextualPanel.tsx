@@ -13,10 +13,10 @@ export function ContextualPanel() {
   return (
     <Sidebar side="right" variant="inset">
       <SidebarHeader>
-        <div className="flex items-center justify-between w-full p-2.5 px-3">
-          <h1 className="font-medium text-[15px]">Agent Chats</h1>
+        <div className="flex items-center justify-between w-full px-2.5">
+          <h1 className="font-medium text-[14px]">Agent Chats</h1>
           <div className="flex items-center gap-2">
-            <IconButton Icon={Plus} className="rounded-lg" />
+            <IconButton Icon={Plus} className="rounded-md size-8" />
           </div>
         </div>
       </SidebarHeader>

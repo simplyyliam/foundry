@@ -11,3 +11,9 @@ export {
 export * from "./components/Sidebar";
 export { Icon, type IconType, type IconProps } from "./components/Icon";
 export { usePressScale, type PressScaleOptions } from "./hook/usePressScale";
+export {
+  PageHeaderProvider,
+  usePageHeader,
+  usePageHeaderCrumbs,
+  type Crumb,
+} from "./lib/page-header";

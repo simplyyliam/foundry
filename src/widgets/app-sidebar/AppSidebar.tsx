@@ -13,7 +13,7 @@ import {
 import { IconButton } from "@/shared/components/IconButton"
 import type { Tab } from "@/routing"
 import { Bell, ChevronDown, Plus, Settings } from "lucide-react"
-import { SidebarTabs } from "./SidebarTabs"
+import { SidebarTabs } from "@/features/app-sidebar"
 
 export interface AppSidebarProps {
   /** Top-level routes shown above the groups. */
@@ -24,9 +24,9 @@ export function AppSidebar({ tabs }: AppSidebarProps) {
   return (
     <Sidebar variant="inset">
       <SidebarHeader>
-        <div className="flex items-center gap-2.5 w-fullw-full p-2.5">
+        <div className="flex items-center gap-2.5 w-fullw-full py-1 px-2.5">
           <div className="w-6 h-6 rounded-sm bg-red-400"></div>
-          <h1 className="font-medium text-[15px]">Foundry</h1>
+          <h1 className="font-medium text-[14px]">Foundry</h1>
         </div>
       </SidebarHeader>
       <SidebarContent>

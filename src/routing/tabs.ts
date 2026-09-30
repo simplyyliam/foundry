@@ -1,4 +1,5 @@
 import type { IconType } from "@/shared";
+import { humanize } from "./humanize";
 import { pages } from "./pages";
 
 /**
@@ -34,11 +35,6 @@ const metaModules = import.meta.glob<TabMeta>("../pages/app/tabs/*/tab.ts", {
   import: "default",
 });
 
-function labelFromFolder(folder: string): string {
-  const words = folder.replace(/[-_]+/g, " ").trim();
-  return words.charAt(0).toUpperCase() + words.slice(1);
-}
-
 export const tabs: readonly Tab[] = pages
   .flatMap((page) => {
     if (!page.tab) return [];
@@ -46,7 +42,7 @@ export const tabs: readonly Tab[] = pages
     const tab: Tab = {
       id: page.tab,
       path: page.path,
-      label: meta.label ?? labelFromFolder(page.tab),
+      label: meta.label ?? humanize(page.tab),
       icon: meta.icon,
       order: meta.order ?? Number.POSITIVE_INFINITY,
       preload: () => {

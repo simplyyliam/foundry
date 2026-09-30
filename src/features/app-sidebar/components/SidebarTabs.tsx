@@ -22,15 +22,12 @@ function SidebarTab({ tab }: { tab: Tab }) {
         tooltip={tab.label}
         onPointerEnter={tab.preload}
         onFocus={tab.preload}
-        className="p-2.5! h-fit!"
+        className="p-2.5! h-fit! size-8! w-full!"
       >
         {tab.icon && (
           <span
             className={cn(
-              "flex size-7 shrink-0 items-center justify-center rounded-sm bg-accent transition-colors",
-              // Deeper than accent, which matches the row's own hover/active background.
-              "group-hover/menu-button:bg-[color-mix(in_oklch,var(--accent),var(--foreground)_7%)]",
-              "group-data-active/menu-button:bg-[color-mix(in_oklch,var(--accent),var(--foreground)_7%)]",
+              "flex shrink-0 items-center justify-center rounded-sm transition-colors"
             )}
           >
             <Icon icon={tab.icon} />
