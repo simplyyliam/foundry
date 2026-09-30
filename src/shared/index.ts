@@ -8,3 +8,4 @@ export {
   type FrameMetrics,
   type ResizeDirection,
 } from "./utils/geometry";
+export * from "./components/Sidebar";

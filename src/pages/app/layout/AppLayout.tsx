@@ -1,12 +1,20 @@
-import { Apptitlebar, WindowFrame } from "@/shared";
+import { Apptitlebar, SidebarInset, SidebarProvider, WindowFrame } from "@/shared";
+import { AppSidebar, ContextualPanel } from "@/widgets";
 import { Outlet } from "react-router-dom";
 
 export default function AppLayout() {
   return (
-    <WindowFrame title="Foundry" titlebar={<Apptitlebar />} className="flex gap-1.5">
-      <div className="flex items-center justify-center h-full w-94 rounded-[9px] bg-background">left panel</div>
-      <Outlet />
-      <div className="flex items-center justify-center h-full w-94 rounded-[9px] bg-background">right panel</div>
+    <WindowFrame titlebar={<Apptitlebar />}>
+      <SidebarProvider storageKey="foundry:sidebar-open">
+        <AppSidebar />
+        {/* Nested provider: the contextual panel has its own open state and shortcut. */}
+        <SidebarProvider keyboardShortcut="mod+alt+b" storageKey="foundry:contextual-panel-open">
+          <SidebarInset>
+            <Outlet />
+          </SidebarInset>
+          <ContextualPanel />
+        </SidebarProvider>
+      </SidebarProvider>
     </WindowFrame>
   )
 }
