@@ -240,9 +240,12 @@ function Sidebar({
 
   // Expanded and icon widths. Floating/inset include the gap to the content,
   // so it collapses together with the sidebar.
-  const widths = gapped
-    ? "w-[calc(var(--sidebar-width)+var(--sidebar-gap))] group-data-[collapsible=icon]:w-[calc(var(--sidebar-width-icon)+var(--sidebar-gap))]"
-    : "w-(--sidebar-width) group-data-[collapsible=icon]:w-(--sidebar-width-icon)";
+  const width = gapped
+    ? "w-[calc(var(--sidebar-width)+var(--sidebar-gap))]"
+    : "w-(--sidebar-width)";
+  const iconWidth = gapped
+    ? "w-[calc(var(--sidebar-width-icon)+var(--sidebar-gap))]"
+    : "w-(--sidebar-width-icon)";
 
   return (
     <div
@@ -257,8 +260,10 @@ function Sidebar({
         "group peer relative h-full shrink-0 overflow-hidden text-sidebar-foreground contain-paint",
         "transition-[width]",
         TRANSITION,
-        widths,
-        "data-[collapsible=offcanvas]:w-0",
+        // This element is the `group`, so it matches its own data attributes.
+        width,
+        state === "collapsed" && collapsible === "icon" && iconWidth,
+        state === "collapsed" && collapsible === "offcanvas" && "w-0",
       )}
     >
       <div
@@ -269,7 +274,8 @@ function Sidebar({
           // a transform, so its contents never reflow mid-animation.
           "absolute inset-y-0 flex transition-[translate,width]",
           TRANSITION,
-          widths,
+          width,
+          state === "collapsed" && collapsible === "icon" && iconWidth,
           side === "left"
             ? "left-0 group-data-[collapsible=offcanvas]:-translate-x-full"
             : "right-0 group-data-[collapsible=offcanvas]:translate-x-full",

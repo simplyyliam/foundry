@@ -8,7 +8,7 @@ import {
 
 export function ContextualPanel() {
   return (
-    <Sidebar variant="sidebar">
+    <Sidebar side="right" variant="inset">
       <SidebarHeader />
       <SidebarContent>
         <SidebarGroup />
