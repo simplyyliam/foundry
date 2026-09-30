@@ -19,6 +19,7 @@ import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { usePressScale } from "../hook/usePressScale";
 
 /**
  * In-flow sidebar with the same API as shadcn/ui's sidebar.
@@ -540,6 +541,7 @@ function SidebarMenuButton({
   size = "default",
   tooltip,
   className,
+  ref,
   ...props
 }: useRender.ComponentProps<"button"> &
   ComponentProps<"button"> & {
@@ -548,8 +550,10 @@ function SidebarMenuButton({
     tooltip?: string | ComponentProps<typeof TooltipContent>;
   } & VariantProps<typeof sidebarMenuButtonVariants>) {
   const { state } = useSidebar();
+  const pressRef = usePressScale<HTMLButtonElement>({ disabled: props.disabled });
   const button = useRender({
     defaultTagName: "button",
+    ref: ref ? [pressRef, ref] : pressRef,
     props: mergeProps<"button">(
       { className: cn(sidebarMenuButtonVariants({ variant, size }), className) },
       props,

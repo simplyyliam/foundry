@@ -22,10 +22,12 @@ export function ContextualPanel() {
       </SidebarHeader>
       <SidebarContent>
         <SidebarGroup>
-          <AgentCard avatar="/pfp.png" name="Mark" role="Product Lead" />
-          <AgentCard avatar="/pfp.png" name="Nevaeh" role="Full-Stack Engineer" />
-          <AgentCard avatar="/pfp.png" name="Lisa" role="UI/UX Designer" />
-          <AgentCard avatar="/pfp.png" name="Jake" role="Manager" />
+          <div className="flex flex-col p-1.5">
+            <AgentCard avatar="/pfp.png" name="Mark" role="Product Lead" />
+            <AgentCard avatar="/pfp.png" name="Nevaeh" role="Full-Stack Engineer" />
+            <AgentCard avatar="/pfp.png" name="Lisa" role="UI/UX Designer" />
+            <AgentCard avatar="/pfp.png" name="Jake" role="Manager" />
+          </div>
         </SidebarGroup>
       </SidebarContent>
       <SidebarFooter />

@@ -11,9 +11,16 @@ import {
   SidebarHeader,
 } from "@/shared"
 import { IconButton } from "@/shared/components/IconButton"
+import type { Tab } from "@/routing"
 import { Bell, ChevronDown, Plus, Settings } from "lucide-react"
+import { SidebarTabs } from "./SidebarTabs"
 
-export function AppSidebar() {
+export interface AppSidebarProps {
+  /** Top-level routes shown above the groups. */
+  tabs: readonly Tab[]
+}
+
+export function AppSidebar({ tabs }: AppSidebarProps) {
   return (
     <Sidebar variant="inset">
       <SidebarHeader>
@@ -23,6 +30,7 @@ export function AppSidebar() {
         </div>
       </SidebarHeader>
       <SidebarContent>
+        <SidebarTabs tabs={tabs} />
         <Collapsible defaultOpen className="group/collapsible">
           <SidebarGroup>
             <div className="flex items-center gap-1">

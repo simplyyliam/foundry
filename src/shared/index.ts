@@ -9,3 +9,5 @@ export {
   type ResizeDirection,
 } from "./utils/geometry";
 export * from "./components/Sidebar";
+export { Icon, type IconType, type IconProps } from "./components/Icon";
+export { usePressScale, type PressScaleOptions } from "./hook/usePressScale";
