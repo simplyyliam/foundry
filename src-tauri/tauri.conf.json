@@ -15,7 +15,7 @@
         "title": "Foundry",
         "width": 1440,
         "height": 998,
-        "resizable": true,
+        "resizable": false,
         "fullscreen": false,
         "decorations": false,
         "transparent": true,
