@@ -35,10 +35,22 @@ export const commands = {
 	lastOpened: number | null,
 	/**  False when the folder was moved or deleted: offer `relink_project`. */
 	folderExists: boolean,
+	/**  Archived projects stay registered and on disk; the UI lists them separately. */
+	archived: boolean,
 } | null, AppError>(__TAURI_INVOKE("active_project")),
 	/**  Points a project at a new folder, e.g. after it was moved. */
 	relinkProject: (id: string, folder: string) => typedError<Project, AppError>(__TAURI_INVOKE("relink_project", { id, folder })),
-	/**  Unregisters the project. Never deletes repo files. */
+	/**
+	 *  Archives the project (registry flag only; the folder is untouched). Idempotent.
+	 *  If it's the active project, it's closed: `active_project` returns null afterwards.
+	 */
+	archiveProject: (id: string) => typedError<Project, AppError>(__TAURI_INVOKE("archive_project", { id })),
+	/**  Unarchives (restores) the project. Idempotent. */
+	unarchiveProject: (id: string) => typedError<Project, AppError>(__TAURI_INVOKE("unarchive_project", { id })),
+	/**
+	 *  Unregisters an archived project. Never deletes repo files.
+	 *  `not_archived` if the project isn't archived.
+	 */
 	removeProject: (id: string) => typedError<null, AppError>(__TAURI_INVOKE("remove_project", { id })),
 	/**  The project's `docs/brain-dump.md` (empty if missing). */
 	getDocument: (id: string) => typedError<string, AppError>(__TAURI_INVOKE("get_document", { id })),
@@ -114,7 +126,9 @@ export type ErrorCode =
 /**  The folder is already registered as a project. */
 "already_linked" | 
 /**  A write into a project repo outside the AGENTS.md allowlist. */
-"write_not_allowed";
+"write_not_allowed" | 
+/**  The action needs the project to be archived first (e.g. `remove_project`). */
+"not_archived";
 
 /**  Identity and timestamp shared by every event. Flatten it into the payload struct. */
 export type EventMeta = {
@@ -168,6 +182,8 @@ export type Project = {
 	lastOpened: number | null,
 	/**  False when the folder was moved or deleted: offer `relink_project`. */
 	folderExists: boolean,
+	/**  Archived projects stay registered and on disk; the UI lists them separately. */
+	archived: boolean,
 };
 
 export type ProjectPatch = {

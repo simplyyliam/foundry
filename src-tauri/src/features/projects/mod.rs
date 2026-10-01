@@ -36,6 +36,8 @@ pub struct Project {
     pub last_opened: Option<u64>,
     /// False when the folder was moved or deleted: offer `relink_project`.
     pub folder_exists: bool,
+    /// Archived projects stay registered and on disk; the UI lists them separately.
+    pub archived: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -162,6 +164,7 @@ fn to_project(entry: &RegistryEntry) -> Project {
         repo_path: entry.repo_path.clone(),
         last_opened: entry.last_opened,
         folder_exists: Path::new(&entry.repo_path).is_dir(),
+        archived: entry.archived,
     }
 }
 
@@ -319,6 +322,7 @@ impl ProjectsStore {
             tagline: file.tagline,
             repo_path: path_string(folder),
             last_opened: None,
+            archived: false,
         };
         state.registry.push(entry.clone());
         if let Err(err) = self.save_registry(state) {
@@ -394,6 +398,7 @@ impl ProjectsStore {
             tagline: file.tagline,
             repo_path: path_string(&folder),
             last_opened: None,
+            archived: false,
         };
         state.registry.push(entry.clone());
         if let Err(err) = self.save_registry(&state) {
@@ -514,7 +519,47 @@ impl ProjectsStore {
         Ok(project)
     }
 
-    /// Unregisters the project. Never deletes or changes repo files.
+    /// Archives the project and, if it's the active one, closes it (active becomes null).
+    /// Registry only: the folder is never touched. Idempotent.
+    // TODO(P7): refuse while the project has a running agent session.
+    pub fn archive_project(&self, id: &str) -> Result<Project, AppError> {
+        let mut state = self.lock()?;
+        let project = self.set_archived(&mut state, id, true)?;
+        if state.active.as_deref() == Some(id) {
+            state.active = None;
+            tracing::info!(id, "archived project closed");
+        }
+        Ok(project)
+    }
+
+    /// Unarchives (restores) the project. Registry only. Idempotent. Doesn't reopen it.
+    pub fn unarchive_project(&self, id: &str) -> Result<Project, AppError> {
+        let mut state = self.lock()?;
+        self.set_archived(&mut state, id, false)
+    }
+
+    fn set_archived(
+        &self,
+        state: &mut State,
+        id: &str,
+        archived: bool,
+    ) -> Result<Project, AppError> {
+        let entry = Self::find_mut(state, id)?;
+        let previous = std::mem::replace(&mut entry.archived, archived);
+        let project = to_project(entry);
+        if previous == archived {
+            return Ok(project);
+        }
+        if let Err(err) = self.save_registry(state) {
+            Self::find_mut(state, id)?.archived = previous;
+            return Err(err);
+        }
+        tracing::info!(id, archived, "project archive flag changed");
+        Ok(project)
+    }
+
+    /// Unregisters an archived project. Never deletes or changes repo files.
+    /// `not_archived` if it hasn't been archived first.
     pub fn remove_project(&self, id: &str) -> Result<(), AppError> {
         let mut state = self.lock()?;
         let index = state
@@ -522,6 +567,12 @@ impl ProjectsStore {
             .iter()
             .position(|entry| entry.id == id)
             .ok_or_else(|| AppError::not_found(format!("no project with id {id}")))?;
+        if !state.registry[index].archived {
+            return Err(AppError::new(
+                ErrorCode::NotArchived,
+                "archive this project before removing it",
+            ));
+        }
         let removed = state.registry.remove(index);
         if let Err(err) = self.save_registry(&state) {
             state.registry.insert(index, removed);

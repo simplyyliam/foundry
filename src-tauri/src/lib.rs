@@ -34,6 +34,8 @@ pub fn specta_builder<R: Runtime>() -> tauri_specta::Builder<R> {
             projects::commands::open_project,
             projects::commands::active_project,
             projects::commands::relink_project,
+            projects::commands::archive_project,
+            projects::commands::unarchive_project,
             projects::commands::remove_project,
             projects::commands::get_document,
             projects::commands::save_document,
@@ -108,6 +110,16 @@ mod tests {
         assert!(ts.contains("\"app:ready\""), "app:ready event missing");
         assert!(ts.contains("export type AppError"), "AppError type missing");
         assert!(ts.contains("export type AppInfo"), "AppInfo type missing");
+        assert!(
+            ts.contains("archiveProject"),
+            "archiveProject wrapper missing"
+        );
+        assert!(
+            ts.contains("unarchiveProject"),
+            "unarchiveProject wrapper missing"
+        );
+        assert!(ts.contains("archived: boolean"), "Project.archived missing");
+        assert!(ts.contains("\"not_archived\""), "not_archived code missing");
         assert!(
             ts.contains("ts: number,"),
             "event ts must export as a plain number"

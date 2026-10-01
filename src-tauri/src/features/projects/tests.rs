@@ -272,6 +272,7 @@ fn relinking_a_removed_project_keeps_its_identity() {
             },
         )
         .unwrap();
+    store.archive_project(&created.project.id).unwrap();
     store.remove_project(&created.project.id).unwrap();
 
     let linked = link(&store, Path::new(&created.project.repo_path)).unwrap();
@@ -339,6 +340,8 @@ fn remove_project_leaves_every_repo_file_untouched() {
     store.open_project(&project.id).unwrap();
     let before = snapshot(parent.path());
 
+    store.archive_project(&project.id).unwrap();
+
     store.remove_project(&project.id).unwrap();
 
     assert_eq!(snapshot(parent.path()), before);
@@ -346,6 +349,148 @@ fn remove_project_leaves_every_repo_file_untouched() {
     assert_eq!(store.active_project().unwrap(), None);
     assert_eq!(
         store.remove_project(&project.id).unwrap_err().code,
+        ErrorCode::NotFound
+    );
+}
+
+// ---------- archiving ----------
+
+#[test]
+fn archive_flips_only_the_registry_flag_and_never_touches_the_folder() {
+    let env = Env::new();
+    let store = env.store();
+    let parent = TestRepo::new();
+    let project = create(&store, parent.path(), "Shelf").project;
+    assert!(!project.archived, "new projects start active");
+    store.save_document(&project.id, "notes").unwrap();
+    let before = snapshot(parent.path());
+
+    let archived = store.archive_project(&project.id).unwrap();
+    assert!(archived.archived);
+    assert_eq!(snapshot(parent.path()), before);
+    assert!(archived.folder_exists);
+    // Idempotent.
+    assert!(store.archive_project(&project.id).unwrap().archived);
+
+    let restored = store.unarchive_project(&project.id).unwrap();
+    assert!(!restored.archived);
+    assert!(!store.unarchive_project(&project.id).unwrap().archived);
+    assert_eq!(snapshot(parent.path()), before);
+    assert_eq!(
+        restored,
+        Project {
+            archived: false,
+            ..archived
+        }
+    );
+}
+
+#[test]
+fn archiving_the_active_project_closes_it_and_leaves_others_open() {
+    let env = Env::new();
+    let store = env.store();
+    let parent = TestRepo::new();
+    let open = create(&store, parent.path(), "Open").project;
+    let other = create(&store, parent.path(), "Other").project;
+    store.open_project(&open.id).unwrap();
+
+    // Archiving a different project leaves the active one alone.
+    store.archive_project(&other.id).unwrap();
+    assert_eq!(store.active_project().unwrap().unwrap().id, open.id);
+
+    let before = snapshot(parent.path());
+    let archived = store.archive_project(&open.id).unwrap();
+    assert!(archived.archived);
+    assert_eq!(store.active_project().unwrap(), None, "back to Home");
+    assert_eq!(snapshot(parent.path()), before);
+
+    // Restoring doesn't reopen it.
+    store.unarchive_project(&open.id).unwrap();
+    assert_eq!(store.active_project().unwrap(), None);
+}
+
+#[test]
+fn list_projects_returns_archived_and_active_projects_with_the_flag() {
+    let env = Env::new();
+    let store = env.store();
+    let parent = TestRepo::new();
+    let a = create(&store, parent.path(), "A").project;
+    let b = create(&store, parent.path(), "B").project;
+    let c = create(&store, parent.path(), "C").project;
+    store.archive_project(&b.id).unwrap();
+
+    let listed: Vec<(String, bool)> = store
+        .list()
+        .unwrap()
+        .into_iter()
+        .map(|p| (p.id, p.archived))
+        .collect();
+    assert_eq!(listed, vec![(a.id, false), (b.id, true), (c.id, false)]);
+}
+
+#[test]
+fn archived_flag_survives_a_restart_and_old_registries_default_to_active() {
+    let env = Env::new();
+    let parent = TestRepo::new();
+    let id = {
+        let store = env.store();
+        let id = create(&store, parent.path(), "Persist").project.id;
+        store.archive_project(&id).unwrap();
+        id
+    };
+    let store = env.store();
+    assert!(store.list().unwrap()[0].archived);
+    assert_eq!(store.list().unwrap()[0].id, id);
+
+    // A projects.json written before the flag existed.
+    let old = Env::new();
+    let repo = TestRepo::new();
+    fs::write(
+        old.data.path().join("projects.json"),
+        serde_json::json!({
+            "version": 1,
+            "projects": [{ "id": "p1", "name": "Old", "tagline": "", "repoPath": repo.path() }]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    assert!(!old.store().list().unwrap()[0].archived);
+}
+
+#[test]
+fn remove_project_requires_archiving_first() {
+    let env = Env::new();
+    let store = env.store();
+    let parent = TestRepo::new();
+    let project = create(&store, parent.path(), "Not Yet").project;
+
+    let refused = store.remove_project(&project.id).unwrap_err();
+    assert_eq!(refused.code, ErrorCode::NotArchived);
+    assert_eq!(store.list().unwrap().len(), 1, "nothing was removed");
+
+    // Unarchiving makes it unremovable again.
+    store.archive_project(&project.id).unwrap();
+    store.unarchive_project(&project.id).unwrap();
+    assert_eq!(
+        store.remove_project(&project.id).unwrap_err().code,
+        ErrorCode::NotArchived
+    );
+
+    store.archive_project(&project.id).unwrap();
+    store.remove_project(&project.id).unwrap();
+    assert!(store.list().unwrap().is_empty());
+}
+
+#[test]
+fn archive_and_unarchive_report_unknown_ids() {
+    let env = Env::new();
+    let store = env.store();
+    assert_eq!(
+        store.archive_project("nope").unwrap_err().code,
+        ErrorCode::NotFound
+    );
+    assert_eq!(
+        store.unarchive_project("nope").unwrap_err().code,
         ErrorCode::NotFound
     );
 }
@@ -689,6 +834,7 @@ fn vsm_viewer_is_byte_identical_and_never_overwritten() {
         parent_dir: Some(parent.path().to_string_lossy().into_owned()),
     });
     assert_eq!(again.unwrap_err().code, ErrorCode::FolderExists);
+    store.archive_project(&project.id).unwrap();
     store.remove_project(&project.id).unwrap();
     link(&store, Path::new(&project.repo_path)).unwrap();
     let other = env.store();
@@ -733,6 +879,8 @@ fn relink_refuses_another_projects_folder() {
 
     let taken = store.relink_project(&a.id, &b.repo_path).unwrap_err();
     assert_eq!(taken.code, ErrorCode::AlreadyLinked);
+
+    store.archive_project(&b.id).unwrap();
 
     store.remove_project(&b.id).unwrap();
     let foreign = store.relink_project(&a.id, &b.repo_path).unwrap_err();
@@ -808,4 +956,24 @@ fn commands_round_trip_over_ipc() {
     )
     .unwrap_err();
     assert_eq!(exists["code"], "folder_exists");
+
+    let not_archived = invoke("remove_project", serde_json::json!({ "id": id })).unwrap_err();
+    assert_eq!(not_archived["code"], "not_archived");
+    invoke("open_project", serde_json::json!({ "id": id })).unwrap();
+    let archived = invoke("archive_project", serde_json::json!({ "id": id })).unwrap();
+    assert_eq!(archived["archived"], true);
+    assert_eq!(
+        invoke("active_project", serde_json::json!({})).unwrap(),
+        serde_json::Value::Null
+    );
+    let listed = invoke("list_projects", serde_json::json!({})).unwrap();
+    assert_eq!(listed[0]["archived"], true);
+    let restored = invoke("unarchive_project", serde_json::json!({ "id": id })).unwrap();
+    assert_eq!(restored["archived"], false);
+    invoke("archive_project", serde_json::json!({ "id": id })).unwrap();
+    invoke("remove_project", serde_json::json!({ "id": id })).unwrap();
+    assert_eq!(
+        invoke("list_projects", serde_json::json!({})).unwrap(),
+        serde_json::json!([])
+    );
 }

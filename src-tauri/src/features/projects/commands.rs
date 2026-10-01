@@ -85,7 +85,23 @@ pub async fn relink_project(
     blocking(&store, move |s| s.relink_project(&id, &folder)).await
 }
 
-/// Unregisters the project. Never deletes repo files.
+/// Archives the project (registry flag only; the folder is untouched). Idempotent.
+/// If it's the active project, it's closed: `active_project` returns null afterwards.
+#[tauri::command]
+#[specta::specta]
+pub async fn archive_project(store: Store<'_>, id: String) -> Result<Project, AppError> {
+    blocking(&store, move |s| s.archive_project(&id)).await
+}
+
+/// Unarchives (restores) the project. Idempotent.
+#[tauri::command]
+#[specta::specta]
+pub async fn unarchive_project(store: Store<'_>, id: String) -> Result<Project, AppError> {
+    blocking(&store, move |s| s.unarchive_project(&id)).await
+}
+
+/// Unregisters an archived project. Never deletes repo files.
+/// `not_archived` if the project isn't archived.
 #[tauri::command]
 #[specta::specta]
 pub async fn remove_project(store: Store<'_>, id: String) -> Result<(), AppError> {

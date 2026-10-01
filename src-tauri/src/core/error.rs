@@ -26,6 +26,8 @@ pub enum ErrorCode {
     AlreadyLinked,
     /// A write into a project repo outside the AGENTS.md allowlist.
     WriteNotAllowed,
+    /// The action needs the project to be archived first (e.g. `remove_project`).
+    NotArchived,
 }
 
 impl ErrorCode {
@@ -41,6 +43,7 @@ impl ErrorCode {
             Self::FolderExists => "folder_exists",
             Self::AlreadyLinked => "already_linked",
             Self::WriteNotAllowed => "write_not_allowed",
+            Self::NotArchived => "not_archived",
         }
     }
 }
@@ -127,6 +130,7 @@ mod tests {
             ErrorCode::FolderExists,
             ErrorCode::AlreadyLinked,
             ErrorCode::WriteNotAllowed,
+            ErrorCode::NotArchived,
         ] {
             assert_eq!(serde_json::to_value(code).unwrap(), json!(code.as_str()));
         }

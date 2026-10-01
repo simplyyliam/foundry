@@ -42,3 +42,16 @@ All additive. Every command returns `Result<T, AppError>`.
 | command | `save_document` | — → `saveDocument(id, markdown): null` | Atomic replace of `docs/brain-dump.md`. |
 | command | `get_settings` | — → `getSettings(): Settings` | |
 | command | `update_settings` | — → `updateSettings(settings: Settings): Settings` | Whole-object replace; returns what was saved (blank paths → null). `maxConcurrentAgents` must be ≥ 1. |
+
+## Project archiving
+
+`remove_project` is a breaking behaviour change, approved by the human. Everything else is additive.
+
+| Kind | Name | Before → After | Why |
+| --- | --- | --- | --- |
+| type | `ErrorCode` | adds `"not_archived"` | Returned when an action needs the project archived first. |
+| type | `Project` | adds `archived: boolean` | Foundry-side flag stored in `projects.json` (missing in older files → `false`). Never touches the folder. |
+| command | `list_projects` | unchanged signature; each `Project` now carries `archived` | Returns archived and active projects alike (no server-side filter); the frontend splits them. |
+| command | `archive_project` | — → `archiveProject(id): Project` | Sets `archived = true`. Registry only; idempotent. `not_found` for an unknown id. If it's the active project it's also closed (`activeProject()` → null, same as no project open); no event is emitted. Follow-up for P7: refuse while the project has a running agent session (not enforceable yet: no session state exists). |
+| command | `unarchive_project` | — → `unarchiveProject(id): Project` | Sets `archived = false`. This is the restore action (nothing left disk). Idempotent. `not_found` for an unknown id. |
+| command | `remove_project` | `removeProject(id): null` (any project) → `removeProject(id): null`, **archived projects only**; otherwise `not_archived` and nothing changes | The backend enforces "you can only delete what you've already archived". Still unregisters only and never deletes repo files. Chosen instead of adding a new `delete_project` (the human decided). |

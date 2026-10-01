@@ -24,6 +24,9 @@ pub struct RegistryEntry {
     /// Epoch ms of the last `open_project`.
     #[serde(default)]
     pub last_opened: Option<u64>,
+    /// Foundry-side flag only; archiving never touches the folder.
+    #[serde(default)]
+    pub archived: bool,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
