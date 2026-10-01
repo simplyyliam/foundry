@@ -1,20 +1,32 @@
+import { Archive, Pencil } from "lucide-react";
 import { motion } from "motion/react";
 import { useState } from "react";
-import { useMatch } from "react-router-dom";
+import { useMatch, useNavigate } from "react-router-dom";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { PROJECT_SECTIONS, projectPath, projectSectionPath, type Project } from "@/features/projects";
+import {
+  archiveProject,
+  PROJECT_SECTIONS,
+  projectPath,
+  projectSectionPath,
+  type Project,
+} from "@/features/projects";
 import { SidebarMenuButton, SidebarMenuItem, SidebarMenuSub } from "@/shared";
+import { ProjectActionsMenu } from "./ProjectActionsMenu";
+import { ProjectNameEditor } from "./ProjectNameEditor";
 import { ProjectSectionLink } from "./ProjectSectionLink";
 
 interface ProjectMenuItemProps {
   project: Project;
-  /** Added during this session: fades in instead of just appearing. */
+  /** Appeared after the sidebar first loaded: fades in instead of just appearing. */
   isNew: boolean;
 }
 
-/** A project row: clicking it shows or hides its pages (Idea, Blueprint, …). */
+/** An active project: clicking the row shows or hides its pages; "more" offers Rename and Archive. */
 export function ProjectMenuItem({ project, isNew }: ProjectMenuItemProps) {
+  const navigate = useNavigate();
   const isInside = useMatch({ path: projectPath(project.id), end: false }) !== null;
+  const [renaming, setRenaming] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   // Opens whenever the route enters the project; clicking the row still toggles it.
   const [open, setOpen] = useState(isInside);
@@ -24,6 +36,14 @@ export function ProjectMenuItem({ project, isNew }: ProjectMenuItemProps) {
     if (isInside) setOpen(true);
   }
 
+  const archive = async () => {
+    setActionError(null);
+    const outcome = await archiveProject(project.id);
+    // Shown as the backend wrote it (e.g. a running session); nothing else happens.
+    if (!outcome.ok) return setActionError(outcome.error.message);
+    if (isInside) navigate("/home");
+  };
+
   return (
     <SidebarMenuItem>
       <motion.div
@@ -32,9 +52,38 @@ export function ProjectMenuItem({ project, isNew }: ProjectMenuItemProps) {
         transition={{ duration: 0.3, ease: [0.32, 0.72, 0, 1] }}
       >
         <Collapsible open={open} onOpenChange={setOpen}>
-          <CollapsibleTrigger render={<SidebarMenuButton className="h-8 text-[12px]" />}>
-            <span>{project.name}</span>
-          </CollapsibleTrigger>
+          {renaming ? (
+            <ProjectNameEditor project={project} onDone={() => setRenaming(false)} />
+          ) : (
+            <>
+              <CollapsibleTrigger
+                render={<SidebarMenuButton className="h-8 text-[12px]" title={project.repoPath} />}
+              >
+                <span>{project.name}</span>
+              </CollapsibleTrigger>
+              <ProjectActionsMenu
+                projectName={project.name}
+                actions={[
+                  {
+                    id: "rename",
+                    label: "Rename",
+                    icon: Pencil,
+                    keepsFocus: true,
+                    onSelect: () => {
+                      setActionError(null);
+                      setRenaming(true);
+                    },
+                  },
+                  { id: "archive", label: "Archive", icon: Archive, onSelect: () => void archive() },
+                ]}
+              />
+            </>
+          )}
+          {actionError && (
+            <p role="alert" className="px-3 pt-0.5 pb-1 text-[11.5px] leading-snug text-destructive">
+              {actionError}
+            </p>
+          )}
           <CollapsibleContent
             className={[
               "h-(--collapsible-panel-height) overflow-hidden",

@@ -1,5 +1,4 @@
-import { Navigate, useParams } from "react-router-dom";
-import { useProject, type Project } from "@/features/projects";
+import { ProjectRoute, type Project } from "@/features/projects";
 import { usePageHeader } from "@/shared";
 
 function Blueprint({ project }: { project: Project }) {
@@ -15,8 +14,5 @@ function Blueprint({ project }: { project: Project }) {
 
 /** /projects/:projectId/blueprints */
 export default function BlueprintsPage() {
-  const { projectId } = useParams();
-  const project = useProject(projectId);
-  if (!project) return <Navigate to="/home" replace />;
-  return <Blueprint project={project} />;
+  return <ProjectRoute>{(project) => <Blueprint project={project} />}</ProjectRoute>;
 }

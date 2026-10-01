@@ -1,96 +1,125 @@
 import { useSyncExternalStore } from "react";
-import { basename, folderNameError, joinPath, pathKey } from "./paths";
-import type { Project } from "./project";
+import {
+  commands,
+  type AppError,
+  type CreateRepositoryResult,
+  type LinkRepositoryResult,
+  type Project,
+} from "@/lib/bindings";
 
 /**
- * Fake project store: nothing is created or linked on disk yet. Kept in memory
- * and mirrored to localStorage so projects survive reloads during development.
- * Swap the bodies of `createRepository` / `linkFolder` for backend commands later;
- * the hooks and result shapes can stay the same.
+ * Client cache of the backend project registry. `listProjects()` is the source of truth:
+ * it loads on first use and re-runs after every change made here, so the sidebar always
+ * shows what's on disk.
  */
 
-const STORAGE_KEY = "foundry:projects";
+export type Outcome<T> = { ok: true; data: T } | { ok: false; error: AppError };
 
-export type ProjectResult = { ok: true; project: Project } | { ok: false; error: string };
+type Result<T> = { status: "ok"; data: T } | { status: "error"; error: AppError };
 
-function load(): readonly Project[] {
+export interface ProjectsSnapshot {
+  /** "loading" only until the first response; refreshes keep showing the current list. */
+  status: "loading" | "ready" | "error";
+  projects: readonly Project[];
+  error: AppError | null;
+}
+
+let snapshot: ProjectsSnapshot = { status: "loading", projects: [], error: null };
+let started = false;
+let latestRequest = 0;
+const listeners = new Set<() => void>();
+
+function publish(next: ProjectsSnapshot) {
+  snapshot = next;
+  listeners.forEach((listener) => listener());
+}
+
+/** Turns a binding call (which can also throw, e.g. outside Tauri) into an Outcome. */
+async function call<T>(request: () => Promise<Result<T>>): Promise<Outcome<T>> {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    const parsed: unknown = raw ? JSON.parse(raw) : [];
-    return Array.isArray(parsed) ? (parsed as Project[]) : [];
-  } catch {
-    return [];
+    const result = await request();
+    return result.status === "ok" ? { ok: true, data: result.data } : { ok: false, error: result.error };
+  } catch (error) {
+    // Not an AppError (IPC itself failed): pass its own message through.
+    return { ok: false, error: { code: "internal", message: error instanceof Error ? error.message : String(error) } };
   }
 }
 
-let projects: readonly Project[] = load();
-const listeners = new Set<() => void>();
-
-function commit(next: readonly Project[]) {
-  projects = next;
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
-  } catch {
-    // Storage unavailable; projects just won't survive a reload.
-  }
-  listeners.forEach((listener) => listener());
+/** Re-reads the registry. Responses that arrive out of order are dropped. */
+export async function refreshProjects(): Promise<void> {
+  const request = ++latestRequest;
+  const outcome = await call(() => commands.listProjects());
+  if (request !== latestRequest) return;
+  publish(
+    outcome.ok
+      ? { status: "ready", projects: outcome.data, error: null }
+      : { status: "error", projects: snapshot.projects, error: outcome.error },
+  );
 }
 
 function subscribe(listener: () => void) {
   listeners.add(listener);
+  if (!started) {
+    started = true;
+    void refreshProjects();
+  }
   return () => listeners.delete(listener);
 }
 
-const getSnapshot = () => projects;
+const getSnapshot = () => snapshot;
 
-export function useProjects(): readonly Project[] {
+export function useProjectsSnapshot(): ProjectsSnapshot {
   return useSyncExternalStore(subscribe, getSnapshot);
 }
 
-export function useProject(id: string | undefined): Project | undefined {
-  const all = useProjects();
-  return id === undefined ? undefined : all.find((project) => project.id === id);
+export function useProjects(): readonly Project[] {
+  return useProjectsSnapshot().projects;
 }
 
-function slugify(name: string): string {
-  const slug = name
-    .normalize("NFKD")
-    .replace(/[̀-ͯ]/g, "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-  return slug || "project";
+/** The project with `id`, and whether the first load has finished (so "missing" is real). */
+export function useProject(id: string | undefined): { project: Project | undefined; loaded: boolean } {
+  const { status, projects } = useProjectsSnapshot();
+  return {
+    project: id === undefined ? undefined : projects.find((project) => project.id === id),
+    loaded: status !== "loading",
+  };
 }
 
-function uniqueId(name: string): string {
-  const base = slugify(name);
-  const taken = new Set(projects.map((project) => project.id));
-  if (!taken.has(base)) return base;
-  let n = 2;
-  while (taken.has(`${base}-${n}`)) n += 1;
-  return `${base}-${n}`;
+/** Runs a mutation, then refreshes the list before resolving, so callers can navigate safely. */
+async function mutate<T>(request: () => Promise<Result<T>>): Promise<Outcome<T>> {
+  const outcome = await call(request);
+  if (outcome.ok) await refreshProjects();
+  return outcome;
 }
 
-function add(name: string, path: string, origin: Project["origin"]): ProjectResult {
-  const key = pathKey(path);
-  const existing = projects.find((project) => pathKey(project.path) === key);
-  if (existing) return { ok: false, error: `Already added as “${existing.name}”.` };
+export const createRepository = (name: string, parentDir: string) =>
+  mutate<CreateRepositoryResult>(() => commands.createRepository({ name, parentDir }));
 
-  const project: Project = { id: uniqueId(name), name, path, origin, createdAt: Date.now() };
-  commit([...projects, project]);
-  return { ok: true, project };
-}
+export const linkRepository = (folder: string) =>
+  mutate<LinkRepositoryResult>(() => commands.linkRepository({ folder }));
 
-/** Fake: records a new repository at `parentPath/name` without touching the disk. */
-export function createRepository(name: string, parentPath: string): ProjectResult {
-  const error = folderNameError(name);
-  if (error) return { ok: false, error };
-  if (!parentPath) return { ok: false, error: "Choose a parent folder." };
-  return add(name, joinPath(parentPath, name), "created");
-}
+export const renameProject = (id: string, name: string) =>
+  mutate<Project>(() => commands.updateProject(id, { name, tagline: null }));
 
-/** Fake: records an existing folder as a project. */
-export function linkFolder(path: string): ProjectResult {
-  if (!path) return { ok: false, error: "Choose a folder." };
-  return add(basename(path), path, "linked");
+export const archiveProject = (id: string) => mutate<Project>(() => commands.archiveProject(id));
+
+export const unarchiveProject = (id: string) => mutate<Project>(() => commands.unarchiveProject(id));
+
+/** Makes the project the backend's active one and records lastOpened. */
+export const openProject = (id: string) => mutate<Project>(() => commands.openProject(id));
+
+/**
+ * PLACEHOLDER: there's no backend command that deletes a repository yet. `removeProject`
+ * only unregisters and never deletes files, so it is deliberately not called here.
+ * Replace the body with `mutate(() => commands.deleteRepository(id))` once it exists.
+ */
+export async function deleteRepository(id: string): Promise<Outcome<null>> {
+  void id;
+  return {
+    ok: false,
+    error: {
+      code: "internal",
+      message: "Delete isn't available yet: the backend has no delete_repository command.",
+    },
+  };
 }

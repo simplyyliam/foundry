@@ -8,7 +8,7 @@ import {
 import { IconButton } from "@/shared/components/IconButton"
 import type { Tab } from "@/routing"
 import { Bell, Settings } from "lucide-react"
-import { ProjectsGroup, SidebarTabs } from "@/features/app-sidebar"
+import { ArchivedGroup, ProjectsGroup, SidebarTabs } from "@/features/app-sidebar"
 
 export interface AppSidebarProps {
   /** Top-level routes shown above the groups. */
@@ -26,6 +26,7 @@ export function AppSidebar({ tabs }: AppSidebarProps) {
       </SidebarHeader>
       <SidebarContent>
         <SidebarTabs tabs={tabs} />
+        <ArchivedGroup />
         <ProjectsGroup />
       </SidebarContent>
       <SidebarFooter>

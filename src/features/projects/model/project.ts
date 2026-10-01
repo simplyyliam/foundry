@@ -1,14 +1,4 @@
-export interface Project {
-  /** URL-safe and unique, e.g. "my-repo" or "my-repo-2". */
-  id: string;
-  name: string;
-  /** Absolute folder path. */
-  path: string;
-  /** Created as a new repository, or an existing folder that was linked. */
-  origin: "created" | "linked";
-  /** Epoch ms. */
-  createdAt: number;
-}
+export type { Project } from "@/lib/bindings";
 
 /** A page inside a project, shown as a sidebar sub-item: /projects/:id/<segment>. */
 export interface ProjectSection {

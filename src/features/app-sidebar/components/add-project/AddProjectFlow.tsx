@@ -5,12 +5,12 @@ import { DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { commands, type FolderEntry, type FolderListing, type FolderLocations } from "@/lib/bindings";
 import {
   createRepository,
-  folderNameError,
-  linkFolder,
+  linkRepository,
   pathKey,
+  unarchiveProject,
   useProjects,
+  type Outcome,
   type Project,
-  type ProjectResult,
 } from "@/features/projects";
 import { useElementHeight } from "@/shared";
 import { DirectoryButton } from "./DirectoryButton";
@@ -66,6 +66,8 @@ export function AddProjectFlow({ onDone }: { onDone: (project: Project) => void 
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  /** Key of the option whose request is in flight; input and rows wait for it. */
+  const [busy, setBusy] = useState<string | null>(null);
   const [settled, setSettled] = useState<{ dir: string; load: Load } | null>(null);
   const [locations, setLocations] = useState<FolderLocations | null>(null);
 
@@ -109,7 +111,7 @@ export function AddProjectFlow({ onDone }: { onDone: (project: Project) => void 
 
   const options = useMemo<Option[]>(() => {
     if (load?.status !== "ready") return [];
-    const byPath = new Map(projects.map((project) => [pathKey(project.path), project]));
+    const byPath = new Map(projects.map((project) => [pathKey(project.repoPath), project]));
     const name = query.trim();
     const needle = name.toLowerCase();
 
@@ -125,7 +127,8 @@ export function AddProjectFlow({ onDone }: { onDone: (project: Project) => void 
       }));
 
     const exists = load.listing.folders.some((folder) => folder.name.toLowerCase() === needle);
-    const canCreate = name !== "" && !exists && folderNameError(name) === null;
+    // Name rules are the backend's: it answers with invalid_input if it can't use the name.
+    const canCreate = name !== "" && !exists;
     return canCreate ? [{ kind: "create", key: "create", name }, ...folders] : folders;
   }, [load, projects, query]);
 
@@ -137,15 +140,28 @@ export function AddProjectFlow({ onDone }: { onDone: (project: Project) => void 
     document.getElementById(optionId(active))?.scrollIntoView({ block: "nearest" });
   });
 
-  const choose = (option: Option | undefined) => {
-    if (!option || !dir) return;
-    let result: ProjectResult;
-    if (option.kind === "create") result = createRepository(option.name, dir);
-    else if (option.project) result = { ok: true, project: option.project };
-    else result = linkFolder(option.folder.path);
+  const choose = async (option: Option | undefined) => {
+    if (!option || !dir || busy) return;
+    setBusy(option.key);
+    setError(null);
 
-    if (result.ok) onDone(result.project);
-    else setError(result.error);
+    let outcome: Outcome<Project>;
+    if (option.kind === "create") {
+      const created = await createRepository(option.name, dir);
+      outcome = created.ok ? { ok: true, data: created.data.project } : created;
+    } else if (option.project?.archived) {
+      outcome = await unarchiveProject(option.project.id);
+    } else if (option.project) {
+      outcome = { ok: true, data: option.project };
+    } else {
+      const linked = await linkRepository(option.folder.path);
+      outcome = linked.ok ? { ok: true, data: linked.data.project } : linked;
+    }
+
+    setBusy(null);
+    // The backend's own message, verbatim (folder_exists, invalid_input, already_linked, …).
+    if (outcome.ok) onDone(outcome.data);
+    else setError(outcome.error.message);
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
@@ -157,7 +173,7 @@ export function AddProjectFlow({ onDone }: { onDone: (project: Project) => void 
     else if (event.key === "ArrowUp") move(active - 1);
     else if (event.key === "Enter") {
       event.preventDefault();
-      choose(options[active]);
+      void choose(options[active]);
     }
   };
 
@@ -172,7 +188,6 @@ export function AddProjectFlow({ onDone }: { onDone: (project: Project) => void 
   // Into the browser moves forward (content enters from the right), back out reverses.
   const direction = browsing ? 1 : -1;
   const trimmed = query.trim();
-  const nameProblem = trimmed && options.length === 0 ? folderNameError(trimmed) : null;
 
   return (
     <MotionConfig reducedMotion="user">
@@ -225,6 +240,7 @@ export function AddProjectFlow({ onDone }: { onDone: (project: Project) => void 
                     }}
                     onKeyDown={onKeyDown}
                     disabled={!dir}
+                    readOnly={busy !== null}
                     placeholder={dir ? "Search or create a project…" : "Choose a folder to search"}
                     autoComplete="off"
                     spellCheck={false}
@@ -259,8 +275,7 @@ export function AddProjectFlow({ onDone }: { onDone: (project: Project) => void 
                     </div>
                   ) : options.length === 0 ? (
                     <p className="px-3 py-10 text-center text-[13px] text-muted-foreground">
-                      {nameProblem ??
-                        (trimmed ? "No folders match" : "This folder is empty. Type a name to create a project.")}
+                      {trimmed ? "No folders match" : "This folder is empty. Type a name to create a project."}
                     </p>
                   ) : (
                     <ul id={listId} role="listbox" aria-label="Projects" className="flex flex-col">
@@ -269,8 +284,10 @@ export function AddProjectFlow({ onDone }: { onDone: (project: Project) => void 
                           key={option.key}
                           id={optionId(index)}
                           active={index === active}
+                          busy={busy === option.key}
+                          disabled={busy !== null}
                           onHover={() => setActiveIndex(index)}
-                          onChoose={() => choose(option)}
+                          onChoose={() => void choose(option)}
                           {...(option.kind === "create"
                             ? {
                                 icon: Plus,
@@ -284,7 +301,13 @@ export function AddProjectFlow({ onDone }: { onDone: (project: Project) => void 
                             : {
                                 icon: option.folder.isGitRepo ? FolderGit2 : Folder,
                                 label: option.folder.name,
-                                hint: option.project ? "Added" : option.folder.isGitRepo ? "git" : undefined,
+                                hint: option.project?.archived
+                                  ? "Archived · restore"
+                                  : option.project
+                                    ? "Added"
+                                    : option.folder.isGitRepo
+                                      ? "git"
+                                      : undefined,
                               })}
                         />
                       ))}

@@ -6,10 +6,19 @@ export {
   type ProjectSection,
 } from "./model/project";
 export {
+  archiveProject,
   createRepository,
-  linkFolder,
+  deleteRepository,
+  linkRepository,
+  openProject,
+  refreshProjects,
+  renameProject,
+  unarchiveProject,
   useProject,
   useProjects,
-  type ProjectResult,
+  useProjectsSnapshot,
+  type Outcome,
+  type ProjectsSnapshot,
 } from "./model/store";
-export { basename, folderNameError, joinPath, pathKey } from "./model/paths";
+export { basename, pathKey } from "./model/paths";
+export { ProjectRoute } from "./components/ProjectRoute";
