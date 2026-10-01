@@ -12,6 +12,41 @@ export const commands = {
 	listFolders: (path: string | null) => typedError<FolderListing, AppError>(__TAURI_INVOKE("list_folders", { path })),
 	/**  The home folder and filesystem roots, for the picker's quick locations. */
 	folderLocations: () => typedError<FolderLocations, AppError>(__TAURI_INVOKE("folder_locations")),
+	/**  Every registered project, in the order they were added. */
+	listProjects: () => typedError<Project[], AppError>(__TAURI_INVOKE("list_projects")),
+	/**
+	 *  Creates `<parentDir>/<slug(name)>` with git and the Foundry files, and registers it.
+	 *  Errors with `folder_exists` (touching nothing) if that folder already exists.
+	 */
+	createRepository: (input: CreateRepositoryInput) => typedError<CreateRepositoryResult, AppError>(__TAURI_INVOKE("create_repository", { input })),
+	/**  Registers an existing folder, adding only missing Foundry files. Never runs git. */
+	linkRepository: (input: LinkRepositoryInput) => typedError<LinkRepositoryResult, AppError>(__TAURI_INVOKE("link_repository", { input })),
+	/**  Changes name and/or tagline. Never renames or moves the folder. */
+	updateProject: (id: string, patch: ProjectPatch) => typedError<Project, AppError>(__TAURI_INVOKE("update_project", { id, patch })),
+	/**  Makes the project active and records `lastOpened`. `folder_missing` if its folder is gone. */
+	openProject: (id: string) => typedError<Project, AppError>(__TAURI_INVOKE("open_project", { id })),
+	/**  The project opened most recently in this session, or null. */
+	activeProject: () => typedError<{
+	id: string,
+	name: string,
+	tagline: string,
+	repoPath: string,
+	/**  Epoch ms of the last `open_project`, or null if never opened. */
+	lastOpened: number | null,
+	/**  False when the folder was moved or deleted: offer `relink_project`. */
+	folderExists: boolean,
+} | null, AppError>(__TAURI_INVOKE("active_project")),
+	/**  Points a project at a new folder, e.g. after it was moved. */
+	relinkProject: (id: string, folder: string) => typedError<Project, AppError>(__TAURI_INVOKE("relink_project", { id, folder })),
+	/**  Unregisters the project. Never deletes repo files. */
+	removeProject: (id: string) => typedError<null, AppError>(__TAURI_INVOKE("remove_project", { id })),
+	/**  The project's `docs/brain-dump.md` (empty if missing). */
+	getDocument: (id: string) => typedError<string, AppError>(__TAURI_INVOKE("get_document", { id })),
+	/**  Replaces `docs/brain-dump.md` atomically. */
+	saveDocument: (id: string, markdown: string) => typedError<null, AppError>(__TAURI_INVOKE("save_document", { id, markdown })),
+	getSettings: () => typedError<Settings, AppError>(__TAURI_INVOKE("get_settings")),
+	/**  Replaces the settings; returns them as saved (paths normalized). */
+	updateSettings: (settings: Settings) => typedError<Settings, AppError>(__TAURI_INVOKE("update_settings", { settings })),
 };
 
 /** Events */
@@ -41,6 +76,20 @@ export type AppReady = {
 	version: string,
 } & EventMeta;
 
+export type CreateRepositoryInput = {
+	name: string,
+	/**  Defaults to `defaultProjectsDir`. */
+	parentDir: string | null,
+};
+
+export type CreateRepositoryResult = {
+	project: Project,
+	/**  False if git isn't installed or `git init` failed. */
+	gitInitialized: boolean,
+	/**  False if the empty initial commit failed (usually: no git identity configured). */
+	initialCommit: boolean,
+};
+
 /**
  *  Stable, machine-readable error codes. Serialized as snake_case strings.
  *  Adding a variant is an additive contract change; renaming one is not.
@@ -53,7 +102,19 @@ export type ErrorCode =
 /**  A filesystem or process I/O error. */
 "io" | 
 /**  A bug or an unexpected state inside the backend. */
-"internal";
+"internal" | 
+/**  An argument other than a path was empty, malformed or out of range. */
+"invalid_input" | 
+/**  The thing an id or path refers to doesn't exist. */
+"not_found" | 
+/**  A registered project's folder is gone (moved or deleted); relink it. */
+"folder_missing" | 
+/**  Refused to create a folder because one already exists there. Nothing was touched. */
+"folder_exists" | 
+/**  The folder is already registered as a project. */
+"already_linked" | 
+/**  A write into a project repo outside the AGENTS.md allowlist. */
+"write_not_allowed";
 
 /**  Identity and timestamp shared by every event. Flatten it into the payload struct. */
 export type EventMeta = {
@@ -84,6 +145,42 @@ export type FolderLocations = {
 	home: string,
 	/**  Filesystem roots: drive letters on Windows (`C:\`), `/` elsewhere. */
 	roots: string[],
+};
+
+export type LinkRepositoryInput = {
+	folder: string,
+};
+
+export type LinkRepositoryResult = {
+	project: Project,
+	isGitRepo: boolean,
+	/**  Foundry files that were missing and got added, e.g. `["vsm_viewer.html"]`. */
+	createdFiles: string[],
+};
+
+/**  A registered project, as the frontend sees it. */
+export type Project = {
+	id: string,
+	name: string,
+	tagline: string,
+	repoPath: string,
+	/**  Epoch ms of the last `open_project`, or null if never opened. */
+	lastOpened: number | null,
+	/**  False when the folder was moved or deleted: offer `relink_project`. */
+	folderExists: boolean,
+};
+
+export type ProjectPatch = {
+	name: string | null,
+	tagline: string | null,
+};
+
+export type Settings = {
+	maxConcurrentAgents: number,
+	/**  Where `create_repository` puts new repos when no `parentDir` is given. */
+	defaultProjectsDir: string | null,
+	/**  Use this `claude` executable instead of the one on PATH. */
+	claudePath: string | null,
 };
 
 /* Tauri Specta runtime */

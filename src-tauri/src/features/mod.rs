@@ -2,3 +2,4 @@
 
 pub mod app;
 pub mod folders;
+pub mod projects;

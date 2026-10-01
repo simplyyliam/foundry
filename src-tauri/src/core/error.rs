@@ -14,6 +14,18 @@ pub enum ErrorCode {
     Io,
     /// A bug or an unexpected state inside the backend.
     Internal,
+    /// An argument other than a path was empty, malformed or out of range.
+    InvalidInput,
+    /// The thing an id or path refers to doesn't exist.
+    NotFound,
+    /// A registered project's folder is gone (moved or deleted); relink it.
+    FolderMissing,
+    /// Refused to create a folder because one already exists there. Nothing was touched.
+    FolderExists,
+    /// The folder is already registered as a project.
+    AlreadyLinked,
+    /// A write into a project repo outside the AGENTS.md allowlist.
+    WriteNotAllowed,
 }
 
 impl ErrorCode {
@@ -23,6 +35,12 @@ impl ErrorCode {
             Self::PathEscape => "path_escape",
             Self::Io => "io",
             Self::Internal => "internal",
+            Self::InvalidInput => "invalid_input",
+            Self::NotFound => "not_found",
+            Self::FolderMissing => "folder_missing",
+            Self::FolderExists => "folder_exists",
+            Self::AlreadyLinked => "already_linked",
+            Self::WriteNotAllowed => "write_not_allowed",
         }
     }
 }
@@ -58,6 +76,14 @@ impl AppError {
 
     pub fn internal(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::Internal, message)
+    }
+
+    pub fn invalid_input(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::InvalidInput, message)
+    }
+
+    pub fn not_found(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::NotFound, message)
     }
 }
 
@@ -95,6 +121,12 @@ mod tests {
             ErrorCode::PathEscape,
             ErrorCode::Io,
             ErrorCode::Internal,
+            ErrorCode::InvalidInput,
+            ErrorCode::NotFound,
+            ErrorCode::FolderMissing,
+            ErrorCode::FolderExists,
+            ErrorCode::AlreadyLinked,
+            ErrorCode::WriteNotAllowed,
         ] {
             assert_eq!(serde_json::to_value(code).unwrap(), json!(code.as_str()));
         }

@@ -5,13 +5,15 @@ pub mod features;
 mod testing;
 
 use std::path::Path;
+use std::sync::Arc;
 
 use specta_typescript::Typescript;
-use tauri::Runtime;
+use tauri::{Manager, Runtime};
 use tauri_specta::{collect_commands, collect_events};
 
+use crate::core::git::Git;
 use crate::core::AppError;
-use crate::features::{app, folders};
+use crate::features::{app, folders, projects};
 
 /// Where the generated TypeScript bindings live. Never hand-edit that file.
 pub const BINDINGS_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../src/lib/bindings.ts");
@@ -25,6 +27,18 @@ pub fn specta_builder<R: Runtime>() -> tauri_specta::Builder<R> {
             app::commands::app_info,
             folders::commands::list_folders,
             folders::commands::folder_locations,
+            projects::commands::list_projects,
+            projects::commands::create_repository,
+            projects::commands::link_repository,
+            projects::commands::update_project,
+            projects::commands::open_project,
+            projects::commands::active_project,
+            projects::commands::relink_project,
+            projects::commands::remove_project,
+            projects::commands::get_document,
+            projects::commands::save_document,
+            projects::commands::get_settings,
+            projects::commands::update_settings,
         ])
         .events(collect_events![app::AppReady])
 }
@@ -45,6 +59,11 @@ pub fn app_builder<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> 
         .invoke_handler(specta.invoke_handler())
         .setup(move |app| {
             specta.mount_events(app);
+            let data_dir = app.path().app_data_dir()?;
+            app.manage(Arc::new(projects::ProjectsStore::load(
+                data_dir,
+                Git::system(),
+            )?));
             app::init(app.handle())?;
             Ok(())
         })
