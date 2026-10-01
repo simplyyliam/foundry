@@ -11,7 +11,7 @@ use tauri::Runtime;
 use tauri_specta::{collect_commands, collect_events};
 
 use crate::core::AppError;
-use crate::features::app;
+use crate::features::{app, folders};
 
 /// Where the generated TypeScript bindings live. Never hand-edit that file.
 pub const BINDINGS_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../src/lib/bindings.ts");
@@ -21,7 +21,11 @@ const BINDINGS_HEADER: &str = "// Regenerate from src-tauri with a debug run or 
 /// Every command and event in the contract. Register new ones here.
 pub fn specta_builder<R: Runtime>() -> tauri_specta::Builder<R> {
     tauri_specta::Builder::<R>::new()
-        .commands(collect_commands![app::commands::app_info])
+        .commands(collect_commands![
+            app::commands::app_info,
+            folders::commands::list_folders,
+            folders::commands::folder_locations,
+        ])
         .events(collect_events![app::AppReady])
 }
 

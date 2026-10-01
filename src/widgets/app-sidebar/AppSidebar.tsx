@@ -1,19 +1,14 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import {
   Sidebar,
   SidebarContent,
   SidebarFooter,
-  SidebarGroup,
-  SidebarGroupAction,
-  SidebarGroupContent,
-  SidebarGroupLabel,
   SidebarHeader,
 } from "@/shared"
 import { IconButton } from "@/shared/components/IconButton"
 import type { Tab } from "@/routing"
-import { Bell, ChevronDown, Plus, Settings } from "lucide-react"
-import { SidebarTabs } from "@/features/app-sidebar"
+import { Bell, Settings } from "lucide-react"
+import { ProjectsGroup, SidebarTabs } from "@/features/app-sidebar"
 
 export interface AppSidebarProps {
   /** Top-level routes shown above the groups. */
@@ -31,23 +26,7 @@ export function AppSidebar({ tabs }: AppSidebarProps) {
       </SidebarHeader>
       <SidebarContent>
         <SidebarTabs tabs={tabs} />
-        <Collapsible defaultOpen className="group/collapsible">
-          <SidebarGroup>
-            <div className="flex items-center gap-1">
-              <SidebarGroupLabel render={<CollapsibleTrigger />} className="min-w-0 flex-1 pr-1">
-                Projects
-                <ChevronDown className="ml-auto transition-transform group-data-open/collapsible:rotate-180" />
-              </SidebarGroupLabel>
-              <SidebarGroupAction className="relative top-auto right-auto">
-                <Plus /> <span className="sr-only">Add Project</span>
-              </SidebarGroupAction>
-            </div>
-            <CollapsibleContent>
-              <SidebarGroupContent>
-              </SidebarGroupContent>
-            </CollapsibleContent>
-          </SidebarGroup>
-        </Collapsible>
+        <ProjectsGroup />
       </SidebarContent>
       <SidebarFooter>
         <div className="flex items-center justify-between gap-2.5 w-full p-2.5">

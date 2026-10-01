@@ -8,6 +8,10 @@ import * as __TAURI_EVENT from "@tauri-apps/api/event";
 export const commands = {
 	/**  App version and operating system. */
 	appInfo: () => typedError<AppInfo, AppError>(__TAURI_INVOKE("app_info")),
+	/**  Visible subfolders of `path` (absolute), or of the home folder when `path` is null. */
+	listFolders: (path: string | null) => typedError<FolderListing, AppError>(__TAURI_INVOKE("list_folders", { path })),
+	/**  The home folder and filesystem roots, for the picker's quick locations. */
+	folderLocations: () => typedError<FolderLocations, AppError>(__TAURI_INVOKE("folder_locations")),
 };
 
 /** Events */
@@ -57,6 +61,29 @@ export type EventMeta = {
 	id: string,
 	/**  Milliseconds since the Unix epoch. */
 	ts: number,
+};
+
+export type FolderEntry = {
+	name: string,
+	path: string,
+	/**  Has a `.git` directory or file directly inside it. */
+	isGitRepo: boolean,
+};
+
+export type FolderListing = {
+	/**  The listed folder, normalized (no trailing separator, no `.`). */
+	path: string,
+	/**  `None` at a filesystem root. */
+	parent: string | null,
+	isGitRepo: boolean,
+	/**  Visible subfolders, sorted case-insensitively. Files and hidden folders are omitted. */
+	folders: FolderEntry[],
+};
+
+export type FolderLocations = {
+	home: string,
+	/**  Filesystem roots: drive letters on Windows (`C:\`), `/` elsewhere. */
+	roots: string[],
 };
 
 /* Tauri Specta runtime */
