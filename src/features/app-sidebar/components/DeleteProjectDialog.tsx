@@ -9,7 +9,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { deleteRepository, type Project } from "@/features/projects";
+import { deleteRepository, refreshProjects, type Project } from "@/features/projects";
 import { PressButton } from "./add-project/PressButton";
 
 interface DeleteProjectDialogProps {
@@ -19,13 +19,15 @@ interface DeleteProjectDialogProps {
 }
 
 /**
- * Type-the-name confirmation before deleting a project's folder (Recycle Bin).
- * Calls `deleteRepository`, which is a PLACEHOLDER until the backend command exists.
+ * Type-the-name confirmation, then `deleteRepository`: the folder goes to the Recycle Bin and
+ * the project is unregistered. Backend errors (e.g. a locked file) are shown as returned.
  */
 export function DeleteProjectDialog({ project, open, onOpenChange }: DeleteProjectDialogProps) {
   const [typed, setTyped] = useState("");
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** Set on success; the list refreshes once the dialog has finished closing. */
+  const [deleted, setDeleted] = useState(false);
   const inputId = useId();
   const matches = typed === project.name;
 
@@ -36,19 +38,25 @@ export function DeleteProjectDialog({ project, open, onOpenChange }: DeleteProje
     setError(null);
     const outcome = await deleteRepository(project.id);
     setDeleting(false);
-    if (outcome.ok) onOpenChange(false);
-    else setError(outcome.error.message);
+    if (outcome.ok) {
+      setDeleted(true);
+      onOpenChange(false);
+    } else setError(outcome.error.message);
   };
 
   return (
     <Dialog
       open={open}
-      onOpenChange={onOpenChange}
+      // Can't be dismissed mid-delete: the result must land in this dialog.
+      onOpenChange={(next) => {
+        if (!deleting) onOpenChange(next);
+      }}
       onOpenChangeComplete={(isOpen) => {
-        if (!isOpen) {
-          setTyped("");
-          setError(null);
-        }
+        if (isOpen) return;
+        setTyped("");
+        setError(null);
+        // Removing the row unmounts this dialog, so only after its exit animation.
+        if (deleted) void refreshProjects();
       }}
     >
       <DialogContent className="sm:max-w-sm">
@@ -84,7 +92,7 @@ export function DeleteProjectDialog({ project, open, onOpenChange }: DeleteProje
             )}
           </div>
           <DialogFooter>
-            <PressButton type="button" variant="ghost" onClick={() => onOpenChange(false)}>
+            <PressButton type="button" variant="ghost" disabled={deleting} onClick={() => onOpenChange(false)}>
               Cancel
             </PressButton>
             <PressButton type="submit" variant="destructive" disabled={!matches || deleting}>

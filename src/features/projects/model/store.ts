@@ -109,17 +109,11 @@ export const unarchiveProject = (id: string) => mutate<Project>(() => commands.u
 export const openProject = (id: string) => mutate<Project>(() => commands.openProject(id));
 
 /**
- * PLACEHOLDER: there's no backend command that deletes a repository yet. `removeProject`
- * only unregisters and never deletes files, so it is deliberately not called here.
- * Replace the body with `mutate(() => commands.deleteRepository(id))` once it exists.
+ * Moves an archived project's folder to the Recycle Bin and unregisters it. Fails with
+ * `not_archived` if it isn't archived, or `io` (nothing changed) if the move fails.
+ *
+ * Unlike the other mutations this does NOT refresh the list: the confirm dialog lives inside
+ * the project's row, so it closes first and calls `refreshProjects()` once its exit animation
+ * ends. Any other caller must refresh itself.
  */
-export async function deleteRepository(id: string): Promise<Outcome<null>> {
-  void id;
-  return {
-    ok: false,
-    error: {
-      code: "internal",
-      message: "Delete isn't available yet: the backend has no delete_repository command.",
-    },
-  };
-}
+export const deleteRepository = (id: string) => call<null>(() => commands.deleteRepository(id));
