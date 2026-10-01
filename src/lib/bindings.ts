@@ -52,6 +52,13 @@ export const commands = {
 	 *  `not_archived` if the project isn't archived.
 	 */
 	removeProject: (id: string) => typedError<null, AppError>(__TAURI_INVOKE("remove_project", { id })),
+	/**
+	 *  Moves the project folder to the Recycle Bin and unregisters it.
+	 *  Requires the project to be archived (`not_archived` otherwise). If the folder is already
+	 *  gone, just unregisters. Clears the active project if it was this one. `io` with the OS's
+	 *  message if the Recycle Bin move fails (e.g. a locked file); nothing changes then.
+	 */
+	deleteRepository: (id: string) => typedError<null, AppError>(__TAURI_INVOKE("delete_repository", { id })),
 	/**  The project's `docs/brain-dump.md` (empty if missing). */
 	getDocument: (id: string) => typedError<string, AppError>(__TAURI_INVOKE("get_document", { id })),
 	/**  Replaces `docs/brain-dump.md` atomically. */

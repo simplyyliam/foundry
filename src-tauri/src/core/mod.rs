@@ -7,5 +7,6 @@ pub mod git;
 pub mod ids;
 pub mod paths;
 pub mod repo_write;
+pub mod trash;
 
 pub use error::{AppError, ErrorCode};

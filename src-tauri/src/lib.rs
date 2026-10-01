@@ -37,6 +37,7 @@ pub fn specta_builder<R: Runtime>() -> tauri_specta::Builder<R> {
             projects::commands::archive_project,
             projects::commands::unarchive_project,
             projects::commands::remove_project,
+            projects::commands::delete_repository,
             projects::commands::get_document,
             projects::commands::save_document,
             projects::commands::get_settings,
@@ -117,6 +118,10 @@ mod tests {
         assert!(
             ts.contains("unarchiveProject"),
             "unarchiveProject wrapper missing"
+        );
+        assert!(
+            ts.contains("deleteRepository"),
+            "deleteRepository wrapper missing"
         );
         assert!(ts.contains("archived: boolean"), "Project.archived missing");
         assert!(ts.contains("\"not_archived\""), "not_archived code missing");

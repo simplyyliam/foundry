@@ -16,7 +16,7 @@ use specta::Type;
 
 use crate::core::git::{self, Git, GitRun};
 use crate::core::paths::{self, PathKind};
-use crate::core::{ids, repo_write, AppError, ErrorCode};
+use crate::core::{ids, repo_write, trash, AppError, ErrorCode};
 use scaffold::ProjectFile;
 use storage::{now_ms, RegistryEntry, RegistryFile};
 
@@ -558,10 +558,8 @@ impl ProjectsStore {
         Ok(project)
     }
 
-    /// Unregisters an archived project. Never deletes or changes repo files.
-    /// `not_archived` if it hasn't been archived first.
-    pub fn remove_project(&self, id: &str) -> Result<(), AppError> {
-        let mut state = self.lock()?;
+    /// The registry index of an archived project: `not_found` / `not_archived` otherwise.
+    fn archived_index(state: &State, id: &str, action: &str) -> Result<usize, AppError> {
         let index = state
             .registry
             .iter()
@@ -570,18 +568,53 @@ impl ProjectsStore {
         if !state.registry[index].archived {
             return Err(AppError::new(
                 ErrorCode::NotArchived,
-                "archive this project before removing it",
+                format!("archive this project before {action} it"),
             ));
         }
+        Ok(index)
+    }
+
+    /// Drops the entry from the registry (and closes it if active).
+    fn unregister(&self, state: &mut State, index: usize) -> Result<(), AppError> {
         let removed = state.registry.remove(index);
-        if let Err(err) = self.save_registry(&state) {
+        if let Err(err) = self.save_registry(state) {
             state.registry.insert(index, removed);
             return Err(err);
         }
-        if state.active.as_deref() == Some(id) {
+        if state.active.as_deref() == Some(removed.id.as_str()) {
             state.active = None;
         }
+        Ok(())
+    }
+
+    /// Unregisters an archived project. Never deletes or changes repo files.
+    /// `not_archived` if it hasn't been archived first.
+    pub fn remove_project(&self, id: &str) -> Result<(), AppError> {
+        let mut state = self.lock()?;
+        let index = Self::archived_index(&state, id, "removing")?;
+        self.unregister(&mut state, index)?;
         tracing::info!(id, "project removed");
+        Ok(())
+    }
+
+    /// Moves an archived project's folder to the Recycle Bin, then unregisters it. A folder
+    /// that's already gone is just unregistered. If the move fails (`io`, e.g. a locked
+    /// file), nothing changes: the folder stays and the project stays registered.
+    pub fn delete_repository(&self, id: &str) -> Result<(), AppError> {
+        let folder = {
+            let state = self.lock()?;
+            let index = Self::archived_index(&state, id, "deleting")?;
+            PathBuf::from(&state.registry[index].repo_path)
+        };
+        // Outside the lock: the shell may take a while, or show its own prompt.
+        if folder.symlink_metadata().is_ok() {
+            trash::move_to_trash(&folder)?;
+            tracing::info!(id, "project folder moved to the Recycle Bin");
+        }
+        let mut state = self.lock()?;
+        let index = Self::archived_index(&state, id, "deleting")?;
+        self.unregister(&mut state, index)?;
+        tracing::info!(id, "repository deleted");
         Ok(())
     }
 

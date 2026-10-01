@@ -108,6 +108,16 @@ pub async fn remove_project(store: Store<'_>, id: String) -> Result<(), AppError
     blocking(&store, move |s| s.remove_project(&id)).await
 }
 
+/// Moves the project folder to the Recycle Bin and unregisters it.
+/// Requires the project to be archived (`not_archived` otherwise). If the folder is already
+/// gone, just unregisters. Clears the active project if it was this one. `io` with the OS's
+/// message if the Recycle Bin move fails (e.g. a locked file); nothing changes then.
+#[tauri::command]
+#[specta::specta]
+pub async fn delete_repository(store: Store<'_>, id: String) -> Result<(), AppError> {
+    blocking(&store, move |s| s.delete_repository(&id)).await
+}
+
 /// The project's `docs/brain-dump.md` (empty if missing).
 #[tauri::command]
 #[specta::specta]

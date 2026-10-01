@@ -495,6 +495,131 @@ fn archive_and_unarchive_report_unknown_ids() {
     );
 }
 
+// ---------- delete_repository (replaces R-1-5 for this command) ----------
+
+#[cfg(windows)]
+#[test]
+fn delete_repository_moves_the_folder_to_the_recycle_bin_and_unregisters() {
+    let env = Env::new();
+    let store = env.store();
+    let parent = TestRepo::new();
+    let project = create(&store, parent.path(), "Bin Me").project;
+    store.save_document(&project.id, "notes").unwrap();
+    store.open_project(&project.id).unwrap();
+    store.archive_project(&project.id).unwrap();
+    // Archiving closed it; reopen so the delete has an active project to clear.
+    store.open_project(&project.id).unwrap();
+
+    store.delete_repository(&project.id).unwrap();
+
+    assert!(!Path::new(&project.repo_path).exists(), "folder is gone");
+    assert!(parent.path().exists(), "only the project folder was moved");
+    assert!(store.list().unwrap().is_empty());
+    assert_eq!(store.active_project().unwrap(), None);
+    assert_eq!(
+        store.delete_repository(&project.id).unwrap_err().code,
+        ErrorCode::NotFound
+    );
+}
+
+#[test]
+fn delete_repository_requires_archiving_first_and_changes_nothing() {
+    let env = Env::new();
+    let store = env.store();
+    let parent = TestRepo::new();
+    let project = create(&store, parent.path(), "Not Archived").project;
+    let before = snapshot(parent.path());
+
+    let refused = store.delete_repository(&project.id).unwrap_err();
+
+    assert_eq!(refused.code, ErrorCode::NotArchived);
+    assert_eq!(snapshot(parent.path()), before);
+    assert_eq!(store.list().unwrap().len(), 1);
+}
+
+#[test]
+fn delete_repository_with_a_missing_folder_just_unregisters() {
+    let env = Env::new();
+    let store = env.store();
+    let parent = TestRepo::new();
+    let project = create(&store, parent.path(), "Already Gone").project;
+    store.archive_project(&project.id).unwrap();
+    fs::remove_dir_all(&project.repo_path).unwrap();
+
+    store.delete_repository(&project.id).unwrap();
+
+    assert!(store.list().unwrap().is_empty());
+}
+
+#[test]
+fn delete_repository_reports_unknown_ids() {
+    let env = Env::new();
+    let store = env.store();
+    assert_eq!(
+        store.delete_repository("nope").unwrap_err().code,
+        ErrorCode::NotFound
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn delete_repository_with_a_locked_file_fails_with_io_and_changes_nothing() {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    let env = Env::new();
+    let store = env.store();
+    let parent = TestRepo::new();
+    let project = create(&store, parent.path(), "Locked").project;
+    store.archive_project(&project.id).unwrap();
+    let before = snapshot(parent.path());
+    // No sharing at all, like an editor or process holding the file exclusively.
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(Path::new(&project.repo_path).join("docs/brain-dump.md"))
+        .unwrap();
+
+    let err = store.delete_repository(&project.id).unwrap_err();
+    drop(lock);
+
+    assert_eq!(err.code, ErrorCode::Io);
+    assert!(err.message.contains("Recycle Bin"), "{}", err.message);
+    assert!(
+        err.message.contains("open in another program"),
+        "{}",
+        err.message
+    );
+    assert_eq!(snapshot(parent.path()), before);
+    let listed = store.list().unwrap();
+    assert_eq!(listed.len(), 1);
+    assert!(listed[0].archived && listed[0].folder_exists);
+}
+
+#[test]
+fn remove_project_still_only_unregisters_alongside_delete_repository() {
+    let env = Env::new();
+    let store = env.store();
+    let parent = TestRepo::new();
+    let keep = create(&store, parent.path(), "Keep Files").project;
+    let gone = create(&store, parent.path(), "Gone Files").project;
+    store.save_document(&keep.id, "keep me").unwrap();
+    store.archive_project(&keep.id).unwrap();
+    store.archive_project(&gone.id).unwrap();
+    // Folder already removed, so this runs the same on every OS.
+    fs::remove_dir_all(&gone.repo_path).unwrap();
+    store.delete_repository(&gone.id).unwrap();
+    let before = snapshot(Path::new(&keep.repo_path));
+
+    store.remove_project(&keep.id).unwrap();
+
+    assert_eq!(snapshot(Path::new(&keep.repo_path)), before);
+    assert_eq!(
+        fs::read_to_string(Path::new(&keep.repo_path).join("docs/brain-dump.md")).unwrap(),
+        "keep me"
+    );
+    assert!(store.list().unwrap().is_empty());
+}
+
 // ---------- R-1-6 ----------
 
 #[test]
@@ -972,6 +1097,20 @@ fn commands_round_trip_over_ipc() {
     assert_eq!(restored["archived"], false);
     invoke("archive_project", serde_json::json!({ "id": id })).unwrap();
     invoke("remove_project", serde_json::json!({ "id": id })).unwrap();
+
+    let doomed = invoke(
+        "create_repository",
+        serde_json::json!({ "input": { "name": "Ipc Delete", "parentDir": parent.path() } }),
+    )
+    .unwrap();
+    let doomed_id = doomed["project"]["id"].as_str().unwrap().to_string();
+    let doomed_path = doomed["project"]["repoPath"].as_str().unwrap().to_string();
+    let refused = invoke("delete_repository", serde_json::json!({ "id": doomed_id })).unwrap_err();
+    assert_eq!(refused["code"], "not_archived");
+    invoke("archive_project", serde_json::json!({ "id": doomed_id })).unwrap();
+    fs::remove_dir_all(&doomed_path).unwrap();
+    let deleted = invoke("delete_repository", serde_json::json!({ "id": doomed_id })).unwrap();
+    assert_eq!(deleted, serde_json::Value::Null);
     assert_eq!(
         invoke("list_projects", serde_json::json!({})).unwrap(),
         serde_json::json!([])
