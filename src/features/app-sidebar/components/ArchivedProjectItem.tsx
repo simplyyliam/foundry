@@ -20,7 +20,7 @@ export function ArchivedProjectItem({ project }: { project: Project }) {
     <SidebarMenuItem>
       <div
         title={project.repoPath}
-        className="flex h-8 items-center rounded-xl px-3 pr-8 text-[12px] text-muted-foreground transition-colors group-hover/menu-item:bg-sidebar-accent/60"
+        className="flex h-8 items-center rounded-xl px-3 pr-8 text-[12px] text-muted-foreground transition-colors group-hover/menu-item:bg-sidebar-accent/60 group-has-data-popup-open/menu-item:bg-sidebar-accent/60"
       >
         <span className="truncate">{project.name}</span>
       </div>

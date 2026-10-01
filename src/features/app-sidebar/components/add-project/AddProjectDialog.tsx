@@ -6,15 +6,18 @@ import { PROJECT_SECTIONS, projectSectionPath } from "@/features/projects";
 import { SidebarGroupAction, usePressScale } from "@/shared";
 import { AddProjectFlow } from "./AddProjectFlow";
 
-/** The Projects "+" button and the dialog it opens. */
-export function AddProjectDialog() {
+/**
+ * The Projects "+" button and the dialog it opens. Where the button sits and when it shows
+ * are the parent's call (`triggerClassName`); the button stays visible while the dialog is open.
+ */
+export function AddProjectDialog({ triggerClassName }: { triggerClassName?: string }) {
   const [open, setOpen] = useState(false);
   const navigate = useNavigate();
   const pressRef = usePressScale<HTMLButtonElement>({ scale: 0.92 });
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger ref={pressRef} render={<SidebarGroupAction className="relative top-auto right-auto" />}>
+      <DialogTrigger ref={pressRef} render={<SidebarGroupAction className={triggerClassName} />}>
         <Plus /> <span className="sr-only">Add project</span>
       </DialogTrigger>
       {/* Edge-to-edge search layout; Escape or clicking outside closes it. */}

@@ -57,7 +57,18 @@ export function ProjectMenuItem({ project, isNew }: ProjectMenuItemProps) {
           ) : (
             <>
               <CollapsibleTrigger
-                render={<SidebarMenuButton className="h-8 text-[12px]" title={project.repoPath} />}
+                render={
+                  <SidebarMenuButton
+                    title={project.repoPath}
+                    className={[
+                      "h-8 text-[12px]",
+                      // Stay highlighted while the pointer is on the row's "more" button or its
+                      // menu is open. (Not group-hover: the item also holds the sub-pages.)
+                      "[&:has(~[data-sidebar=menu-action]:hover)]:bg-sidebar-accent [&:has(~[data-sidebar=menu-action]:hover)]:text-sidebar-accent-foreground",
+                      "[&:has(~[data-sidebar=menu-action][data-popup-open])]:bg-sidebar-accent [&:has(~[data-sidebar=menu-action][data-popup-open])]:text-sidebar-accent-foreground",
+                    ].join(" ")}
+                  />
+                }
               >
                 <span>{project.name}</span>
               </CollapsibleTrigger>
