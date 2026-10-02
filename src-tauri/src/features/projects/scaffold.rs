@@ -89,15 +89,7 @@ const RESERVED: &[&str] = &[
 /// Folder name for a new repo: lowercase letters and digits, other runs become `-`.
 /// "My Cool App!" → "my-cool-app". Rejects names that leave nothing usable.
 pub fn slug(name: &str) -> Result<String, AppError> {
-    let mut slug = String::new();
-    for ch in name.trim().chars().flat_map(char::to_lowercase) {
-        if ch.is_alphanumeric() {
-            slug.push(ch);
-        } else if !slug.is_empty() && !slug.ends_with('-') {
-            slug.push('-');
-        }
-    }
-    let slug = slug.trim_end_matches('-').to_string();
+    let slug = crate::core::slug::slugify(name);
     if slug.is_empty() {
         return Err(AppError::invalid_input(format!(
             "“{}” has no letters or digits to name a folder with",

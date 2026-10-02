@@ -28,6 +28,12 @@ pub enum ErrorCode {
     WriteNotAllowed,
     /// The action needs the project to be archived first (e.g. `remove_project`).
     NotArchived,
+    /// The Bakery already holds its maximum number of images.
+    BakeryFull,
+    /// Not a PNG, JPEG or WebP image (judged by its contents), or it can't be decoded.
+    UnsupportedImage,
+    /// An input file is over the size cap.
+    FileTooLarge,
 }
 
 impl ErrorCode {
@@ -44,6 +50,9 @@ impl ErrorCode {
             Self::AlreadyLinked => "already_linked",
             Self::WriteNotAllowed => "write_not_allowed",
             Self::NotArchived => "not_archived",
+            Self::BakeryFull => "bakery_full",
+            Self::UnsupportedImage => "unsupported_image",
+            Self::FileTooLarge => "file_too_large",
         }
     }
 }
@@ -131,6 +140,9 @@ mod tests {
             ErrorCode::AlreadyLinked,
             ErrorCode::WriteNotAllowed,
             ErrorCode::NotArchived,
+            ErrorCode::BakeryFull,
+            ErrorCode::UnsupportedImage,
+            ErrorCode::FileTooLarge,
         ] {
             assert_eq!(serde_json::to_value(code).unwrap(), json!(code.as_str()));
         }

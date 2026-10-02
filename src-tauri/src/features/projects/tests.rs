@@ -61,7 +61,7 @@ impl Env {
     }
 
     fn store_with(&self, git: Git) -> ProjectsStore {
-        ProjectsStore::load(self.data.path(), git).unwrap()
+        ProjectsStore::load(self.data.path(), git, Default::default()).unwrap()
     }
 }
 
@@ -1015,6 +1015,50 @@ fn relink_refuses_another_projects_folder() {
         "B's folder still has B's project.json"
     );
     assert_eq!(store.list().unwrap()[0].repo_path, a.repo_path);
+}
+
+// ---------- repo index (for other features) ----------
+
+#[test]
+fn repo_index_follows_create_relink_remove_and_restart() {
+    use std::sync::Arc;
+
+    use crate::core::repos::RepoIndex;
+
+    let env = Env::new();
+    let parent = TestRepo::new();
+    let repos = Arc::new(RepoIndex::default());
+    let store =
+        ProjectsStore::load(env.data.path(), env.git_with_identity(), Arc::clone(&repos)).unwrap();
+    let project = create(&store, parent.path(), "Indexed").project;
+    assert_eq!(
+        repos.repo(&project.id).unwrap(),
+        Path::new(&project.repo_path)
+    );
+
+    let moved = parent.path().join("moved");
+    fs::rename(&project.repo_path, &moved).unwrap();
+    assert_eq!(
+        repos.repo(&project.id).unwrap_err().code,
+        ErrorCode::FolderMissing
+    );
+    store
+        .relink_project(&project.id, &moved.to_string_lossy())
+        .unwrap();
+    assert_eq!(repos.repo(&project.id).unwrap(), moved);
+
+    // A fresh load publishes what's on disk.
+    let fresh = Arc::new(RepoIndex::default());
+    let reloaded =
+        ProjectsStore::load(env.data.path(), env.git_with_identity(), Arc::clone(&fresh)).unwrap();
+    assert_eq!(fresh.repo(&project.id).unwrap(), moved);
+
+    reloaded.archive_project(&project.id).unwrap();
+    reloaded.remove_project(&project.id).unwrap();
+    assert_eq!(
+        fresh.repo(&project.id).unwrap_err().code,
+        ErrorCode::NotFound
+    );
 }
 
 // ---------- commands over IPC ----------

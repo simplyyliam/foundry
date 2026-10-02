@@ -22,7 +22,7 @@ tauri-build = { version = "2.6.0", features = [] }
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
-tauri = { version = "2.11.0", features = ["specta"] }
+tauri = { version = "2.11.0", features = ["specta", "protocol-asset"] }
 tauri-plugin-log = "2"
 thiserror = "2"
 tracing = { version = "0.1", features = ["log"] }
@@ -31,9 +31,10 @@ uuid = { version = "1", features = ["v4"] }
 specta = { version = "=2.0.0-rc.25", features = ["derive"] }
 specta-typescript = "=0.0.12"
 tauri-specta = { version = "=2.0.0-rc.25", features = ["derive", "typescript"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 
 [dev-dependencies]
-tauri = { version = "2.11.0", features = ["specta", "test"] }
+tauri = { version = "2.11.0", features = ["specta", "protocol-asset", "test"] }
 tempfile = "3"
 
 [[bin]]

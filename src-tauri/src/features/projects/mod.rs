@@ -9,13 +9,14 @@ mod storage;
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde::{Deserialize, Serialize};
 use specta::Type;
 
 use crate::core::git::{self, Git, GitRun};
 use crate::core::paths::{self, PathKind};
+use crate::core::repos::RepoIndex;
 use crate::core::{ids, repo_write, trash, AppError, ErrorCode};
 use scaffold::ProjectFile;
 use storage::{now_ms, RegistryEntry, RegistryFile};
@@ -111,8 +112,16 @@ struct State {
 pub struct ProjectsStore {
     data_dir: PathBuf,
     git: Git,
+    /// Kept in step with the saved registry, for other features to look repos up in.
+    repos: Arc<RepoIndex>,
+    on_released: Option<ReleasedHook>,
     state: Mutex<State>,
 }
+
+/// Called with a repo folder's canonical path once it leaves the registry (`remove_project`
+/// or `delete_repository`), so the app can drop access it granted there (e.g. the asset
+/// protocol), whether or not the files are still on disk.
+pub type ReleasedHook = Box<dyn Fn(&Path) + Send + Sync>;
 
 fn validate_name(name: &str) -> Result<String, AppError> {
     let name = name.trim();
@@ -168,27 +177,55 @@ fn to_project(entry: &RegistryEntry) -> Project {
     }
 }
 
+fn publish(repos: &RepoIndex, registry: &[RegistryEntry]) {
+    repos.replace_all(
+        registry
+            .iter()
+            .map(|entry| (entry.id.as_str(), Path::new(&entry.repo_path))),
+    );
+}
+
 fn path_string(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
 impl ProjectsStore {
-    /// Loads `projects.json` and `settings.json` from `data_dir`, creating it if needed.
-    pub fn load(data_dir: impl Into<PathBuf>, git: Git) -> Result<Self, AppError> {
+    /// Loads `projects.json` and `settings.json` from `data_dir`, creating it if needed, and
+    /// publishes every project's folder to `repos`.
+    pub fn load(
+        data_dir: impl Into<PathBuf>,
+        git: Git,
+        repos: Arc<RepoIndex>,
+    ) -> Result<Self, AppError> {
         let data_dir = data_dir.into();
         fs::create_dir_all(&data_dir)?;
         let registry: RegistryFile = storage::load(&data_dir, storage::REGISTRY_FILE)?;
         let settings: storage::SettingsFile = storage::load(&data_dir, storage::SETTINGS_FILE)?;
         tracing::info!(projects = registry.projects.len(), "projects loaded");
+        publish(&repos, &registry.projects);
         Ok(Self {
             data_dir,
             git,
+            repos,
+            on_released: None,
             state: Mutex::new(State {
                 registry: registry.projects,
                 settings: settings.into(),
                 active: None,
             }),
         })
+    }
+
+    /// Sets the hook run when a repo folder leaves the registry (see [`ReleasedHook`]).
+    pub fn with_released_hook(mut self, hook: impl Fn(&Path) + Send + Sync + 'static) -> Self {
+        self.on_released = Some(Box::new(hook));
+        self
+    }
+
+    fn release(&self, canonical: &Path) {
+        if let Some(hook) = &self.on_released {
+            hook(canonical);
+        }
     }
 
     fn lock(&self) -> Result<MutexGuard<'_, State>, AppError> {
@@ -198,7 +235,9 @@ impl ProjectsStore {
     }
 
     fn save_registry(&self, state: &State) -> Result<(), AppError> {
-        storage::save_registry(&self.data_dir, &state.registry)
+        storage::save_registry(&self.data_dir, &state.registry)?;
+        publish(&self.repos, &state.registry);
+        Ok(())
     }
 
     fn find<'a>(state: &'a State, id: &str) -> Result<&'a RegistryEntry, AppError> {
@@ -592,8 +631,11 @@ impl ProjectsStore {
     pub fn remove_project(&self, id: &str) -> Result<(), AppError> {
         let mut state = self.lock()?;
         let index = Self::archived_index(&state, id, "removing")?;
+        let folder = PathBuf::from(&state.registry[index].repo_path);
         self.unregister(&mut state, index)?;
         tracing::info!(id, "project removed");
+        // The files stay, but Foundry's access to them goes with the registration.
+        self.release(&folder.canonicalize().unwrap_or(folder));
         Ok(())
     }
 
@@ -608,8 +650,11 @@ impl ProjectsStore {
         };
         // Outside the lock: the shell may take a while, or show its own prompt.
         if folder.symlink_metadata().is_ok() {
+            // Resolved first: once it's in the Recycle Bin the path can't be canonicalized.
+            let canonical = folder.canonicalize().unwrap_or_else(|_| folder.clone());
             trash::move_to_trash(&folder)?;
             tracing::info!(id, "project folder moved to the Recycle Bin");
+            self.release(&canonical);
         }
         let mut state = self.lock()?;
         let index = Self::archived_index(&state, id, "deleting")?;

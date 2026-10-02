@@ -78,6 +78,44 @@ pub fn write_if_missing(
     fsx::write_atomic_new(&target, contents)
 }
 
+/// Deletes an allowlisted file (never a folder). Returns `false` if it didn't exist.
+pub fn remove(repo: &Path, rel: &str) -> Result<bool, AppError> {
+    let target = guard(repo, rel)?;
+    match fs::symlink_metadata(&target) {
+        Ok(meta) if meta.is_file() => {
+            fs::remove_file(&target)?;
+            Ok(true)
+        }
+        Ok(_) => Err(AppError::invalid_path(format!("not a file: {rel}"))),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(err.into()),
+    }
+}
+
+/// Renames one allowlisted file to another, never replacing an existing `to`: returns
+/// `false` (and changes nothing) if `to` exists. `from` must exist.
+pub fn rename_new(repo: &Path, from: &str, to: &str) -> Result<bool, AppError> {
+    let source = guard(repo, from)?;
+    let target = guard(repo, to)?;
+    // A hard link fails if the destination exists, so the check and the move are one step.
+    match fs::hard_link(&source, &target) {
+        Ok(()) => {
+            if let Err(err) = fs::remove_file(&source) {
+                let _ = fs::remove_file(&target);
+                return Err(err.into());
+            }
+            Ok(true)
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+        // Filesystems without hard links (FAT, some network drives): check, then rename.
+        Err(_) if target.symlink_metadata().is_ok() => Ok(false),
+        Err(_) => {
+            fs::rename(&source, &target)?;
+            Ok(true)
+        }
+    }
+}
+
 /// Reads an allowlisted file through the same path checks as writes.
 /// Returns `None` when it doesn't exist.
 pub fn read_to_string(repo: &Path, rel: &str) -> Result<Option<String>, AppError> {
@@ -93,6 +131,46 @@ pub fn read_to_string(repo: &Path, rel: &str) -> Result<Option<String>, AppError
 mod tests {
     use super::*;
     use crate::testing::TestRepo;
+
+    #[test]
+    fn remove_and_rename_stay_inside_the_allowlist() {
+        let repo = TestRepo::new();
+        write(repo.path(), "docs/bakery/a.png", "a").unwrap();
+        write(repo.path(), "docs/bakery/b.png", "b").unwrap();
+        fs::write(repo.path().join("keep.txt"), "keep").unwrap();
+
+        assert!(!rename_new(repo.path(), "docs/bakery/a.png", "docs/bakery/b.png").unwrap());
+        assert_eq!(
+            fs::read(repo.path().join("docs/bakery/b.png")).unwrap(),
+            b"b"
+        );
+        assert!(rename_new(repo.path(), "docs/bakery/a.png", "docs/bakery/c.png").unwrap());
+        assert!(!repo.path().join("docs/bakery/a.png").exists());
+        assert_eq!(
+            fs::read(repo.path().join("docs/bakery/c.png")).unwrap(),
+            b"a"
+        );
+
+        assert!(remove(repo.path(), "docs/bakery/c.png").unwrap());
+        assert!(!remove(repo.path(), "docs/bakery/c.png").unwrap());
+        assert_eq!(
+            remove(repo.path(), "keep.txt").unwrap_err().code,
+            ErrorCode::WriteNotAllowed
+        );
+        assert_eq!(
+            remove(repo.path(), "docs/bakery/../../keep.txt")
+                .unwrap_err()
+                .code,
+            ErrorCode::PathEscape
+        );
+        assert_eq!(
+            rename_new(repo.path(), "docs/bakery/b.png", "keep2.txt")
+                .unwrap_err()
+                .code,
+            ErrorCode::WriteNotAllowed
+        );
+        assert!(repo.path().join("keep.txt").exists());
+    }
 
     fn assert_not_allowed(result: Result<(), AppError>) {
         assert_eq!(result.unwrap_err().code, ErrorCode::WriteNotAllowed);

@@ -66,6 +66,24 @@ export const commands = {
 	getSettings: () => typedError<Settings, AppError>(__TAURI_INVOKE("get_settings")),
 	/**  Replaces the settings; returns them as saved (paths normalized). */
 	updateSettings: (settings: Settings) => typedError<Settings, AppError>(__TAURI_INVOKE("update_settings", { settings })),
+	/**  Every image on the project's canvas, ordered by `NN`. */
+	bakeryList: (projectId: string) => typedError<BakeryState, AppError>(__TAURI_INVOKE("bakery_list", { projectId })),
+	/**
+	 *  Adds dropped files (absolute paths). All or nothing. PNG, JPEG or WebP, 25 MB max each;
+	 *  `bakery_full` past the cap. The first card lands at `dropPoint`, the rest cascade from it.
+	 */
+	bakeryAddFromPaths: (projectId: string, paths: string[], dropPoint: {
+	x: Coord,
+	y: Coord,
+} | null) => typedError<BakeryAddResult, AppError>(__TAURI_INVOKE("bakery_add_from_paths", { projectId, paths, dropPoint })),
+	/**  Adds a pasted image. `name` must be a plain file name; the format is read from the bytes. */
+	bakeryAddFromBytes: (projectId: string, name: string, bytes: number[]) => typedError<BakeryAddResult, AppError>(__TAURI_INVOKE("bakery_add_from_bytes", { projectId, name, bytes })),
+	/**  Changes notes. A label change renames the file and updates layout and manifest. */
+	bakeryUpdate: (projectId: string, id: string, patch: BakeryPatch) => typedError<BakeryState, AppError>(__TAURI_INVOKE("bakery_update", { projectId, id, patch })),
+	/**  Moves, resizes or restacks a card. Layout only: `manifest.md` is never rewritten. */
+	bakeryMove: (projectId: string, id: string, x: Coord, y: Coord, w: number | null, h: number | null, z: number | null) => typedError<BakeryState, AppError>(__TAURI_INVOKE("bakery_move", { projectId, id, x, y, w, h, z })),
+	/**  Removes the card and deletes its image file (only ever inside `docs/bakery/`). */
+	bakeryRemove: (projectId: string, id: string) => typedError<BakeryState, AppError>(__TAURI_INVOKE("bakery_remove", { projectId, id })),
 };
 
 /** Events */
@@ -95,6 +113,58 @@ export type AppReady = {
 	version: string,
 } & EventMeta;
 
+export type BakeryAddResult = {
+	/**  Ids of the new items, in input order. */
+	added: string[],
+	bakery: BakeryState,
+};
+
+/**  One image on the canvas, as stored in `bakery.json` and sent to the UI. */
+export type BakeryItem = {
+	id: string,
+	/**  File name inside `docs/bakery/`, e.g. `03-red-door.png`. */
+	file: string,
+	label: string,
+	/**  What an agent should take from this image. */
+	take: string,
+	/**  What an agent should ignore in it. */
+	skip: string,
+	tags: string[],
+	/**  Which agents or tasks it applies to. */
+	appliesTo: string[],
+	x: Coord,
+	y: Coord,
+	w: Coord,
+	h: Coord,
+	z: number,
+};
+
+/**  Fields to change; `null` leaves a field as it is. */
+export type BakeryPatch = {
+	label: string | null,
+	take: string | null,
+	skip: string | null,
+	tags: string[] | null,
+	appliesTo: string[] | null,
+};
+
+/**  The whole Bakery, returned by every command. */
+export type BakeryState = {
+	/**  Ordered by `NN`. */
+	items: BakeryItem[],
+	/**  Images with no label or no Take note: agents can't act on them. */
+	unlabeledCount: number,
+	maxImages: number,
+	/**  Absolute path of `docs/bakery/`; an item's image is at `<dir>/<file>`. */
+	dir: string,
+};
+
+/**
+ *  A canvas coordinate or size. Always finite (commands reject NaN and infinities), so it
+ *  exports as a plain TS `number`; a bare `f64` would export as `number | null`.
+ */
+export type Coord = number;
+
 export type CreateRepositoryInput = {
 	name: string,
 	/**  Defaults to `defaultProjectsDir`. */
@@ -107,6 +177,11 @@ export type CreateRepositoryResult = {
 	gitInitialized: boolean,
 	/**  False if the empty initial commit failed (usually: no git identity configured). */
 	initialCommit: boolean,
+};
+
+export type DropPoint = {
+	x: Coord,
+	y: Coord,
 };
 
 /**
@@ -135,7 +210,13 @@ export type ErrorCode =
 /**  A write into a project repo outside the AGENTS.md allowlist. */
 "write_not_allowed" | 
 /**  The action needs the project to be archived first (e.g. `remove_project`). */
-"not_archived";
+"not_archived" | 
+/**  The Bakery already holds its maximum number of images. */
+"bakery_full" | 
+/**  Not a PNG, JPEG or WebP image (judged by its contents), or it can't be decoded. */
+"unsupported_image" | 
+/**  An input file is over the size cap. */
+"file_too_large";
 
 /**  Identity and timestamp shared by every event. Flatten it into the payload struct. */
 export type EventMeta = {
