@@ -7,6 +7,10 @@ use serde_json::Value;
 
 use super::{Deferred, Feature, Requirement, Roadmap, Slice, TargetUser};
 
+/// The plan's requirement kinds (`plan::RequirementKind`), which a roadmap must use so it
+/// can be loaded into the plan.
+pub const KINDS: &[&str] = &["behavior", "interaction", "constraint"];
+
 /// Why an output was rejected. These go back to the model in the retry prompt.
 pub type Errors = Vec<String>;
 
@@ -92,6 +96,22 @@ impl Schema {
             }
             None => String::new(),
         }
+    }
+
+    /// A string that must be one of `allowed`.
+    fn one_of(&mut self, obj: &Value, path: &str, key: &str, allowed: &[&str]) -> String {
+        let value = self.string(obj, path, key);
+        if obj.get(key).is_some_and(Value::is_string) && !allowed.contains(&value.as_str()) {
+            self.errors.push(format!(
+                "{path}.{key} must be one of {} (got \"{value}\")",
+                allowed
+                    .iter()
+                    .map(|k| format!("\"{k}\""))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        value
     }
 
     fn nonempty(&mut self, obj: &Value, path: &str, key: &str) -> String {
@@ -199,7 +219,7 @@ fn schema(value: &Value) -> Result<Roadmap, Errors> {
         .into_iter()
         .map(|(p, v)| Requirement {
             text: s.nonempty(v, &p, "text"),
-            kind: s.nonempty(v, &p, "kind"),
+            kind: s.one_of(v, &p, "kind", KINDS),
             source_excerpt: s.string(v, &p, "sourceExcerpt"),
             slice_name: s.optional(v, &p, "sliceName"),
             verified_by: s.string(v, &p, "verifiedBy"),

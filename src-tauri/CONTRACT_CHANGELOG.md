@@ -191,4 +191,10 @@ All additive. Every command takes `projectId` (the Bakery convention, decided by
 
 `vsm_data.js` (repo root) is regenerated in the same locked operation as every successful mutation: save `plan.json`, then write the mirror. If the mirror can't be written, `plan.json` is restored and the mutation fails. The schema is taken from `vsm_viewer.html`, the file's actual reader, and is also shipped as `resources/templates/vsm_data.template.js` (decided by the human). It's deterministic: no revision and no timestamps; slices sorted by order, name, id; `depends_on` sorted; `future_horizon` sorted by label, id. `meta.title` / `subtitle` come from `.foundry/project.json` (name, tagline). It's never read back: a hand edit is overwritten by the next mutation.
 
-Not in P2: P3's `generate_roadmap` doesn't load into this plan yet (the planned short follow-up). Note for that wiring: P3's prompt asks the model for kinds `functional | non-functional | constraint`, while the plan's `RequirementKind` is `behavior | interaction | constraint`, so one of the two needs aligning.
+Not in P2: P3's `generate_roadmap` doesn't load into this plan yet (the planned short follow-up). Requirement kinds are already aligned to the plan's (see the next section).
+
+### P3 kinds aligned to the plan's (decided by the human)
+
+| Kind | Name | Before → After | Why |
+| --- | --- | --- | --- |
+| type | `Requirement.kind` (roadmap) | any non-empty string, prompt asking for `functional \| non-functional \| constraint` → still a `string` in TS, but always one of `behavior \| interaction \| constraint` | Matches `plan::RequirementKind`, so a generated roadmap loads into the plan as is. The prompt (`roadmap/prompt.md`) asks for these three; the validator (`roadmap/validate.rs`) rejects anything else, which triggers the usual retry with the allowed values in the error. The plan is unchanged. |

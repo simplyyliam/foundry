@@ -16,7 +16,7 @@ The JSON object has exactly these fields:
   "requirements": [
     {
       "text": "one testable requirement",
-      "kind": "functional | non-functional | constraint",
+      "kind": "behavior | interaction | constraint",
       "sourceExcerpt": "the exact words from the brain dump this comes from",
       "sliceName": "the slice that delivers it",
       "verifiedBy": "how to check it is met"
@@ -29,6 +29,7 @@ The JSON object has exactly these fields:
 }
 
 Rules:
+- "kind" is exactly one of: "behavior" (what the product does), "interaction" (how the user works with it), "constraint" (a limit it must respect).
 - Every requirement's sourceExcerpt must be copied word for word from the brain dump: a sentence or phrase, not a paraphrase. If a requirement has no source in the brain dump, leave it out.
 - Cover the whole brain dump. Every idea in it should become a requirement, a deferred item or an open question.
 - Every sliceName and every dependsOn entry must be the name of a slice in "slices". Slice dependencies must not form a cycle.

@@ -152,10 +152,10 @@ fn valid() -> Value {
             { "name": "Offline", "delivers": ["read offline"], "dependsOn": ["Core"] }
         ],
         "requirements": [
-            { "text": "Save a reading list", "kind": "functional",
+            { "text": "Save a reading list", "kind": "behavior",
               "sourceExcerpt": "Users can save a reading list and sync it across devices.",
               "sliceName": "Core", "verifiedBy": "add an item, see it on a second device" },
-            { "text": "Works offline for a week", "kind": "non-functional",
+            { "text": "Works offline for a week", "kind": "constraint",
               "sourceExcerpt": "must work offline for at least a week",
               "sliceName": "Offline", "verifiedBy": "airplane mode for 7 days" }
         ],
@@ -324,6 +324,37 @@ fn a_hallucinated_source_excerpt_is_flagged_unsourced_not_dropped() {
     assert!(checked
         .uncovered_paragraphs
         .contains(&"Users can save a reading list\nand sync it across devices.".to_string()));
+}
+
+/// Requirement kinds must be the plan's, so a roadmap can be loaded into it as is.
+#[test]
+fn requirement_kinds_must_be_the_plans() {
+    for kind in ["behavior", "interaction", "constraint"] {
+        let mut output = valid();
+        output["requirements"][0]["kind"] = json!(kind);
+        assert!(check(&output.to_string(), BRAIN).is_ok(), "{kind}");
+    }
+    for kind in ["functional", "non-functional", "Behavior", ""] {
+        let mut output = valid();
+        output["requirements"][0]["kind"] = json!(kind);
+        let errors = check(&output.to_string(), BRAIN).unwrap_err();
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.starts_with("roadmap.requirements[0].kind must be one of")),
+            "{kind}: {errors:?}"
+        );
+    }
+
+    // The old kinds trigger the retry, and the retry prompt says what's allowed.
+    let mut old = valid();
+    old["requirements"][0]["kind"] = json!("functional");
+    let env = Env::new(vec![text(&old), text(&valid())]);
+    assert_eq!(env.store.generate(P).unwrap().attempts, 2);
+    let prompts = env.runner.prompts();
+    assert!(prompts[0].contains(r#""kind": "behavior | interaction | constraint""#));
+    assert!(prompts[1]
+        .contains(r#"must be one of "behavior", "interaction", "constraint" (got "functional")"#));
 }
 
 // ---------- R-3-6 ----------
