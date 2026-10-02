@@ -132,6 +132,49 @@ export const commands = {
 	 *  problem is reported in `problem`.
 	 */
 	claudeStatus: () => typedError<ClaudeStatus, AppError>(__TAURI_INVOKE("claude_status")),
+	/**  The plan with derived `layer`, `usedBy` and `ready` per slice. */
+	getPlan: (projectId: string) => typedError<Plan, AppError>(__TAURI_INVOKE("get_plan", { projectId })),
+	/**
+	 *  Unassigned and unconfirmed requirements, ready and blocked slices, and whether the plan
+	 *  is fully confirmed.
+	 */
+	planSummary: (projectId: string) => typedError<PlanSummary, AppError>(__TAURI_INVOKE("plan_summary", { projectId })),
+	addSlice: (projectId: string, slice: NewSlice, expectedRevision: number | null) => typedError<PlanAdded, AppError>(__TAURI_INVOKE("add_slice", { projectId, slice, expectedRevision })),
+	updateSlice: (projectId: string, sliceId: string, patch: SlicePatch, expectedRevision: number | null) => typedError<Plan, AppError>(__TAURI_INVOKE("update_slice", { projectId, sliceId, patch, expectedRevision })),
+	/**
+	 *  `slice_in_use` while requirements are assigned to it, or slices or deferred items point
+	 *  at it.
+	 */
+	removeSlice: (projectId: string, sliceId: string, expectedRevision: number | null) => typedError<Plan, AppError>(__TAURI_INVOKE("remove_slice", { projectId, sliceId, expectedRevision })),
+	/**
+	 *  Replaces the slice's dependencies. Unknown ids → `not_found`; itself → `invalid_input`;
+	 *  a cycle → `dependency_cycle`, naming it.
+	 */
+	setDependencies: (projectId: string, sliceId: string, dependsOn: string[], expectedRevision: number | null) => typedError<Plan, AppError>(__TAURI_INVOKE("set_dependencies", { projectId, sliceId, dependsOn, expectedRevision })),
+	/**
+	 *  `queued → in_progress` needs every dependency done (`dependencies_not_done`), unless
+	 *  `override` with a non-empty `reason`, which is recorded as a decision.
+	 */
+	setSliceStatus: (projectId: string, sliceId: string, status: SliceStatus, options: StatusOptions, expectedRevision: number | null) => typedError<Plan, AppError>(__TAURI_INVOKE("set_slice_status", { projectId, sliceId, status, options, expectedRevision })),
+	addDecision: (projectId: string, sliceId: string, text: string, expectedRevision: number | null) => typedError<Plan, AppError>(__TAURI_INVOKE("add_decision", { projectId, sliceId, text, expectedRevision })),
+	addOpenQuestion: (projectId: string, sliceId: string, text: string, expectedRevision: number | null) => typedError<PlanAdded, AppError>(__TAURI_INVOKE("add_open_question", { projectId, sliceId, text, expectedRevision })),
+	/**  Removes the question and records "question → resolution" as a decision. */
+	resolveOpenQuestion: (projectId: string, sliceId: string, questionId: string, resolution: string, expectedRevision: number | null) => typedError<Plan, AppError>(__TAURI_INVOKE("resolve_open_question", { projectId, sliceId, questionId, resolution, expectedRevision })),
+	/**  Added as `proposed`; `unsourced` if the excerpt isn't in `docs/brain-dump.md`. */
+	addRequirement: (projectId: string, requirement: NewRequirement, expectedRevision: number | null) => typedError<PlanAdded, AppError>(__TAURI_INVOKE("add_requirement", { projectId, requirement, expectedRevision })),
+	/**  Changing a confirmed requirement's text, kind or excerpt makes it `proposed` again. */
+	updateRequirement: (projectId: string, requirementId: string, patch: RequirementPatch, expectedRevision: number | null) => typedError<Plan, AppError>(__TAURI_INVOKE("update_requirement", { projectId, requirementId, patch, expectedRevision })),
+	/**  `sliceId: null` unassigns it, which also makes it `proposed`. */
+	assignRequirement: (projectId: string, requirementId: string, sliceId: string | null, expectedRevision: number | null) => typedError<Plan, AppError>(__TAURI_INVOKE("assign_requirement", { projectId, requirementId, sliceId, expectedRevision })),
+	removeRequirement: (projectId: string, requirementId: string, expectedRevision: number | null) => typedError<Plan, AppError>(__TAURI_INVOKE("remove_requirement", { projectId, requirementId, expectedRevision })),
+	/**  `requirement_unassigned` while it has no slice. */
+	confirmRequirement: (projectId: string, requirementId: string, expectedRevision: number | null) => typedError<Plan, AppError>(__TAURI_INVOKE("confirm_requirement", { projectId, requirementId, expectedRevision })),
+	/**  Confirms every assigned requirement; unassigned ones stay `proposed`. */
+	confirmAll: (projectId: string, expectedRevision: number | null) => typedError<Plan, AppError>(__TAURI_INVOKE("confirm_all", { projectId, expectedRevision })),
+	unconfirmRequirement: (projectId: string, requirementId: string, expectedRevision: number | null) => typedError<Plan, AppError>(__TAURI_INVOKE("unconfirm_requirement", { projectId, requirementId, expectedRevision })),
+	/**  `anchoredTo` must be a slice id. */
+	addDeferred: (projectId: string, deferred: NewDeferred, expectedRevision: number | null) => typedError<PlanAdded, AppError>(__TAURI_INVOKE("add_deferred", { projectId, deferred, expectedRevision })),
+	removeDeferred: (projectId: string, deferredId: string, expectedRevision: number | null) => typedError<Plan, AppError>(__TAURI_INVOKE("remove_deferred", { projectId, deferredId, expectedRevision })),
 };
 
 /** Events */
@@ -139,6 +182,7 @@ export const events = {
 	agentOutput: makeEvent<AgentOutput>("agent:output"),
 	agentStatus: makeEvent<AgentStatus>("agent:status"),
 	appReady: makeEvent<AppReady>("app:ready"),
+	planChanged: makeEvent<PlanChanged>("plan:changed"),
 	roadmapProgress: makeEvent<RoadmapProgress>("roadmap:progress"),
 };
 
@@ -346,7 +390,17 @@ export type ErrorCode =
  *  `claude` resolves to a `.cmd`/`.bat` shim (npm's install), which agent sessions don't
  *  use: they need the native `claude.exe`.
  */
-"claude_needs_native";
+"claude_needs_native" | 
+/**  `expectedRevision` doesn't match the plan's current revision: reload and retry. */
+"stale_revision" | 
+/**  The dependencies would form a cycle (the message names it). */
+"dependency_cycle" | 
+/**  A slice can't start before its dependencies are done (unless overridden with a reason). */
+"dependencies_not_done" | 
+/**  A requirement can't be confirmed while it has no slice. */
+"requirement_unassigned" | 
+/**  A slice can't be removed while requirements, dependents or deferred items point at it. */
+"slice_in_use";
 
 /**  Identity and timestamp shared by every event. Flatten it into the payload struct. */
 export type EventMeta = {
@@ -397,6 +451,98 @@ export type LinkRepositoryResult = {
 	createdFiles: string[],
 };
 
+export type NewDeferred = {
+	label: string,
+	anchoredTo: string,
+};
+
+export type NewRequirement = {
+	text: string,
+	kind: RequirementKind,
+	sliceId: string | null,
+	sourceExcerpt: string,
+	verifiedBy: string,
+};
+
+export type NewSlice = {
+	name: string,
+	delivers: string[],
+	dependsOn: string[],
+};
+
+export type OpenQuestion = {
+	id: string,
+	text: string,
+};
+
+export type Plan = {
+	revision: number,
+	slices: SliceView[],
+	requirements: PlanRequirement[],
+	deferred: PlanDeferred[],
+};
+
+/**  What an `add_*` command returns: the new item's id and the plan after it. */
+export type PlanAdded = {
+	id: string,
+	plan: Plan,
+};
+
+/**  `plan:changed`, after every successful mutation. */
+export type PlanChanged = {
+	projectId: string,
+	revision: number,
+} & EventMeta;
+
+export type PlanDeferred = {
+	id: string,
+	label: string,
+	/**  A slice id. */
+	anchoredTo: string,
+};
+
+export type PlanRequirement = {
+	id: string,
+	text: string,
+	kind: RequirementKind,
+	sliceId: string | null,
+	sourceExcerpt: string,
+	verifiedBy: string,
+	state: RequirementState,
+	/**  The excerpt isn't in `docs/brain-dump.md` (whitespace-normalized), or is empty. */
+	unsourced: boolean,
+};
+
+export type PlanSlice = {
+	id: string,
+	name: string,
+	delivers: string[],
+	/**  Ids of slices this one depends on. */
+	dependsOn: string[],
+	status: SliceStatus,
+	decisions: string[],
+	openQuestions: OpenQuestion[],
+	/**  HEAD when the slice moved to `in_progress` (null outside a git repo or before then). */
+	startCommit: string | null,
+};
+
+export type PlanSummary = {
+	/**  Requirement ids with no slice. */
+	unassigned: string[],
+	/**  Requirement ids still `proposed`. */
+	unconfirmed: string[],
+	/**  Queued slice ids whose dependencies are all done. */
+	ready: string[],
+	/**  Queued slice ids waiting on a dependency. */
+	blocked: string[],
+	acyclic: boolean,
+	/**
+	 *  At least one slice, the graph is acyclic, and every requirement is assigned and
+	 *  confirmed.
+	 */
+	confirmed: boolean,
+};
+
 /**  A registered project, as the frontend sees it. */
 export type Project = {
 	id: string,
@@ -425,6 +571,17 @@ export type Requirement = {
 	/**  The excerpt isn't in the brain dump (whitespace-normalized): kept, but flagged. */
 	unsourced: boolean,
 };
+
+export type RequirementKind = "behavior" | "interaction" | "constraint";
+
+export type RequirementPatch = {
+	text: string | null,
+	kind: RequirementKind | null,
+	sourceExcerpt: string | null,
+	verifiedBy: string | null,
+};
+
+export type RequirementState = "proposed" | "confirmed";
 
 /**  What the model produced, after validation. */
 export type Roadmap = {
@@ -493,7 +650,30 @@ export type Slice = {
 	dependsOn: string[],
 };
 
+export type SlicePatch = {
+	name: string | null,
+	delivers: string[] | null,
+};
+
+export type SliceStatus = "queued" | "in_progress" | "done";
+
+/**  A slice plus what's derived from the graph. */
+export type SliceView = {
+	/**  Longest dependency path from a root (0 = no dependencies); same layer = parallel. */
+	layer: number,
+	/**  How many slices depend on this one. */
+	usedBy: number,
+	/**  Queued, and every dependency is done. */
+	ready: boolean,
+} & PlanSlice;
+
 export type Stage = "preflight" | "running" | "validating" | "retrying" | "done" | "failed";
+
+export type StatusOptions = {
+	/**  Start before the dependencies are done. Needs a `reason`, recorded as a decision. */
+	override: boolean,
+	reason: string | null,
+};
 
 export type TargetUser = {
 	name: string,

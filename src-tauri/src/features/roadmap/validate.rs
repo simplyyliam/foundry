@@ -319,7 +319,7 @@ fn find_cycle(slices: &[Slice], index: &HashMap<&str, usize>) -> Option<Vec<Stri
 
 /// Runs of whitespace (including newlines) become one space; trimmed.
 pub fn normalize(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
+    crate::core::text::normalize_ws(text)
 }
 
 /// The brain dump's paragraphs: blocks separated by blank lines. Headings (blocks made only

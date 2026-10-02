@@ -59,6 +59,16 @@ pub enum ErrorCode {
     /// `claude` resolves to a `.cmd`/`.bat` shim (npm's install), which agent sessions don't
     /// use: they need the native `claude.exe`.
     ClaudeNeedsNative,
+    /// `expectedRevision` doesn't match the plan's current revision: reload and retry.
+    StaleRevision,
+    /// The dependencies would form a cycle (the message names it).
+    DependencyCycle,
+    /// A slice can't start before its dependencies are done (unless overridden with a reason).
+    DependenciesNotDone,
+    /// A requirement can't be confirmed while it has no slice.
+    RequirementUnassigned,
+    /// A slice can't be removed while requirements, dependents or deferred items point at it.
+    SliceInUse,
 }
 
 impl ErrorCode {
@@ -90,6 +100,11 @@ impl ErrorCode {
             Self::GenerationRunning => "generation_running",
             Self::ProjectArchived => "project_archived",
             Self::ClaudeNeedsNative => "claude_needs_native",
+            Self::StaleRevision => "stale_revision",
+            Self::DependencyCycle => "dependency_cycle",
+            Self::DependenciesNotDone => "dependencies_not_done",
+            Self::RequirementUnassigned => "requirement_unassigned",
+            Self::SliceInUse => "slice_in_use",
         }
     }
 }
@@ -192,6 +207,11 @@ mod tests {
             ErrorCode::GenerationRunning,
             ErrorCode::ProjectArchived,
             ErrorCode::ClaudeNeedsNative,
+            ErrorCode::StaleRevision,
+            ErrorCode::DependencyCycle,
+            ErrorCode::DependenciesNotDone,
+            ErrorCode::RequirementUnassigned,
+            ErrorCode::SliceInUse,
         ] {
             assert_eq!(serde_json::to_value(code).unwrap(), json!(code.as_str()));
         }

@@ -19,7 +19,7 @@ use crate::core::sessions::SessionRegistry;
 use crate::core::AppError;
 #[cfg(test)]
 use crate::core::ErrorCode;
-use crate::features::{agent_sessions, app, bakery, folders, projects, roadmap};
+use crate::features::{agent_sessions, app, bakery, folders, plan, projects, roadmap};
 
 /// Where the generated TypeScript bindings live. Never hand-edit that file.
 pub const BINDINGS_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../src/lib/bindings.ts");
@@ -64,12 +64,32 @@ pub fn specta_builder<R: Runtime>() -> tauri_specta::Builder<R> {
             roadmap::commands::cancel_generation,
             roadmap::commands::get_roadmap,
             roadmap::commands::claude_status,
+            plan::commands::get_plan,
+            plan::commands::plan_summary,
+            plan::commands::add_slice,
+            plan::commands::update_slice,
+            plan::commands::remove_slice,
+            plan::commands::set_dependencies,
+            plan::commands::set_slice_status,
+            plan::commands::add_decision,
+            plan::commands::add_open_question,
+            plan::commands::resolve_open_question,
+            plan::commands::add_requirement,
+            plan::commands::update_requirement,
+            plan::commands::assign_requirement,
+            plan::commands::remove_requirement,
+            plan::commands::confirm_requirement,
+            plan::commands::confirm_all,
+            plan::commands::unconfirm_requirement,
+            plan::commands::add_deferred,
+            plan::commands::remove_deferred,
         ])
         .events(collect_events![
             app::AppReady,
             agent_sessions::AgentOutput,
             agent_sessions::AgentStatus,
-            roadmap::RoadmapProgress
+            roadmap::RoadmapProgress,
+            plan::PlanChanged
         ])
 }
 
@@ -160,6 +180,12 @@ pub fn session_manager<R: Runtime>(
     })
 }
 
+impl<R: Runtime> plan::PlanEvents for TauriSessionEvents<R> {
+    fn changed(&self, event: plan::PlanChanged) {
+        let _ = events::emit(&self.app, &event);
+    }
+}
+
 impl<R: Runtime> roadmap::ProgressSink for TauriSessionEvents<R> {
     fn progress(&self, event: roadmap::RoadmapProgress) {
         let _ = events::emit(&self.app, &event);
@@ -220,6 +246,13 @@ pub fn app_builder<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> 
                 Arc::clone(&projects),
             )));
             app.manage(projects);
+            app.manage(Arc::new(plan::PlanStore::new(
+                Arc::clone(&repos),
+                Git::system(),
+                Arc::new(TauriSessionEvents {
+                    app: app.handle().clone(),
+                }),
+            )));
             app.manage(Arc::new(bakery_store(app.handle(), repos)));
             app::init(app.handle())?;
             Ok(())
@@ -1008,6 +1041,13 @@ opus-test"
             "\"not_signed_in\"",
             "\"wrong_auth_mode\"",
             "\"claude_not_found\"",
+            "getPlan",
+            "planSummary",
+            "setSliceStatus",
+            "confirmAll",
+            "\"plan:changed\"",
+            "\"stale_revision\"",
+            "\"dependency_cycle\"",
         ] {
             assert!(ts.contains(name), "{name} missing from bindings");
         }

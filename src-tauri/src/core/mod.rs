@@ -13,6 +13,7 @@ pub mod repos;
 pub mod sessions;
 pub mod slug;
 pub mod subscription;
+pub mod text;
 pub mod trash;
 
 pub use error::{AppError, ErrorCode};
