@@ -33,7 +33,7 @@ src-tauri/src/
 3. **The Contract.** Tauri commands and events are the interface to the human's frontend. Every command and event is typed and appears in the generated bindings. Additive changes are fine. Changing or removing an existing command or event needs the human's approval. Log every contract change in `src-tauri/CONTRACT_CHANGELOG.md` (name, before → after, why).
 4. **Black-box tests.** Test each feature through its public api or its commands, against real temp directories and real child processes. Do not mock the filesystem. Use the fake agent binary for process tests.
 5. **Traceable requirements.** Each prompt lists numbered requirements (R-…). Your final report has one line per requirement: met / partly / not met, and the name of the test that proves it. A requirement with no test is "not met".
-6. **Horizon Shield.** Do not block the deferred list: API-key auth mode, tickets, cloud sync, roles beyond the four agents, multiple linked repos.
+6. **Horizon Shield.** Do not block the deferred list: API-key auth mode, tickets, cloud sync, multiple linked repos, recomposing an already-confirmed team's roles after the fact (adding one more agent later is in scope — see `add_agent_manually` in P4; wholesale re-proposing an existing team is not).
 7. **Fail fast.** On a missing type, an unclear requirement or a contract conflict, stop and ask. No placeholder workarounds. After 2 failed attempts to fix a test, stop and report the error.
 
 ## 5. Conventions
