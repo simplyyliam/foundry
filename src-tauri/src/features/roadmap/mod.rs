@@ -423,7 +423,10 @@ impl RoadmapStore {
                 "the brain dump is empty: write it before generating a roadmap",
             ));
         }
-        let prompt = PROMPT.replacen("{{BRAIN_DUMP}}", brain_dump.trim(), 1);
+        // The template's line endings depend on the checkout (git autocrlf): send LF always.
+        let prompt = PROMPT
+            .replace("\r\n", "\n")
+            .replacen("{{BRAIN_DUMP}}", brain_dump.trim(), 1);
 
         control.check()?;
         emit(Stage::Running);

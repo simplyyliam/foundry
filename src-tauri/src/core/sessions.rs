@@ -68,7 +68,21 @@ impl SessionRegistry {
     /// `session_running` if that agent already has a session, `too_many_sessions` if `max`
     /// sessions are live.
     pub fn reserve(&self, agent_id: &str, project_id: &str, max: u32) -> Result<(), AppError> {
+        self.reserve_if(agent_id, project_id, max, || Ok(()))
+    }
+
+    /// Like [`reserve`](Self::reserve), with `allowed` checked under the same lock first. Pair
+    /// it with [`unless_project_active`](Self::unless_project_active) to make "may this
+    /// project start a session?" and "may it be archived?" exclusive.
+    pub fn reserve_if(
+        &self,
+        agent_id: &str,
+        project_id: &str,
+        max: u32,
+        allowed: impl FnOnce() -> Result<(), AppError>,
+    ) -> Result<(), AppError> {
         let mut live = self.write();
+        allowed()?;
         if live.contains_key(agent_id) {
             return Err(AppError::new(
                 ErrorCode::SessionRunning,
@@ -111,6 +125,24 @@ impl SessionRegistry {
     /// Drops the session (its process exited, or spawning failed).
     pub fn release(&self, agent_id: &str) -> Option<SessionInfo> {
         self.write().remove(agent_id)
+    }
+
+    /// Runs `f` only if the project has no live session (`session_running`, with
+    /// `busy_message`, otherwise), holding the lock throughout, so no session can be reserved
+    /// for the project while `f` runs.
+    pub fn unless_project_active<T>(
+        &self,
+        project_id: &str,
+        busy_message: &str,
+        f: impl FnOnce() -> Result<T, AppError>,
+    ) -> Result<T, AppError> {
+        let live = self.write();
+        if live.values().any(|info| info.project_id == project_id) {
+            return Err(AppError::new(ErrorCode::SessionRunning, busy_message));
+        }
+        let result = f();
+        drop(live);
+        result
     }
 
     /// Whether any agent has a starting or running session for this project.
@@ -191,6 +223,39 @@ mod tests {
         sessions.reserve("c", "p1", 2).unwrap();
         let ids: Vec<String> = sessions.list().into_iter().map(|s| s.agent_id).collect();
         assert_eq!(ids, ["b", "c"]);
+    }
+
+    #[test]
+    fn reserve_if_and_unless_project_active_are_checked_under_one_lock() {
+        let sessions = SessionRegistry::default();
+        let refused = sessions
+            .reserve_if("a", "p1", 3, || Err(AppError::invalid_input("no")))
+            .unwrap_err();
+        assert_eq!(refused.code, ErrorCode::InvalidInput);
+        assert!(
+            sessions.get("a").is_none(),
+            "a refused check reserves nothing"
+        );
+
+        assert_eq!(
+            sessions
+                .unless_project_active("p1", "busy", || Ok(7))
+                .unwrap(),
+            7
+        );
+        sessions.reserve_if("a", "p1", 3, || Ok(())).unwrap();
+        let busy = sessions
+            .unless_project_active("p1", "busy", || -> Result<(), AppError> {
+                panic!("must not run while p1 is active")
+            })
+            .unwrap_err();
+        assert_eq!(
+            (busy.code, busy.message.as_str()),
+            (ErrorCode::SessionRunning, "busy")
+        );
+        sessions
+            .unless_project_active("p2", "busy", || Ok(()))
+            .unwrap();
     }
 
     #[test]

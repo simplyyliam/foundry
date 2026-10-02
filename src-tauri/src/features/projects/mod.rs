@@ -56,6 +56,16 @@ pub struct Settings {
     pub generation_timeout_ms: u32,
 }
 
+/// A model alias or full name (`sonnet`, `claude-opus-4-1`, `opus[1m]`): ASCII letters,
+/// digits and `. - _ : / @ [ ]`. Nothing a shell or cmd.exe would interpret.
+pub fn is_model_name(model: &str) -> bool {
+    !model.is_empty()
+        && model.len() <= 100
+        && model
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || ".-_:/@[]".contains(c))
+}
+
 /// Default for `generationTimeoutMs`: 5 minutes.
 pub const DEFAULT_GENERATION_TIMEOUT_MS: u32 = 300_000;
 
@@ -194,6 +204,12 @@ fn publish(repos: &RepoIndex, registry: &[RegistryEntry]) {
         registry
             .iter()
             .map(|entry| (entry.id.as_str(), Path::new(&entry.repo_path))),
+    );
+    repos.set_archived(
+        registry
+            .iter()
+            .filter(|entry| entry.archived)
+            .map(|entry| entry.id.as_str()),
     );
 }
 
@@ -579,13 +595,13 @@ impl ProjectsStore {
     pub fn archive_project(&self, id: &str) -> Result<Project, AppError> {
         let mut state = self.lock()?;
         Self::find(&state, id)?;
-        if self.sessions.is_project_active(id) {
-            return Err(AppError::new(
-                ErrorCode::SessionRunning,
-                "stop this project's agent session before archiving it",
-            ));
-        }
-        let project = self.set_archived(&mut state, id, true)?;
+        // Checked and saved (which publishes the archived flag) under the session registry's
+        // lock, so a session can't be reserved for this project in between.
+        let project = self.sessions.unless_project_active(
+            id,
+            "stop this project's agent session before archiving it",
+            || self.set_archived(&mut state, id, true),
+        )?;
         if state.active.as_deref() == Some(id) {
             state.active = None;
             tracing::info!(id, "archived project closed");
@@ -709,6 +725,13 @@ impl ProjectsStore {
             return Err(AppError::invalid_input(
                 "maxConcurrentAgents must be at least 1",
             ));
+        }
+        if let Some(model) = settings.default_model.as_deref().map(str::trim) {
+            if !model.is_empty() && !is_model_name(model) {
+                return Err(AppError::invalid_input(
+                    "defaultModel may only contain letters, digits and . - _ : / @ [ ]",
+                ));
+            }
         }
         if settings.generation_timeout_ms == 0 {
             return Err(AppError::invalid_input(

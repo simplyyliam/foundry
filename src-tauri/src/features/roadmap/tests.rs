@@ -552,8 +552,38 @@ fn claude_runs_in_a_scratch_folder_that_is_removed_afterwards() {
     assert!(!cwd.exists(), "scratch folder removed after the run");
 }
 
+/// P3 runs `claude -p` through std's `Command`, which escapes arguments for `.cmd` files
+/// (or refuses ones it can't). A `--model` value with a cmd.exe special character must reach
+/// claude exactly as given, or not start at all: never be reinterpreted on the way.
+#[cfg(windows)]
+#[test]
+fn model_through_a_cmd_shim_arrives_verbatim() {
+    let dir = TestRepo::new();
+    let exe = install_fake_claude(dir.path());
+    let shim = dir.path().join("claude.cmd");
+    fs::write(&shim, format!("@\"{}\" %*\r\n", exe.display())).unwrap();
+
+    for model in ["opus[1m]", "a&b"] {
+        let runner = ClaudeRunner::new(shim.clone()).with_model(Some(model.into()));
+        match runner.run("FAKE:ARGS", &RunControl::new(Duration::from_secs(30))) {
+            Ok(args) => {
+                eprintln!("{model}: passed verbatim");
+                let mut expected: Vec<&str> = ClaudeRunner::ARGS.to_vec();
+                expected.extend(["--model", model]);
+                assert_eq!(args.lines().collect::<Vec<_>>(), expected, "{model}");
+            }
+            // Refusing to start is also safe.
+            Err(err) => {
+                eprintln!("{model}: refused ({err})");
+                assert_eq!(err.code, ErrorCode::Io, "{model}: {err}");
+            }
+        }
+    }
+}
+
 fn wait_for_pids(dir: &TestRepo) -> Vec<u32> {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    // Generous: each test runs a freshly copied exe, which Windows Defender scans on first run.
+    let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         if let Ok(text) = fs::read_to_string(dir.path().join("pids.txt")) {
             let pids: Vec<u32> = text.split(',').filter_map(|p| p.parse().ok()).collect();
@@ -592,7 +622,7 @@ fn timeout_kills_the_claude_process_tree() {
     let dir = TestRepo::new();
     let runner = Arc::new(claude_runner(&dir));
     // Long enough for fake-claude to start under a loaded test run; checked before it ends.
-    let control = Arc::new(RunControl::new(Duration::from_secs(4)));
+    let control = Arc::new(RunControl::new(Duration::from_secs(8)));
     let (r, c) = (Arc::clone(&runner), Arc::clone(&control));
     let run = thread::spawn(move || r.run("FAKE:SLEEP", &c));
     let pids = wait_for_pids(&dir);

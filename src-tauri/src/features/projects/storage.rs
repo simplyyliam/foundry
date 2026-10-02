@@ -69,7 +69,11 @@ impl From<SettingsFile> for Settings {
             max_concurrent_agents: file.max_concurrent_agents,
             default_projects_dir: file.default_projects_dir,
             claude_path: file.claude_path,
-            default_model: file.default_model,
+            // A hand-edited model name outside the allowed characters is ignored.
+            default_model: file
+                .default_model
+                .map(|model| model.trim().to_string())
+                .filter(|model| super::is_model_name(model)),
             // An unusable 0 in the file falls back to the default.
             generation_timeout_ms: match file.generation_timeout_ms {
                 0 => super::DEFAULT_GENERATION_TIMEOUT_MS,

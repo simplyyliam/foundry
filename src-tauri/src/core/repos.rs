@@ -1,7 +1,7 @@
 //! Which folder each registered project lives in. The projects feature keeps it current;
 //! other features look project ids up here instead of reaching into projects.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 
@@ -11,6 +11,8 @@ use super::{AppError, ErrorCode};
 #[derive(Debug, Default)]
 pub struct RepoIndex {
     repos: RwLock<HashMap<String, PathBuf>>,
+    /// Ids of archived projects (agents can't start in them).
+    archived: RwLock<HashSet<String>>,
 }
 
 impl RepoIndex {
@@ -23,6 +25,22 @@ impl RepoIndex {
         match self.repos.write() {
             Ok(mut repos) => *repos = next,
             Err(poisoned) => *poisoned.into_inner() = next,
+        }
+    }
+
+    /// Replaces the set of archived project ids.
+    pub fn set_archived<'a>(&self, ids: impl IntoIterator<Item = &'a str>) {
+        let next: HashSet<String> = ids.into_iter().map(str::to_string).collect();
+        match self.archived.write() {
+            Ok(mut archived) => *archived = next,
+            Err(poisoned) => *poisoned.into_inner() = next,
+        }
+    }
+
+    pub fn is_archived(&self, id: &str) -> bool {
+        match self.archived.read() {
+            Ok(archived) => archived.contains(id),
+            Err(poisoned) => poisoned.into_inner().contains(id),
         }
     }
 
@@ -65,5 +83,15 @@ mod tests {
 
         index.replace_all([]);
         assert_eq!(index.repo("a").unwrap_err().code, ErrorCode::NotFound);
+    }
+
+    #[test]
+    fn tracks_archived_ids() {
+        let index = RepoIndex::default();
+        assert!(!index.is_archived("a"));
+        index.set_archived(["a", "b"]);
+        assert!(index.is_archived("a") && index.is_archived("b"));
+        index.set_archived(["b"]);
+        assert!(!index.is_archived("a"));
     }
 }

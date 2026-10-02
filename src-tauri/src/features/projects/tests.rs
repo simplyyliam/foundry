@@ -717,6 +717,29 @@ fn settings_default_and_validate() {
         })
         .unwrap();
     assert_eq!(blank_model.default_model, None);
+    for ok in [
+        "sonnet",
+        "claude-opus-4-1",
+        "opus[1m]",
+        "us.anthropic.model-v1:0",
+    ] {
+        let saved = store
+            .update_settings(Settings {
+                default_model: Some(ok.into()),
+                ..Settings::default()
+            })
+            .unwrap();
+        assert_eq!(saved.default_model.as_deref(), Some(ok));
+    }
+    for bad in ["a&b", "x y", "50%", "a|b", "\"q\"", "m\nn", "émoji"] {
+        let err = store
+            .update_settings(Settings {
+                default_model: Some(bad.into()),
+                ..Settings::default()
+            })
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::InvalidInput, "{bad:?}");
+    }
 }
 
 #[test]
@@ -742,6 +765,14 @@ fn settings_files_missing_fields_take_defaults() {
     let settings = env.store().get_settings().unwrap();
     assert_eq!(settings.generation_timeout_ms, 300_000, "0 → 5 minutes");
     assert_eq!(settings.default_model.as_deref(), Some("haiku"));
+
+    // A hand-edited model outside the allowed characters is ignored on load.
+    fs::write(
+        env.data.path().join("settings.json"),
+        r#"{ "defaultModel": "x&y" }"#,
+    )
+    .unwrap();
+    assert_eq!(env.store().get_settings().unwrap().default_model, None);
 }
 
 #[test]

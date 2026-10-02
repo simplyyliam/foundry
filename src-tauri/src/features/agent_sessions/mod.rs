@@ -14,7 +14,7 @@ mod ring;
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread;
@@ -28,7 +28,9 @@ use tauri_specta::Event;
 
 use crate::core::events::EventMeta;
 use crate::core::process_tree::ProcessTree;
+use crate::core::repos::RepoIndex;
 use crate::core::sessions::{now_ms, SessionInfo, SessionRegistry, SessionStatus};
+use crate::core::subscription::subscription_env;
 use crate::core::{AppError, ErrorCode};
 use ring::Ring;
 
@@ -70,6 +72,33 @@ pub struct LaunchSpec {
     pub hook: HookEnv,
     pub cols: u16,
     pub rows: u16,
+}
+
+/// The `claude` to launch, from the preflight: the executable and the `defaultModel`.
+#[derive(Debug, Clone)]
+pub struct ClaudeLaunch {
+    pub program: PathBuf,
+    pub model: Option<String>,
+}
+
+/// One agent's interactive Claude Code session: `claude [--model <m>] "<launch message>"`
+/// in the project's repo.
+#[derive(Debug, Clone)]
+pub struct LaunchRequest {
+    pub project_id: String,
+    pub agent_id: String,
+    /// The initial prompt (P6's `launch_message`).
+    pub launch_message: String,
+    pub hook: HookEnv,
+    pub cols: u16,
+    pub rows: u16,
+}
+
+/// What `launch` needs beyond the engine: where repos are (and which are archived), and the
+/// preflight that finds `claude` and checks the subscription login.
+struct Launcher {
+    repos: Arc<RepoIndex>,
+    preflight: Box<dyn Fn() -> Result<ClaudeLaunch, AppError> + Send + Sync>,
 }
 
 /// `agent:output`: a coalesced batch of raw terminal output.
@@ -136,33 +165,55 @@ pub trait SessionEvents: Send + Sync + 'static {
     fn status(&self, event: AgentStatus);
 }
 
-/// Variables that would move Claude Code off the user's subscription (API keys, Bedrock,
-/// Vertex…). Matched case-insensitively, as Windows treats variable names.
-fn is_scrubbed(key: &str) -> bool {
-    let key = key.to_ascii_uppercase();
-    key.starts_with("ANTHROPIC_")
-        || key.starts_with("CLAUDE_CODE_USE_")
-        || key.starts_with("FOUNDRY_")
-}
-
-/// Foundry's own environment minus the scrubbed variables, plus the session's.
-// TODO(P3): start from core::subscription_env() once it exists.
-fn child_env(spec: &LaunchSpec) -> Vec<(OsString, OsString)> {
-    let mut env: Vec<(OsString, OsString)> = std::env::vars_os()
-        .filter(|(key, _)| {
-            !key.to_str().is_some_and(is_scrubbed) && !key.eq_ignore_ascii_case("TERM")
-        })
-        .collect();
-    for (key, value) in [
+/// What every session adds on top of [`subscription_env`]: the four `FOUNDRY_*` variables
+/// and `TERM`.
+fn session_vars(spec: &LaunchSpec) -> [(&'static str, String); 5] {
+    [
         ("FOUNDRY_AGENT_ID", spec.agent_id.clone()),
         ("FOUNDRY_PROJECT_ID", spec.project_id.clone()),
         ("FOUNDRY_HOOK_PORT", spec.hook.port.to_string()),
         ("FOUNDRY_HOOK_TOKEN", spec.hook.token.clone()),
         ("TERM", "xterm-256color".to_string()),
-    ] {
-        env.push((key.into(), value.into()));
-    }
+    ]
+}
+
+/// `subscription_env()` plus the session's variables. An inherited variable of the same name
+/// (say, a `FOUNDRY_HOOK_TOKEN` from a parent Foundry) is replaced, not duplicated.
+fn child_env(spec: &LaunchSpec) -> Vec<(OsString, OsString)> {
+    let ours = session_vars(spec);
+    let mut env: Vec<(OsString, OsString)> = subscription_env()
+        .into_iter()
+        .filter(|(key, _)| !ours.iter().any(|(name, _)| key.eq_ignore_ascii_case(name)))
+        .collect();
+    env.extend(
+        ours.into_iter()
+            .map(|(key, value)| (key.into(), value.into())),
+    );
     env
+}
+
+/// Agent sessions run `claude` only as a real executable, never through a `.cmd`/`.bat` shim
+/// (npm's `claude.cmd`). Windows starts a shim via `cmd.exe`, which re-parses the command
+/// line, and the launch message is on that line; no character filter can be shown to be
+/// complete for cmd.exe's parsing, so shims aren't used at all.
+fn require_native(program: &Path) -> Result<(), AppError> {
+    let is_shim = program
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("cmd") || ext.eq_ignore_ascii_case("bat"));
+    if is_shim {
+        return Err(AppError::new(
+            ErrorCode::ClaudeNeedsNative,
+            format!(
+                "Agent sessions need the native Claude Code (claude.exe), but Foundry found the \
+                 npm shim at {}. To fix it, run `claude install` in a terminal to install the \
+                 native build, then set Claude path in Foundry's settings to the claude.exe it \
+                 installs (by default %USERPROFILE%\\.local\\bin\\claude.exe).",
+                program.display()
+            ),
+        ));
+    }
+    Ok(())
 }
 
 fn pty_error(what: &str, err: impl std::fmt::Display) -> AppError {
@@ -225,6 +276,7 @@ pub struct SessionManager {
     events: Arc<dyn SessionEvents>,
     /// Running sessions, and exited ones until the agent starts again (for snapshots).
     live: Mutex<HashMap<String, Arc<Live>>>,
+    launcher: Option<Launcher>,
     /// Tests only: hold the exit thread just after it marks the exit, widening the window
     /// in which a closed writer matters.
     #[cfg(test)]
@@ -243,9 +295,69 @@ impl SessionManager {
             max_sessions: Box::new(max_sessions),
             events,
             live: Mutex::new(HashMap::new()),
+            launcher: None,
             #[cfg(test)]
             exit_pause: Duration::ZERO,
         }
+    }
+
+    /// Enables [`launch`](Self::launch): `repos` resolves projects (and which are archived),
+    /// `preflight` finds `claude` and checks the login (`core::claude::preflight`).
+    pub fn with_launcher(
+        mut self,
+        repos: Arc<RepoIndex>,
+        preflight: impl Fn() -> Result<ClaudeLaunch, AppError> + Send + Sync + 'static,
+    ) -> Self {
+        self.launcher = Some(Launcher {
+            repos,
+            preflight: Box::new(preflight),
+        });
+        self
+    }
+
+    /// Launches an agent's interactive Claude Code session in the project's repo.
+    ///
+    /// In order: the preflight (`claude_not_found`, `not_signed_in`, `wrong_auth_mode`), a
+    /// native executable rather than a `.cmd`/`.bat` shim (`claude_needs_native`), the repo
+    /// (`not_found`, `folder_missing`), then the session slot, reserved only if the
+    /// project isn't archived (`project_archived`). That last check and the reservation are
+    /// one step under the session registry's lock, which `archive_project` also holds, so a
+    /// project can never be archived and get a new session at once. Nothing is spawned
+    /// unless every check passes.
+    pub fn launch(&self, request: LaunchRequest) -> Result<SessionInfo, AppError> {
+        let launcher = self
+            .launcher
+            .as_ref()
+            .ok_or_else(|| AppError::internal("agent launching isn't configured"))?;
+        let claude = (launcher.preflight)()?;
+        let cwd = launcher.repos.repo(&request.project_id)?;
+        require_native(&claude.program)?;
+        let mut args = Vec::new();
+        if let Some(model) = claude.model.filter(|m| !m.trim().is_empty()) {
+            args.extend(["--model".to_string(), model]);
+        }
+        args.push(request.launch_message);
+        let spec = LaunchSpec {
+            agent_id: request.agent_id,
+            project_id: request.project_id.clone(),
+            program: claude.program,
+            args,
+            cwd,
+            hook: request.hook,
+            cols: request.cols,
+            rows: request.rows,
+        };
+        let repos = Arc::clone(&launcher.repos);
+        self.start_checked(spec, move || {
+            if repos.is_archived(&request.project_id) {
+                Err(AppError::new(
+                    ErrorCode::ProjectArchived,
+                    "unarchive this project before starting an agent in it",
+                ))
+            } else {
+                Ok(())
+            }
+        })
     }
 
     #[cfg(test)]
@@ -267,6 +379,15 @@ impl SessionManager {
     /// past the cap. Returns once the process is running; `core::sessions` shows the project
     /// as active from the moment the slot is reserved.
     pub fn start(&self, spec: LaunchSpec) -> Result<SessionInfo, AppError> {
+        self.start_checked(spec, || Ok(()))
+    }
+
+    /// [`start`](Self::start), with `allowed` checked atomically with the slot reservation.
+    fn start_checked(
+        &self,
+        spec: LaunchSpec,
+        allowed: impl FnOnce() -> Result<(), AppError>,
+    ) -> Result<SessionInfo, AppError> {
         if spec.agent_id.trim().is_empty() || spec.project_id.trim().is_empty() {
             return Err(AppError::invalid_input(
                 "agent and project ids can't be empty",
@@ -283,8 +404,12 @@ impl SessionManager {
                 format!("project folder is missing: {}", spec.cwd.display()),
             ));
         }
-        self.registry
-            .reserve(&spec.agent_id, &spec.project_id, (self.max_sessions)())?;
+        self.registry.reserve_if(
+            &spec.agent_id,
+            &spec.project_id,
+            (self.max_sessions)(),
+            allowed,
+        )?;
         self.events.status(AgentStatus::new(
             &spec.agent_id,
             SessionStatus::Starting,

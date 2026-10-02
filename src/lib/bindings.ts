@@ -339,7 +339,14 @@ export type ErrorCode =
 /**  Claude Code's output failed validation, even after a retry. */
 "generation_failed" | 
 /**  A generation is already running for this project. */
-"generation_running";
+"generation_running" | 
+/**  The project is archived: unarchive it first (e.g. to start an agent in it). */
+"project_archived" | 
+/**
+ *  `claude` resolves to a `.cmd`/`.bat` shim (npm's install), which agent sessions don't
+ *  use: they need the native `claude.exe`.
+ */
+"claude_needs_native";
 
 /**  Identity and timestamp shared by every event. Flatten it into the payload struct. */
 export type EventMeta = {

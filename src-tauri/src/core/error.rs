@@ -54,6 +54,11 @@ pub enum ErrorCode {
     GenerationFailed,
     /// A generation is already running for this project.
     GenerationRunning,
+    /// The project is archived: unarchive it first (e.g. to start an agent in it).
+    ProjectArchived,
+    /// `claude` resolves to a `.cmd`/`.bat` shim (npm's install), which agent sessions don't
+    /// use: they need the native `claude.exe`.
+    ClaudeNeedsNative,
 }
 
 impl ErrorCode {
@@ -83,6 +88,8 @@ impl ErrorCode {
             Self::TimedOut => "timed_out",
             Self::GenerationFailed => "generation_failed",
             Self::GenerationRunning => "generation_running",
+            Self::ProjectArchived => "project_archived",
+            Self::ClaudeNeedsNative => "claude_needs_native",
         }
     }
 }
@@ -183,6 +190,8 @@ mod tests {
             ErrorCode::TimedOut,
             ErrorCode::GenerationFailed,
             ErrorCode::GenerationRunning,
+            ErrorCode::ProjectArchived,
+            ErrorCode::ClaudeNeedsNative,
         ] {
             assert_eq!(serde_json::to_value(code).unwrap(), json!(code.as_str()));
         }

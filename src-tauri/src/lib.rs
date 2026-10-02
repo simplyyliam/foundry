@@ -133,13 +133,15 @@ impl<R: Runtime> agent_sessions::SessionEvents for TauriSessionEvents<R> {
     }
 }
 
-/// The session manager, emitting to the webview, with the cap read from the
-/// `maxConcurrentAgents` setting on every start.
+/// The session manager, emitting to the webview. Read from settings on every launch: the
+/// cap (`maxConcurrentAgents`), and for the preflight `claudePath` and `defaultModel`.
 pub fn session_manager<R: Runtime>(
     app: &tauri::AppHandle<R>,
     sessions: Arc<SessionRegistry>,
+    repos: Arc<RepoIndex>,
     projects: Arc<projects::ProjectsStore>,
 ) -> agent_sessions::SessionManager {
+    let for_launch = Arc::clone(&projects);
     agent_sessions::SessionManager::new(
         sessions,
         move || {
@@ -149,6 +151,13 @@ pub fn session_manager<R: Runtime>(
         },
         Arc::new(TauriSessionEvents { app: app.clone() }),
     )
+    .with_launcher(repos, move || {
+        let settings = for_launch.get_settings().unwrap_or_default();
+        Ok(agent_sessions::ClaudeLaunch {
+            program: core::claude::preflight(settings.claude_path.as_deref())?,
+            model: settings.default_model,
+        })
+    })
 }
 
 impl<R: Runtime> roadmap::ProgressSink for TauriSessionEvents<R> {
@@ -202,6 +211,7 @@ pub fn app_builder<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> 
             app.manage(Arc::new(session_manager(
                 app.handle(),
                 sessions,
+                Arc::clone(&repos),
                 Arc::clone(&projects),
             )));
             app.manage(Arc::new(roadmap_store(
@@ -382,17 +392,18 @@ mod tests {
         specta_builder::<tauri::test::MockRuntime>().mount_events(&app);
         let (data, repo) = (TestRepo::new(), TestRepo::new());
         let sessions = Arc::new(SessionRegistry::default());
+        let repos = Arc::new(RepoIndex::default());
         let projects = Arc::new(
             projects_store(
                 app.handle(),
                 data.path().into(),
                 Git::system(),
-                Default::default(),
+                Arc::clone(&repos),
                 Arc::clone(&sessions),
             )
             .unwrap(),
         );
-        let manager = session_manager(app.handle(), sessions, Arc::clone(&projects));
+        let manager = session_manager(app.handle(), sessions, repos, Arc::clone(&projects));
         let id = projects
             .link_repository(LinkRepositoryInput {
                 folder: repo.path().to_string_lossy().into_owned(),
@@ -520,7 +531,9 @@ mod tests {
             g.roadmap.generate(&g.id).unwrap_err().code,
             ErrorCode::TimedOut
         );
-        assert!(started.elapsed() < Duration::from_millis(1500));
+        // Well under the 5-minute default. (The clock also covers the preflight, a separate
+        // `claude auth status` process, so no tighter bound holds on a loaded machine.)
+        assert!(started.elapsed() < Duration::from_secs(15));
     }
 
     /// `defaultModel` reaches `claude -p` as `--model <name>`; unset, no `--model` is passed.
@@ -550,6 +563,394 @@ opus-test"
             std::fs::read_to_string(unset.repo.path().join(".foundry/last-generation-error.txt"))
                 .unwrap();
         assert!(!args.contains("--model"), "{args}");
+    }
+
+    // ---------- P7 follow-up: SessionManager::launch ----------
+
+    /// A linked project, `claudePath` pointing at fake-claude, and the manager wired like the
+    /// real app (real `core::claude::preflight`).
+    struct Launch {
+        manager: Arc<agent_sessions::SessionManager>,
+        projects: Arc<projects::ProjectsStore>,
+        sessions: Arc<SessionRegistry>,
+        repos: Arc<RepoIndex>,
+        id: String,
+        bin: crate::testing::TestRepo,
+        claude: std::path::PathBuf,
+        _dirs: (crate::testing::TestRepo, crate::testing::TestRepo),
+        _app: tauri::App<tauri::test::MockRuntime>,
+    }
+
+    impl Drop for Launch {
+        fn drop(&mut self) {
+            self.manager.shutdown();
+        }
+    }
+
+    fn launch_env(tweak: impl FnOnce(&mut projects::Settings)) -> Launch {
+        use crate::features::projects::LinkRepositoryInput;
+        use crate::testing::{install_fake_claude, TestRepo};
+        use tauri::test::{mock_builder, mock_context, noop_assets};
+
+        let app = app_builder(mock_builder())
+            .build(mock_context(noop_assets()))
+            .unwrap();
+        specta_builder::<tauri::test::MockRuntime>().mount_events(&app);
+        let (data, bin, repo) = (TestRepo::new(), TestRepo::new(), TestRepo::new());
+        let claude = install_fake_claude(bin.path());
+        let (repos, sessions) = (
+            Arc::new(RepoIndex::default()),
+            Arc::new(SessionRegistry::default()),
+        );
+        let projects = Arc::new(
+            projects_store(
+                app.handle(),
+                data.path().into(),
+                Git::system(),
+                Arc::clone(&repos),
+                Arc::clone(&sessions),
+            )
+            .unwrap(),
+        );
+        let mut settings = projects::Settings {
+            claude_path: Some(claude.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+        tweak(&mut settings);
+        projects.update_settings(settings).unwrap();
+        let id = projects
+            .link_repository(LinkRepositoryInput {
+                folder: repo.path().to_string_lossy().into_owned(),
+            })
+            .unwrap()
+            .project
+            .id;
+        let manager = Arc::new(session_manager(
+            app.handle(),
+            Arc::clone(&sessions),
+            Arc::clone(&repos),
+            Arc::clone(&projects),
+        ));
+        Launch {
+            manager,
+            projects,
+            sessions,
+            repos,
+            id,
+            bin,
+            claude,
+            _dirs: (data, repo),
+            _app: app,
+        }
+    }
+
+    fn request(project_id: &str, agent_id: &str, message: &str) -> agent_sessions::LaunchRequest {
+        agent_sessions::LaunchRequest {
+            project_id: project_id.into(),
+            agent_id: agent_id.into(),
+            launch_message: message.into(),
+            hook: agent_sessions::HookEnv {
+                port: 4567,
+                token: "tok-launch".into(),
+            },
+            cols: 120,
+            rows: 30,
+        }
+    }
+
+    /// Waits for fake-claude to write `name` next to itself, and parses it.
+    fn written(l: &Launch, name: &str) -> serde_json::Value {
+        let path = l.bin.path().join(name);
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            if let Ok(text) = std::fs::read_to_string(&path) {
+                if let Ok(value) = serde_json::from_str(&text) {
+                    return value;
+                }
+            }
+            assert!(std::time::Instant::now() < deadline, "{name} never written");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn nothing_started(l: &Launch) {
+        assert!(l.manager.list().is_empty(), "a session was started");
+        assert!(!l.sessions.is_project_active(&l.id));
+        assert!(l.manager.snapshot("builder").is_empty(), "nothing ever ran");
+    }
+
+    /// R-7-9: each preflight failure is refused with its own code before anything spawns.
+    #[test]
+    fn launch_refuses_cleanly_when_the_preflight_fails() {
+        for (auth, code) in [
+            (
+                r#"{"loggedIn":false,"authMethod":"none"}"#,
+                ErrorCode::NotSignedIn,
+            ),
+            (
+                r#"{"loggedIn":true,"authMethod":"console","apiProvider":"firstParty"}"#,
+                ErrorCode::WrongAuthMode,
+            ),
+            (
+                r#"{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"vertex"}"#,
+                ErrorCode::WrongAuthMode,
+            ),
+        ] {
+            let l = launch_env(|_| {});
+            std::fs::write(l.bin.path().join("auth.json"), auth).unwrap();
+            let err = l
+                .manager
+                .launch(request(&l.id, "builder", "hello"))
+                .unwrap_err();
+            assert_eq!(err.code, code, "{auth}");
+            nothing_started(&l);
+        }
+
+        let missing = launch_env(|s| s.claude_path = Some(r"C:\nowhere\claude.exe".into()));
+        let err = missing
+            .manager
+            .launch(request(&missing.id, "builder", "hello"))
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::ClaudeNotFound);
+        nothing_started(&missing);
+    }
+
+    #[test]
+    fn launch_refuses_an_archived_project_and_starts_nothing() {
+        let l = launch_env(|_| {});
+        l.projects.archive_project(&l.id).unwrap();
+
+        let err = l
+            .manager
+            .launch(request(&l.id, "builder", "hello"))
+            .unwrap_err();
+
+        assert_eq!(err.code, ErrorCode::ProjectArchived);
+        assert_eq!(
+            err.message,
+            "unarchive this project before starting an agent in it"
+        );
+        nothing_started(&l);
+
+        l.projects.unarchive_project(&l.id).unwrap();
+        let info = l
+            .manager
+            .launch(request(&l.id, "builder", "hello"))
+            .unwrap();
+        assert_eq!(info.project_id, l.id);
+        assert!(l.sessions.is_project_active(&l.id));
+        l.manager.stop("builder", true).unwrap();
+    }
+
+    /// The environment is exactly `subscription_env()` plus Foundry's five variables.
+    #[test]
+    fn the_launched_environment_is_subscription_env_plus_the_foundry_variables() {
+        std::env::set_var("ANTHROPIC_API_KEY", "sk-should-not-leak");
+        std::env::set_var("CLAUDE_CODE_USE_BEDROCK", "1");
+        std::env::set_var("FOUNDRY_HOOK_TOKEN", "stale-parent-token");
+        let l = launch_env(|_| {});
+        let expected_base = |env: Vec<(std::ffi::OsString, std::ffi::OsString)>| {
+            env.into_iter()
+                .map(|(k, v)| {
+                    (
+                        k.to_string_lossy().into_owned(),
+                        v.to_string_lossy().into_owned(),
+                    )
+                })
+                .filter(|(k, _)| {
+                    ![
+                        "FOUNDRY_AGENT_ID",
+                        "FOUNDRY_PROJECT_ID",
+                        "FOUNDRY_HOOK_PORT",
+                        "FOUNDRY_HOOK_TOKEN",
+                        "TERM",
+                    ]
+                    .iter()
+                    .any(|ours| k.eq_ignore_ascii_case(ours))
+                })
+                .collect::<std::collections::BTreeMap<String, String>>()
+        };
+        let before = expected_base(core::subscription::subscription_env());
+
+        l.manager
+            .launch(request(&l.id, "builder", "FAKE:ENV"))
+            .unwrap();
+        let env: std::collections::BTreeMap<String, String> =
+            serde_json::from_value(written(&l, "env.json")).unwrap();
+
+        let ours: Vec<(&str, String)> = vec![
+            ("FOUNDRY_AGENT_ID", "builder".into()),
+            ("FOUNDRY_PROJECT_ID", l.id.clone()),
+            ("FOUNDRY_HOOK_PORT", "4567".into()),
+            ("FOUNDRY_HOOK_TOKEN", "tok-launch".into()),
+            ("TERM", "xterm-256color".into()),
+        ];
+        for (key, value) in &ours {
+            assert_eq!(env.get(*key), Some(value), "{key}");
+        }
+        let rest: std::collections::BTreeMap<String, String> = env
+            .into_iter()
+            .filter(|(k, _)| !ours.iter().any(|(o, _)| k.eq_ignore_ascii_case(o)))
+            .collect();
+        // Another test may add a variable to this process meanwhile: accept either snapshot.
+        let after = expected_base(core::subscription::subscription_env());
+        assert!(
+            rest == before || rest == after,
+            "extra: {:?}\nmissing: {:?}",
+            rest.keys()
+                .filter(|k| !before.contains_key(*k))
+                .collect::<Vec<_>>(),
+            before
+                .keys()
+                .filter(|k| !rest.contains_key(*k))
+                .collect::<Vec<_>>()
+        );
+        assert!(rest
+            .keys()
+            .all(|k| !k.to_ascii_uppercase().starts_with("ANTHROPIC_")
+                && !k.to_ascii_uppercase().starts_with("CLAUDE_CODE_USE_")));
+    }
+
+    /// `defaultModel` reaches the interactive launch as `--model <m>`, before the message.
+    #[test]
+    fn default_model_reaches_the_launch_command() {
+        let with_model = launch_env(|s| s.default_model = Some("opus-test".into()));
+        with_model
+            .manager
+            .launch(request(&with_model.id, "builder", "FAKE:ARGS"))
+            .unwrap();
+        assert_eq!(
+            written(&with_model, "args.json"),
+            serde_json::json!(["--model", "opus-test", "FAKE:ARGS"])
+        );
+
+        let without = launch_env(|_| {});
+        without
+            .manager
+            .launch(request(&without.id, "builder", "FAKE:ARGS"))
+            .unwrap();
+        assert_eq!(
+            written(&without, "args.json"),
+            serde_json::json!(["FAKE:ARGS"])
+        );
+    }
+
+    /// Agent launches never go through a `.cmd` shim: refused before anything spawns, with
+    /// an error that says how to fix it. The native executable still launches.
+    #[cfg(windows)]
+    #[test]
+    fn agent_launch_refuses_a_cmd_shim_and_names_the_fix() {
+        let l = launch_env(|_| {});
+        let shim = l.bin.path().join("claude.cmd");
+        std::fs::write(&shim, format!("@\"{}\" %*\r\n", l.claude.display())).unwrap();
+        let settings = projects::Settings {
+            claude_path: Some(shim.to_string_lossy().into_owned()),
+            ..l.projects.get_settings().unwrap()
+        };
+        l.projects.update_settings(settings.clone()).unwrap();
+
+        let err = l
+            .manager
+            .launch(request(&l.id, "builder", "FAKE:ARGS"))
+            .unwrap_err();
+
+        assert_eq!(err.code, ErrorCode::ClaudeNeedsNative);
+        assert!(
+            err.message.contains("run `claude install`"),
+            "{}",
+            err.message
+        );
+        assert!(
+            err.message.contains(r"%USERPROFILE%\.local\bin\claude.exe"),
+            "{}",
+            err.message
+        );
+        assert!(
+            err.message.contains(&shim.display().to_string()),
+            "{}",
+            err.message
+        );
+        nothing_started(&l);
+        assert!(
+            !l.bin.path().join("args.json").exists(),
+            "the shim never ran"
+        );
+
+        let native = projects::Settings {
+            claude_path: Some(l.claude.to_string_lossy().into_owned()),
+            ..settings
+        };
+        l.projects.update_settings(native).unwrap();
+        l.manager
+            .launch(request(&l.id, "builder", "FAKE:ARGS"))
+            .unwrap();
+        assert_eq!(written(&l, "args.json"), serde_json::json!(["FAKE:ARGS"]));
+    }
+
+    /// The archive-vs-start race: archive_project and launch fired together at the same
+    /// project, many times. Exactly one may win each round, never both.
+    #[test]
+    fn archive_and_launch_racing_never_both_succeed() {
+        use std::sync::Barrier;
+
+        let l = launch_env(|_| {});
+        // An instant preflight, so both sides really arrive at the lock together.
+        let claude = l.claude.clone();
+        let manager = Arc::new(
+            agent_sessions::SessionManager::new(
+                Arc::clone(&l.sessions),
+                || 10,
+                Arc::new(TauriSessionEvents {
+                    app: l._app.handle().clone(),
+                }),
+            )
+            .with_launcher(Arc::clone(&l.repos), move || {
+                Ok(agent_sessions::ClaudeLaunch {
+                    program: claude.clone(),
+                    model: None,
+                })
+            }),
+        );
+        let (mut archive_won, mut launch_won) = (0, 0);
+        for round in 0..40 {
+            let barrier = Arc::new(Barrier::new(2));
+            let (b1, p, id) = (Arc::clone(&barrier), Arc::clone(&l.projects), l.id.clone());
+            // Stagger archive by 0–1 ms so both orders occur, including near-simultaneous.
+            let delay = Duration::from_micros((round * 397 % 41) * 25);
+            let archive = std::thread::spawn(move || {
+                b1.wait();
+                std::thread::sleep(delay);
+                p.archive_project(&id)
+            });
+            let (b2, m, id) = (Arc::clone(&barrier), Arc::clone(&manager), l.id.clone());
+            let launch = std::thread::spawn(move || {
+                b2.wait();
+                m.launch(request(&id, "builder", "hello"))
+            });
+            let (archived, launched) = (archive.join().unwrap(), launch.join().unwrap());
+
+            match (&archived, &launched) {
+                (Ok(_), Err(err)) => {
+                    assert_eq!(err.code, ErrorCode::ProjectArchived, "round {round}");
+                    assert!(!manager.list().iter().any(|s| s.project_id == l.id));
+                    archive_won += 1;
+                    l.projects.unarchive_project(&l.id).unwrap();
+                }
+                (Err(err), Ok(_)) => {
+                    assert_eq!(err.code, ErrorCode::SessionRunning, "round {round}");
+                    assert!(!l.projects.list().unwrap()[0].archived, "round {round}");
+                    launch_won += 1;
+                    manager.stop("builder", true).unwrap();
+                }
+                other => panic!("round {round}: both or neither won: {other:?}"),
+            }
+        }
+        eprintln!("archive won {archive_won}, launch won {launch_won}");
+        assert!(
+            archive_won > 0 && launch_won > 0,
+            "the race only ever went one way ({archive_won}/{launch_won}): not exercised"
+        );
+        manager.shutdown();
     }
 
     /// Regenerates the real bindings file, then checks the contract is in it.

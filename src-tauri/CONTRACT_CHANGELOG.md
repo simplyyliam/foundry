@@ -153,3 +153,23 @@ Internal (not contract): `core::subscription::subscription_env()` and `core::cla
 `agent_write` after `agent_stop` resolves, or after `agent:status` reports `exited`, is always refused with `not_found` (test: `writes_after_an_exit_is_observed_are_always_refused`). To guarantee that, a session's input writer now closes before the exit is announced.
 
 Known theoretical risk, accepted as a trade-off: if an `agent_write` is blocked on a full terminal input pipe at the moment the process exits, the exit can't be announced until that write finishes. `agent_stop` then waits out its 3-second kill wait and returns `internal` ("still running after being killed"), even though the process is gone. ConPTY keeps draining input until the terminal closes, so this isn't expected in practice. Not reproduced, and deliberately not chased further.
+
+## P7 follow-up — launching agents (engine level; `agent_start` still pending P6/P8)
+
+`agent_start` is unchanged: still the `not_implemented` stub. It needs P6 (which project an `agentId` belongs to, and its `launch_message`) and P8 (the hook port and token). The launch path it will call, `SessionManager::launch`, is built and tested.
+
+| Kind | Name | Before → After | Why |
+| --- | --- | --- | --- |
+| type | `ErrorCode` | adds `"project_archived"` | Starting an agent in an archived project. Mirrors `archive_project`'s `session_running`: same `{ code, message }` shape; message "unarchive this project before starting an agent in it". |
+| command | `archive_project` | same signature and errors; the `session_running` check is now atomic with archiving | It checks for live sessions and saves the archived flag while holding the session registry's lock. A launch takes the same lock to reserve its slot. Archive and launch on the same project can't both succeed (test: `archive_and_launch_racing_never_both_succeed`). |
+
+What `launch` will give `agent_start`, in order: preflight (`claude_not_found` / `not_signed_in` / `wrong_auth_mode`, via `core::claude::preflight(claudePath)`; nothing spawned) → repo (`not_found` / `folder_missing`) → slot reserved only if the project isn't archived (`project_archived`) → `claude [--model <defaultModel>] "<launch message>"` in the repo. The environment is `core::subscription_env()` plus exactly `FOUNDRY_AGENT_ID`, `FOUNDRY_PROJECT_ID`, `FOUNDRY_HOOK_PORT`, `FOUNDRY_HOOK_TOKEN` and `TERM=xterm-256color` (inherited ones of those names are replaced). Agent launches never run `claude` through a `.cmd`/`.bat` shim (npm's `claude.cmd`): they return `claude_needs_native`, whose message gives the fix (run `claude install`, then set Claude path to the installed claude.exe). Superseded: an earlier character blocklist for shims was not provably complete for cmd.exe parsing, and missed `--model`.
+
+Internal: `core::repos::RepoIndex` also carries which projects are archived, published by projects with the rest of the index. `core::sessions` gains `reserve_if` and `unless_project_active` (one lock for both checks). P3 fix: the roadmap prompt template is sent with LF line endings whatever the checkout's (git autocrlf had made it CRLF on this branch).
+
+### Shim hardening (decided by the human)
+
+| Kind | Name | Before → After | Why |
+| --- | --- | --- | --- |
+| type | `ErrorCode` | adds `"claude_needs_native"` | An agent launch found the npm `.cmd` shim. Windows runs shims through cmd.exe, which re-parses the launch message and `--model`; no character filter can be shown to be complete, so shims aren't used for agent sessions. The message names the fix: run `claude install`, then set Claude path to `%USERPROFILE%\.local\bin\claude.exe`. P3's `claude -p` is unaffected: std's `Command` escapes arguments for `.cmd` files (test: `model_through_a_cmd_shim_arrives_verbatim`). |
+| type | `Settings` | `defaultModel` now accepts only ASCII letters, digits and `. - _ : / @ [ ]` (≤ 100) | Model names never need more, so neither launch path can receive a cmd.exe special character. `update_settings` → `invalid_input` otherwise; a hand-edited invalid value in `settings.json` loads as null. |
