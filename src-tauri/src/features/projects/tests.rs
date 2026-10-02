@@ -644,6 +644,8 @@ fn registry_and_settings_survive_a_restart() {
                 max_concurrent_agents: 5,
                 default_projects_dir: Some(parent.path().to_string_lossy().into_owned()),
                 claude_path: None,
+                default_model: Some("sonnet".into()),
+                generation_timeout_ms: 90_000,
             })
             .unwrap();
         (store.list().unwrap(), settings)
@@ -668,7 +670,9 @@ fn settings_default_and_validate() {
         Settings {
             max_concurrent_agents: 3,
             default_projects_dir: None,
-            claude_path: None
+            claude_path: None,
+            default_model: None,
+            generation_timeout_ms: 300_000,
         }
     );
     let zero = store
@@ -692,6 +696,27 @@ fn settings_default_and_validate() {
         })
         .unwrap();
     assert_eq!(blank.claude_path, None);
+    let no_time = store
+        .update_settings(Settings {
+            generation_timeout_ms: 0,
+            ..Settings::default()
+        })
+        .unwrap_err();
+    assert_eq!(no_time.code, ErrorCode::InvalidInput);
+    let model = store
+        .update_settings(Settings {
+            default_model: Some("  opus  ".into()),
+            ..Settings::default()
+        })
+        .unwrap();
+    assert_eq!(model.default_model.as_deref(), Some("opus"));
+    let blank_model = store
+        .update_settings(Settings {
+            default_model: Some(" ".into()),
+            ..Settings::default()
+        })
+        .unwrap();
+    assert_eq!(blank_model.default_model, None);
 }
 
 #[test]
@@ -706,6 +731,17 @@ fn settings_files_missing_fields_take_defaults() {
     assert_eq!(settings.max_concurrent_agents, 3);
     assert_eq!(settings.default_projects_dir, None);
     assert_eq!(settings.claude_path.as_deref(), Some("/opt/tools/claude"));
+    assert_eq!(settings.default_model, None);
+    assert_eq!(settings.generation_timeout_ms, 300_000, "unset → 5 minutes");
+
+    fs::write(
+        env.data.path().join("settings.json"),
+        r#"{ "generationTimeoutMs": 0, "defaultModel": "haiku" }"#,
+    )
+    .unwrap();
+    let settings = env.store().get_settings().unwrap();
+    assert_eq!(settings.generation_timeout_ms, 300_000, "0 → 5 minutes");
+    assert_eq!(settings.default_model.as_deref(), Some("haiku"));
 }
 
 #[test]

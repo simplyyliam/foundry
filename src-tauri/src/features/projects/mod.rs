@@ -50,7 +50,14 @@ pub struct Settings {
     pub default_projects_dir: Option<String>,
     /// Use this `claude` executable instead of the one on PATH.
     pub claude_path: Option<String>,
+    /// Passed to `claude -p` as `--model` when set (an alias like `sonnet`, or a full name).
+    pub default_model: Option<String>,
+    /// How long one roadmap generation may run. At least 1.
+    pub generation_timeout_ms: u32,
 }
+
+/// Default for `generationTimeoutMs`: 5 minutes.
+pub const DEFAULT_GENERATION_TIMEOUT_MS: u32 = 300_000;
 
 impl Default for Settings {
     fn default() -> Self {
@@ -58,6 +65,8 @@ impl Default for Settings {
             max_concurrent_agents: 3,
             default_projects_dir: None,
             claude_path: None,
+            default_model: None,
+            generation_timeout_ms: DEFAULT_GENERATION_TIMEOUT_MS,
         }
     }
 }
@@ -701,6 +710,11 @@ impl ProjectsStore {
                 "maxConcurrentAgents must be at least 1",
             ));
         }
+        if settings.generation_timeout_ms == 0 {
+            return Err(AppError::invalid_input(
+                "generationTimeoutMs must be at least 1",
+            ));
+        }
         let clean = |value: Option<String>| -> Result<Option<String>, AppError> {
             match value
                 .map(|v| v.trim().to_string())
@@ -717,6 +731,11 @@ impl ProjectsStore {
             max_concurrent_agents: settings.max_concurrent_agents,
             default_projects_dir: clean(settings.default_projects_dir)?,
             claude_path: clean(settings.claude_path)?,
+            default_model: settings
+                .default_model
+                .map(|model| model.trim().to_string())
+                .filter(|model| !model.is_empty()),
+            generation_timeout_ms: settings.generation_timeout_ms,
         };
         let mut state = self.lock()?;
         storage::save_settings(&self.data_dir, &settings)?;

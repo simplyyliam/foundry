@@ -10,7 +10,6 @@
 
 pub mod commands;
 mod ring;
-mod tree;
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -28,10 +27,10 @@ use specta::Type;
 use tauri_specta::Event;
 
 use crate::core::events::EventMeta;
+use crate::core::process_tree::ProcessTree;
 use crate::core::sessions::{now_ms, SessionInfo, SessionRegistry, SessionStatus};
 use crate::core::{AppError, ErrorCode};
 use ring::Ring;
-use tree::ProcessTree;
 
 /// Scrollback kept per agent for `agent_snapshot`.
 pub const RING_BYTES: usize = 256 * 1024;
@@ -226,6 +225,10 @@ pub struct SessionManager {
     events: Arc<dyn SessionEvents>,
     /// Running sessions, and exited ones until the agent starts again (for snapshots).
     live: Mutex<HashMap<String, Arc<Live>>>,
+    /// Tests only: hold the exit thread just after it marks the exit, widening the window
+    /// in which a closed writer matters.
+    #[cfg(test)]
+    exit_pause: Duration,
 }
 
 impl SessionManager {
@@ -240,7 +243,15 @@ impl SessionManager {
             max_sessions: Box::new(max_sessions),
             events,
             live: Mutex::new(HashMap::new()),
+            #[cfg(test)]
+            exit_pause: Duration::ZERO,
         }
+    }
+
+    #[cfg(test)]
+    fn with_exit_pause(mut self, pause: Duration) -> Self {
+        self.exit_pause = pause;
+        self
     }
 
     fn live(&self, agent_id: &str) -> Option<Arc<Live>> {
@@ -385,13 +396,18 @@ impl SessionManager {
             Arc::clone(&self.events),
             spec.agent_id.clone(),
         );
+        #[cfg(test)]
+        let exit_pause = self.exit_pause;
         spawn_named(format!("pty-wait-{agent}"), move || {
             let code = child.wait().ok().map(|status| status.exit_code());
             // First, so `is_project_active` turns false the instant the process is gone.
             registry.release(&agent);
-            live.exit.set(code);
-            // Closing the terminal ends the reader (ConPTY gives no EOF while it's open).
+            // Before marking the exit, so a write after `stop` returns is always refused.
             lock(&live.writer).take();
+            live.exit.set(code);
+            #[cfg(test)]
+            thread::sleep(exit_pause);
+            // Closing the terminal ends the reader (ConPTY gives no EOF while it's open).
             lock(&live.master).take();
             let _ = coalescer.join();
             events.status(AgentStatus::new(&agent, SessionStatus::Exited, code, None));

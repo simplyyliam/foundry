@@ -106,6 +106,32 @@ export const commands = {
 	 *  Empty if the agent hasn't run.
 	 */
 	agentSnapshot: (agentId: string) => typedError<string, AppError>(__TAURI_INVOKE("agent_snapshot", { agentId })),
+	/**
+	 *  Generates the roadmap from `docs/brain-dump.md`, validates it (one retry), and saves it
+	 *  to `.foundry/roadmap.json`. Progress arrives as `roadmap:progress`.
+	 */
+	generateRoadmap: (projectId: string) => typedError<RoadmapResult, AppError>(__TAURI_INVOKE("generate_roadmap", { projectId })),
+	/**
+	 *  Stops the project's running generation; it then fails with `cancelled`. Returns whether
+	 *  one was running.
+	 */
+	cancelGeneration: (projectId: string) => typedError<boolean, AppError>(__TAURI_INVOKE("cancel_generation", { projectId })),
+	/**  The last saved roadmap, or null. */
+	getRoadmap: (projectId: string) => typedError<{
+	roadmap: Roadmap,
+	/**  Requirements whose `sliceName` is missing or names no slice. */
+	unassigned: Requirement[],
+	/**  Brain-dump paragraphs no requirement's excerpt falls inside: what the roadmap missed. */
+	uncoveredParagraphs: string[],
+	/**  1, or 2 when the first reply was rejected. */
+	attempts: number,
+	generatedAt: number,
+} | null, AppError>(__TAURI_INVOKE("get_roadmap", { projectId })),
+	/**
+	 *  Whether Claude Code is installed and signed in with a subscription. Never fails: a
+	 *  problem is reported in `problem`.
+	 */
+	claudeStatus: () => typedError<ClaudeStatus, AppError>(__TAURI_INVOKE("claude_status")),
 };
 
 /** Events */
@@ -113,6 +139,7 @@ export const events = {
 	agentOutput: makeEvent<AgentOutput>("agent:output"),
 	agentStatus: makeEvent<AgentStatus>("agent:status"),
 	appReady: makeEvent<AppReady>("app:ready"),
+	roadmapProgress: makeEvent<RoadmapProgress>("roadmap:progress"),
 };
 
 /* Types */
@@ -211,6 +238,25 @@ export type BakeryState = {
 	dir: string,
 };
 
+/**  What the UI shows about the CLI. Never includes the account's email or organisation. */
+export type ClaudeStatus = {
+	/**  The executable Foundry would run (`claudePath`, or the first match on PATH). */
+	path: string | null,
+	version: string | null,
+	loggedIn: boolean,
+	/**  `claude.ai` for a subscription login. */
+	authMethod: string | null,
+	/**  `firstParty`, or a cloud provider. */
+	apiProvider: string | null,
+	/**  e.g. `pro`, `max`. */
+	subscriptionType: string | null,
+	/**
+	 *  Why Foundry can't run Claude Code right now (`claude_not_found`, `not_signed_in`,
+	 *  `wrong_auth_mode`, …); null when it's ready.
+	 */
+	problem: AppError | null,
+};
+
 /**
  *  A canvas coordinate or size. Always finite (commands reject NaN and infinities), so it
  *  exports as a plain TS `number`; a bare `f64` would export as `number | null`.
@@ -229,6 +275,11 @@ export type CreateRepositoryResult = {
 	gitInitialized: boolean,
 	/**  False if the empty initial commit failed (usually: no git identity configured). */
 	initialCommit: boolean,
+};
+
+export type Deferred = {
+	label: string,
+	anchoredTo: string,
 };
 
 export type DropPoint = {
@@ -274,7 +325,21 @@ export type ErrorCode =
 /**  `maxConcurrentAgents` sessions are already running. */
 "too_many_sessions" | 
 /**  The command exists in the contract but its backend isn't built yet. */
-"not_implemented";
+"not_implemented" | 
+/**  No `claude` executable on PATH or at `claudePath`. */
+"claude_not_found" | 
+/**  Claude Code isn't signed in. */
+"not_signed_in" | 
+/**  Signed in, but not with a Claude subscription (API key, console or a cloud provider). */
+"wrong_auth_mode" | 
+/**  The run was cancelled. */
+"cancelled" | 
+/**  The run hit its time limit and was stopped. */
+"timed_out" | 
+/**  Claude Code's output failed validation, even after a retry. */
+"generation_failed" | 
+/**  A generation is already running for this project. */
+"generation_running";
 
 /**  Identity and timestamp shared by every event. Flatten it into the payload struct. */
 export type EventMeta = {
@@ -282,6 +347,13 @@ export type EventMeta = {
 	id: string,
 	/**  Milliseconds since the Unix epoch. */
 	ts: number,
+};
+
+export type Feature = {
+	family: string,
+	description: string,
+	features: string[],
+	relatesTo: string[],
 };
 
 export type FolderEntry = {
@@ -337,6 +409,48 @@ export type ProjectPatch = {
 	tagline: string | null,
 };
 
+export type Requirement = {
+	text: string,
+	kind: string,
+	sourceExcerpt: string,
+	sliceName: string | null,
+	verifiedBy: string,
+	/**  The excerpt isn't in the brain dump (whitespace-normalized): kept, but flagged. */
+	unsourced: boolean,
+};
+
+/**  What the model produced, after validation. */
+export type Roadmap = {
+	goal: string,
+	targetUsers: TargetUser[],
+	featureMap: Feature[],
+	slices: Slice[],
+	/**  Requirements whose `sliceName` names a slice. */
+	requirements: Requirement[],
+	deferred: Deferred[],
+	openQuestions: string[],
+};
+
+/**  `roadmap:progress`. */
+export type RoadmapProgress = {
+	projectId: string,
+	stage: Stage,
+	/**  Since `generate_roadmap` started. */
+	elapsedMs: number,
+} & EventMeta;
+
+/**  `.foundry/roadmap.json`, and what `generate_roadmap` / `get_roadmap` return. */
+export type RoadmapResult = {
+	roadmap: Roadmap,
+	/**  Requirements whose `sliceName` is missing or names no slice. */
+	unassigned: Requirement[],
+	/**  Brain-dump paragraphs no requirement's excerpt falls inside: what the roadmap missed. */
+	uncoveredParagraphs: string[],
+	/**  1, or 2 when the first reply was rejected. */
+	attempts: number,
+	generatedAt: number,
+};
+
 /**  A live session, as `agent_list` reports it. */
 export type SessionInfo = {
 	agentId: string,
@@ -359,6 +473,25 @@ export type Settings = {
 	defaultProjectsDir: string | null,
 	/**  Use this `claude` executable instead of the one on PATH. */
 	claudePath: string | null,
+	/**  Passed to `claude -p` as `--model` when set (an alias like `sonnet`, or a full name). */
+	defaultModel: string | null,
+	/**  How long one roadmap generation may run. At least 1. */
+	generationTimeoutMs: number,
+};
+
+export type Slice = {
+	name: string,
+	delivers: string[],
+	/**  Names of other slices. */
+	dependsOn: string[],
+};
+
+export type Stage = "preflight" | "running" | "validating" | "retrying" | "done" | "failed";
+
+export type TargetUser = {
+	name: string,
+	description: string,
+	painPoints: string[],
 };
 
 /* Tauri Specta runtime */

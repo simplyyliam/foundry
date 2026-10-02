@@ -46,6 +46,8 @@ pub struct SettingsFile {
     max_concurrent_agents: u32,
     default_projects_dir: Option<String>,
     claude_path: Option<String>,
+    default_model: Option<String>,
+    generation_timeout_ms: u32,
 }
 
 impl Default for SettingsFile {
@@ -55,6 +57,8 @@ impl Default for SettingsFile {
             max_concurrent_agents: defaults.max_concurrent_agents,
             default_projects_dir: defaults.default_projects_dir,
             claude_path: defaults.claude_path,
+            default_model: defaults.default_model,
+            generation_timeout_ms: defaults.generation_timeout_ms,
         }
     }
 }
@@ -65,6 +69,12 @@ impl From<SettingsFile> for Settings {
             max_concurrent_agents: file.max_concurrent_agents,
             default_projects_dir: file.default_projects_dir,
             claude_path: file.claude_path,
+            default_model: file.default_model,
+            // An unusable 0 in the file falls back to the default.
+            generation_timeout_ms: match file.generation_timeout_ms {
+                0 => super::DEFAULT_GENERATION_TIMEOUT_MS,
+                ms => ms,
+            },
         }
     }
 }

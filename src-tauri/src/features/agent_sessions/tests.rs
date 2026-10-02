@@ -5,8 +5,8 @@ use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 
-use super::tree::pid_alive;
 use super::*;
+use crate::core::process_tree::pid_alive;
 use crate::testing::{fake_agent_path, TestRepo};
 
 const PROJECT: &str = "project-1";
@@ -107,6 +107,10 @@ struct Env {
 
 impl Env {
     fn new(max: u32) -> Self {
+        Self::with_exit_pause(max, Duration::ZERO)
+    }
+
+    fn with_exit_pause(max: u32, pause: Duration) -> Self {
         let registry = Arc::new(SessionRegistry::default());
         let events = Arc::new(Recorder {
             registry: Arc::clone(&registry),
@@ -115,11 +119,14 @@ impl Env {
             active_at_exit: Mutex::default(),
             changed: Condvar::new(),
         });
-        let manager = Arc::new(SessionManager::new(
-            Arc::clone(&registry),
-            move || max,
-            Arc::clone(&events) as Arc<dyn SessionEvents>,
-        ));
+        let manager = Arc::new(
+            SessionManager::new(
+                Arc::clone(&registry),
+                move || max,
+                Arc::clone(&events) as Arc<dyn SessionEvents>,
+            )
+            .with_exit_pause(pause),
+        );
         Self {
             repo: TestRepo::new(),
             registry,
@@ -312,6 +319,65 @@ fn input_written_with_agent_write_reaches_the_process() {
         ErrorCode::NotFound,
         "writing after exit is refused"
     );
+}
+
+/// The writer closes before the exit is announced, so a write after `stop` returns, or after
+/// `exited` fires, is always refused (`not_found`) rather than silently swallowed.
+#[test]
+fn writes_after_an_exit_is_observed_are_always_refused() {
+    // The pause holds the exit thread right after it marks the exit: if the writer were
+    // still open then (the old order), these writes would succeed.
+    let env = Env::with_exit_pause(3, Duration::from_millis(200));
+    for round in 0..20 {
+        let agent = format!("stopped-{round}");
+        env.start(&agent, &["--echo-upper"]);
+        env.manager.stop(&agent, true).unwrap();
+        let err = env
+            .manager
+            .write(
+                &agent, b"late
+",
+            )
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::NotFound, "round {round}: {err}");
+    }
+
+    // The process exits by itself; the app reacts to `exited` with a write.
+    env.start("quitter", &["--exit", "0"]);
+    env.events.wait_exited("quitter", LONG);
+    assert_eq!(
+        env.manager
+            .write(
+                "quitter", b"late
+"
+            )
+            .unwrap_err()
+            .code,
+        ErrorCode::NotFound
+    );
+}
+
+/// Writes racing the exit itself either land (before the writer closes) or are refused:
+/// never another error, and never a hang.
+#[test]
+fn writes_racing_an_exit_only_succeed_or_report_not_found() {
+    let env = Env::new(3);
+    for round in 0..10 {
+        let agent = format!("racer-{round}");
+        env.start(&agent, &["--sleep-ms", "50"]);
+        let deadline = Instant::now() + LONG;
+        loop {
+            match env.manager.write(&agent, b"x") {
+                Ok(()) => assert!(Instant::now() < deadline, "round {round}: never exited"),
+                Err(err) => {
+                    assert_eq!(err.code, ErrorCode::NotFound, "round {round}: {err}");
+                    break;
+                }
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+        env.events.wait_exited(&agent, LONG);
+    }
 }
 
 // ---------- R-7-4 ----------

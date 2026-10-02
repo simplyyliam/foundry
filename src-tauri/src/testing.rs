@@ -99,13 +99,33 @@ pub fn fake_agent_path() -> PathBuf {
     if let Some(path) = option_env!("CARGO_BIN_EXE_fake-agent") {
         return PathBuf::from(path);
     }
-    // Unit tests don't get CARGO_BIN_EXE_*: the binary sits next to the `deps` directory.
+    built_bin("fake-agent")
+}
+
+/// Path to the built `fake-claude` binary (copy it before use; see that file).
+pub fn fake_claude_path() -> PathBuf {
+    if let Some(path) = option_env!("CARGO_BIN_EXE_fake-claude") {
+        return PathBuf::from(path);
+    }
+    built_bin("fake-claude")
+}
+
+/// Installs a copy of `fake-claude` as `claude(.exe)` in `dir` and returns its path. Files
+/// next to it (`auth.json`, `reply.txt`) configure it for that test alone.
+pub fn install_fake_claude(dir: &Path) -> PathBuf {
+    let target = dir.join(format!("claude{}", std::env::consts::EXE_SUFFIX));
+    fs::copy(fake_claude_path(), &target).expect("copy fake-claude");
+    target
+}
+
+/// Unit tests don't get CARGO_BIN_EXE_*: the binary sits next to the `deps` directory.
+fn built_bin(name: &str) -> PathBuf {
     let exe = std::env::current_exe().expect("current exe");
     let dir = exe.parent().and_then(Path::parent).expect("target dir");
-    let path = dir.join(format!("fake-agent{}", std::env::consts::EXE_SUFFIX));
+    let path = dir.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
     assert!(
         path.exists(),
-        "fake-agent not built at {}; run `cargo test` (not `--lib`) or `cargo build --bin fake-agent`",
+        "{name} not built at {}; run `cargo test` (not `--lib`) or `cargo build --bin {name}`",
         path.display()
     );
     path

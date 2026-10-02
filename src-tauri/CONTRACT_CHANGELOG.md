@@ -119,3 +119,37 @@ All additive. `agent_start` is a stub until the roster and launch message (P6), 
 | command | `archive_project` | now `session_running` while a session is live for the project | Closes the P1 gap. Nothing changes when refused. |
 
 Internal (not contract): `core::sessions::SessionRegistry` holds live session state (`reserve`, `set_running`, `release`, `is_project_active`, `list`), shared by the agent-sessions engine and projects (Law 1). `ProjectsStore::load` takes it as a required argument. Dependencies added (approved): `portable-pty` 0.9, `base64` 0.22, and `windows` features `Win32_Security` (required by `CreateJobObjectW`), `Win32_System_JobObjects` and `Win32_System_Threading`.
+
+## P3 — roadmap generation (plan loading pending P2)
+
+All additive. Loading the result into the plan as `proposed`, and the `discardConfirmed` guard, wait for the plan store (P2). Adding `discardConfirmed` to `generate_roadmap` then will be a signature change, for approval.
+
+| Kind | Name | Before → After | Why |
+| --- | --- | --- | --- |
+| type | `ErrorCode` | adds `"claude_not_found" \| "not_signed_in" \| "wrong_auth_mode" \| "cancelled" \| "timed_out" \| "generation_failed" \| "generation_running"` | The first three are the spec's ClaudeNotFound / NotSignedIn / WrongAuthMode (wrong mode = signed in with an API key, the console or a cloud provider). `generation_failed`: output invalid twice (the message lists every error), or Claude Code reported an error or crashed. `generation_running`: one generation per project at a time. |
+| type | `ClaudeStatus` | — → `{ path, version, loggedIn, authMethod, apiProvider, subscriptionType, problem: AppError \| null }` | Never includes the account's email or organisation. |
+| type | `Roadmap` | — → `{ goal, targetUsers[{ name, description, painPoints }], featureMap[{ family, description, features, relatesTo }], slices[{ name, delivers, dependsOn }], requirements: Requirement[], deferred[{ label, anchoredTo }], openQuestions }` | As the prompt demands. `requirements` holds only those whose `sliceName` names a slice. |
+| type | `Requirement` | — → `{ text, kind, sourceExcerpt, sliceName: string \| null, verifiedBy, unsourced: boolean }` | `unsourced`: the excerpt isn't a verbatim (whitespace-normalized) substring of the brain dump, or it's empty. Kept, never dropped. |
+| type | `RoadmapResult` | — → `{ roadmap, unassigned: Requirement[], uncoveredParagraphs: string[], attempts: number, generatedAt: number }` | Saved as `.foundry/roadmap.json`. `uncoveredParagraphs`: brain-dump paragraphs (blank-line separated; headings and `---` rules excluded) that no sourced requirement's excerpt falls inside. |
+| type | `Stage` | — → `"preflight" \| "running" \| "validating" \| "retrying" \| "done" \| "failed"` | |
+| event | `roadmap:progress` | — → `RoadmapProgress = { id, ts, projectId, stage, elapsedMs }` | `projectId` added beyond the spec, so the UI can tell projects apart. |
+| command | `generate_roadmap` | — → `generateRoadmap(projectId): RoadmapResult` | Preflight → `claude -p` → validate. One retry with the errors appended; a second failure saves the raw output to `.foundry/last-generation-error.txt` and returns `generation_failed`. Nothing else is written unless validation passes. Times out after 5 minutes (`timed_out`). An empty brain dump → `invalid_input`. |
+| command | `cancel_generation` | — → `cancelGeneration(projectId): boolean` | Kills the run's process tree; the generation then fails with `cancelled`. Returns whether one was running. |
+| command | `get_roadmap` | — → `getRoadmap(projectId): RoadmapResult \| null` | |
+| command | `claude_status` | — → `claudeStatus(): ClaudeStatus` | Never fails: problems are reported in `problem`. |
+
+Validation errors that trigger the retry: invalid JSON (a code fence around it is fine), missing or mistyped fields (each one reported with its path), duplicate slice names, a `dependsOn` that names no slice, a slice depending on itself, and dependency cycles (reported as `A → C → B → A`).
+
+Internal (not contract): `core::subscription::subscription_env()` and `core::claude` (`find`, `auth_status`, `check_auth`, `preflight`, `status`, and `run` with deadline, cancel and tree kill) are shared for P7. `ProcessTree` moved from `features/agent_sessions` to `core::process_tree` (unchanged) so both features can kill a process tree. New test binary `fake-claude`. P7 engine fix: a write right after `agent_stop` returned could succeed into a dead pipe; the writer now closes before the exit is announced.
+
+### P3 follow-up — two Settings fields (decided by the human)
+
+| Kind | Name | Before → After | Why |
+| --- | --- | --- | --- |
+| type | `Settings` | `{ maxConcurrentAgents, defaultProjectsDir, claudePath }` → adds `defaultModel: string \| null` and `generationTimeoutMs: number` | `defaultModel` is passed to `claude -p` as `--model <name>` when set (blank → null). `generationTimeoutMs` (≥ 1, default 300000) replaces the fixed 5-minute generation limit. Both are read at the start of every generation. `updateSettings` replaces the whole object, so the UI must now send both fields. A `settings.json` without them, or with `generationTimeoutMs: 0`, loads with null and 300000. |
+
+### P7 note — `agent_stop` timing after the write-race fix (accepted by the human)
+
+`agent_write` after `agent_stop` resolves, or after `agent:status` reports `exited`, is always refused with `not_found` (test: `writes_after_an_exit_is_observed_are_always_refused`). To guarantee that, a session's input writer now closes before the exit is announced.
+
+Known theoretical risk, accepted as a trade-off: if an `agent_write` is blocked on a full terminal input pipe at the moment the process exits, the exit can't be announced until that write finishes. `agent_stop` then waits out its 3-second kill wait and returns `internal` ("still running after being killed"), even though the process is gone. ConPTY keeps draining input until the terminal closes, so this isn't expected in practice. Not reproduced, and deliberately not chased further.

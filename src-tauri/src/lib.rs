@@ -6,6 +6,7 @@ mod testing;
 
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use specta_typescript::Typescript;
 use tauri::{Manager, Runtime};
@@ -18,7 +19,7 @@ use crate::core::sessions::SessionRegistry;
 use crate::core::AppError;
 #[cfg(test)]
 use crate::core::ErrorCode;
-use crate::features::{agent_sessions, app, bakery, folders, projects};
+use crate::features::{agent_sessions, app, bakery, folders, projects, roadmap};
 
 /// Where the generated TypeScript bindings live. Never hand-edit that file.
 pub const BINDINGS_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../src/lib/bindings.ts");
@@ -59,11 +60,16 @@ pub fn specta_builder<R: Runtime>() -> tauri_specta::Builder<R> {
             agent_sessions::commands::agent_resize,
             agent_sessions::commands::agent_stop,
             agent_sessions::commands::agent_snapshot,
+            roadmap::commands::generate_roadmap,
+            roadmap::commands::cancel_generation,
+            roadmap::commands::get_roadmap,
+            roadmap::commands::claude_status,
         ])
         .events(collect_events![
             app::AppReady,
             agent_sessions::AgentOutput,
-            agent_sessions::AgentStatus
+            agent_sessions::AgentStatus,
+            roadmap::RoadmapProgress
         ])
 }
 
@@ -145,6 +151,37 @@ pub fn session_manager<R: Runtime>(
     )
 }
 
+impl<R: Runtime> roadmap::ProgressSink for TauriSessionEvents<R> {
+    fn progress(&self, event: roadmap::RoadmapProgress) {
+        let _ = events::emit(&self.app, &event);
+    }
+}
+
+/// The roadmap store, running the real `claude -p` after the subscription preflight, with
+/// `claudePath`, `defaultModel` and `generationTimeoutMs` read from settings on every run.
+pub fn roadmap_store<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    repos: Arc<RepoIndex>,
+    projects: Arc<projects::ProjectsStore>,
+) -> roadmap::RoadmapStore {
+    let settings = move || projects.get_settings().unwrap_or_default();
+    let (for_status, for_timeout) = (settings.clone(), settings.clone());
+    roadmap::RoadmapStore::new(
+        repos,
+        move || {
+            let settings = settings();
+            let program = core::claude::preflight(settings.claude_path.as_deref())?;
+            let runner = roadmap::ClaudeRunner::new(program).with_model(settings.default_model);
+            Ok(Arc::new(runner) as Arc<dyn roadmap::LlmRunner>)
+        },
+        move || core::claude::status(for_status().claude_path.as_deref()),
+        Arc::new(TauriSessionEvents { app: app.clone() }),
+    )
+    .with_timeout_source(move || {
+        Duration::from_millis(u64::from(for_timeout().generation_timeout_ms))
+    })
+}
+
 /// Wires commands, events and setup onto a Tauri builder (real or mock runtime).
 pub fn app_builder<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
     let specta = specta_builder::<R>();
@@ -165,6 +202,11 @@ pub fn app_builder<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> 
             app.manage(Arc::new(session_manager(
                 app.handle(),
                 sessions,
+                Arc::clone(&projects),
+            )));
+            app.manage(Arc::new(roadmap_store(
+                app.handle(),
+                Arc::clone(&repos),
                 Arc::clone(&projects),
             )));
             app.manage(projects);
@@ -393,6 +435,123 @@ mod tests {
         );
     }
 
+    /// A project whose settings point `claudePath` at fake-claude, wired like the real app.
+    struct Generation {
+        roadmap: roadmap::RoadmapStore,
+        projects: Arc<projects::ProjectsStore>,
+        id: String,
+        repo: crate::testing::TestRepo,
+        _dirs: (crate::testing::TestRepo, crate::testing::TestRepo),
+    }
+
+    fn generation(brain_dump: &str, tweak: impl FnOnce(&mut projects::Settings)) -> Generation {
+        use crate::features::projects::LinkRepositoryInput;
+        use crate::testing::{install_fake_claude, TestRepo};
+        use tauri::test::{mock_builder, mock_context, noop_assets};
+
+        let app = app_builder(mock_builder())
+            .build(mock_context(noop_assets()))
+            .unwrap();
+        specta_builder::<tauri::test::MockRuntime>().mount_events(&app);
+        let (data, bin, repo) = (TestRepo::new(), TestRepo::new(), TestRepo::new());
+        let claude = install_fake_claude(bin.path());
+        let repos = Arc::new(RepoIndex::default());
+        let projects = Arc::new(
+            projects_store(
+                app.handle(),
+                data.path().into(),
+                Git::system(),
+                Arc::clone(&repos),
+                Default::default(),
+            )
+            .unwrap(),
+        );
+        let mut settings = projects::Settings {
+            claude_path: Some(claude.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+        tweak(&mut settings);
+        projects.update_settings(settings).unwrap();
+        let id = projects
+            .link_repository(LinkRepositoryInput {
+                folder: repo.path().to_string_lossy().into_owned(),
+            })
+            .unwrap()
+            .project
+            .id;
+        repo.write("docs/brain-dump.md", brain_dump);
+        let roadmap = roadmap_store(app.handle(), repos, Arc::clone(&projects));
+        Generation {
+            roadmap,
+            projects,
+            id,
+            repo,
+            _dirs: (data, bin),
+        }
+    }
+
+    /// `generationTimeoutMs` is honored: a 1.5 s limit stops the run long before 5 minutes.
+    #[test]
+    fn a_configured_generation_timeout_is_honored() {
+        let g = generation("FAKE:SLEEP", |s| s.generation_timeout_ms = 1500);
+        let started = std::time::Instant::now();
+
+        let err = g.roadmap.generate(&g.id).unwrap_err();
+
+        let took = started.elapsed();
+        assert_eq!(err.code, ErrorCode::TimedOut);
+        assert!(
+            took >= Duration::from_millis(1500),
+            "stopped early: {took:?}"
+        );
+        assert!(
+            took < Duration::from_secs(15),
+            "the setting was ignored: {took:?}"
+        );
+
+        // Read on every run: a new value applies to the next generation.
+        let settings = projects::Settings {
+            generation_timeout_ms: 400,
+            ..g.projects.get_settings().unwrap()
+        };
+        g.projects.update_settings(settings).unwrap();
+        let started = std::time::Instant::now();
+        assert_eq!(
+            g.roadmap.generate(&g.id).unwrap_err().code,
+            ErrorCode::TimedOut
+        );
+        assert!(started.elapsed() < Duration::from_millis(1500));
+    }
+
+    /// `defaultModel` reaches `claude -p` as `--model <name>`; unset, no `--model` is passed.
+    #[test]
+    fn default_model_is_passed_to_claude_as_model_flag() {
+        // FAKE:ARGS replies with the arguments, which fails validation twice, so the raw
+        // reply (the argument list) lands in last-generation-error.txt.
+        let g = generation("FAKE:ARGS", |s| s.default_model = Some("opus-test".into()));
+        assert_eq!(
+            g.roadmap.generate(&g.id).unwrap_err().code,
+            ErrorCode::GenerationFailed
+        );
+        let args =
+            std::fs::read_to_string(g.repo.path().join(".foundry/last-generation-error.txt"))
+                .unwrap();
+        assert!(
+            args.ends_with(
+                "--model
+opus-test"
+            ),
+            "{args}"
+        );
+
+        let unset = generation("FAKE:ARGS", |_| {});
+        unset.roadmap.generate(&unset.id).unwrap_err();
+        let args =
+            std::fs::read_to_string(unset.repo.path().join(".foundry/last-generation-error.txt"))
+                .unwrap();
+        assert!(!args.contains("--model"), "{args}");
+    }
+
     /// Regenerates the real bindings file, then checks the contract is in it.
     #[test]
     fn export_bindings_regenerates_file_with_app_info() {
@@ -440,6 +599,14 @@ mod tests {
             "\"agent:status\"",
             "\"session_running\"",
             "\"too_many_sessions\"",
+            "generateRoadmap",
+            "cancelGeneration",
+            "getRoadmap",
+            "claudeStatus",
+            "\"roadmap:progress\"",
+            "\"not_signed_in\"",
+            "\"wrong_auth_mode\"",
+            "\"claude_not_found\"",
         ] {
             assert!(ts.contains(name), "{name} missing from bindings");
         }

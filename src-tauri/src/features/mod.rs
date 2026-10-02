@@ -5,3 +5,4 @@ pub mod app;
 pub mod bakery;
 pub mod folders;
 pub mod projects;
+pub mod roadmap;

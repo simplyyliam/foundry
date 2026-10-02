@@ -44,6 +44,11 @@ name = "fake-agent"
 path = "src/bin/fake-agent.rs"
 test = false
 
+[[bin]]
+name = "fake-claude"
+path = "src/bin/fake-claude.rs"
+test = false
+
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
     "Win32_Foundation",

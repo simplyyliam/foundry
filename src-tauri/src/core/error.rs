@@ -40,6 +40,20 @@ pub enum ErrorCode {
     TooManySessions,
     /// The command exists in the contract but its backend isn't built yet.
     NotImplemented,
+    /// No `claude` executable on PATH or at `claudePath`.
+    ClaudeNotFound,
+    /// Claude Code isn't signed in.
+    NotSignedIn,
+    /// Signed in, but not with a Claude subscription (API key, console or a cloud provider).
+    WrongAuthMode,
+    /// The run was cancelled.
+    Cancelled,
+    /// The run hit its time limit and was stopped.
+    TimedOut,
+    /// Claude Code's output failed validation, even after a retry.
+    GenerationFailed,
+    /// A generation is already running for this project.
+    GenerationRunning,
 }
 
 impl ErrorCode {
@@ -62,6 +76,13 @@ impl ErrorCode {
             Self::SessionRunning => "session_running",
             Self::TooManySessions => "too_many_sessions",
             Self::NotImplemented => "not_implemented",
+            Self::ClaudeNotFound => "claude_not_found",
+            Self::NotSignedIn => "not_signed_in",
+            Self::WrongAuthMode => "wrong_auth_mode",
+            Self::Cancelled => "cancelled",
+            Self::TimedOut => "timed_out",
+            Self::GenerationFailed => "generation_failed",
+            Self::GenerationRunning => "generation_running",
         }
     }
 }
@@ -155,6 +176,13 @@ mod tests {
             ErrorCode::SessionRunning,
             ErrorCode::TooManySessions,
             ErrorCode::NotImplemented,
+            ErrorCode::ClaudeNotFound,
+            ErrorCode::NotSignedIn,
+            ErrorCode::WrongAuthMode,
+            ErrorCode::Cancelled,
+            ErrorCode::TimedOut,
+            ErrorCode::GenerationFailed,
+            ErrorCode::GenerationRunning,
         ] {
             assert_eq!(serde_json::to_value(code).unwrap(), json!(code.as_str()));
         }
