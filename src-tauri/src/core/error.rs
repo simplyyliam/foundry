@@ -34,6 +34,12 @@ pub enum ErrorCode {
     UnsupportedImage,
     /// An input file is over the size cap.
     FileTooLarge,
+    /// Something is still running against it: an agent session (stop it first).
+    SessionRunning,
+    /// `maxConcurrentAgents` sessions are already running.
+    TooManySessions,
+    /// The command exists in the contract but its backend isn't built yet.
+    NotImplemented,
 }
 
 impl ErrorCode {
@@ -53,6 +59,9 @@ impl ErrorCode {
             Self::BakeryFull => "bakery_full",
             Self::UnsupportedImage => "unsupported_image",
             Self::FileTooLarge => "file_too_large",
+            Self::SessionRunning => "session_running",
+            Self::TooManySessions => "too_many_sessions",
+            Self::NotImplemented => "not_implemented",
         }
     }
 }
@@ -143,6 +152,9 @@ mod tests {
             ErrorCode::BakeryFull,
             ErrorCode::UnsupportedImage,
             ErrorCode::FileTooLarge,
+            ErrorCode::SessionRunning,
+            ErrorCode::TooManySessions,
+            ErrorCode::NotImplemented,
         ] {
             assert_eq!(serde_json::to_value(code).unwrap(), json!(code.as_str()));
         }

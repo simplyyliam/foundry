@@ -84,14 +84,66 @@ export const commands = {
 	bakeryMove: (projectId: string, id: string, x: Coord, y: Coord, w: number | null, h: number | null, z: number | null) => typedError<BakeryState, AppError>(__TAURI_INVOKE("bakery_move", { projectId, id, x, y, w, h, z })),
 	/**  Removes the card and deletes its image file (only ever inside `docs/bakery/`). */
 	bakeryRemove: (projectId: string, id: string) => typedError<BakeryState, AppError>(__TAURI_INVOKE("bakery_remove", { projectId, id })),
+	/**  Live agent sessions, ordered by agent id. (Idle agents join this once the roster exists.) */
+	agentList: () => typedError<SessionInfo[], AppError>(__TAURI_INVOKE("agent_list")),
+	/**
+	 *  Starts the agent's Claude Code session. Not available yet: it needs the roster and launch
+	 *  message (P6), the subscription preflight (P3) and the hook server (P8). Always returns
+	 *  `not_implemented` and starts nothing.
+	 */
+	agentStart: (agentId: string, options: AgentStartOptions) => typedError<SessionInfo, AppError>(__TAURI_INVOKE("agent_start", { agentId, options })),
+	/**  Sends keystrokes or pasted text to a running session. */
+	agentWrite: (agentId: string, data: string) => typedError<null, AppError>(__TAURI_INVOKE("agent_write", { agentId, data })),
+	/**  Resizes a running session's terminal. */
+	agentResize: (agentId: string, cols: number, rows: number) => typedError<null, AppError>(__TAURI_INVOKE("agent_resize", { agentId, cols, rows })),
+	/**
+	 *  Stops a session: Ctrl+C, then after 5 s (at once with `force`) kills its whole process
+	 *  tree. Resolves once the process is gone.
+	 */
+	agentStop: (agentId: string, options: AgentStopOptions) => typedError<null, AppError>(__TAURI_INVOKE("agent_stop", { agentId, options })),
+	/**
+	 *  Base64 of the newest terminal output (≤ 256 KB), for a terminal view that remounts.
+	 *  Empty if the agent hasn't run.
+	 */
+	agentSnapshot: (agentId: string) => typedError<string, AppError>(__TAURI_INVOKE("agent_snapshot", { agentId })),
 };
 
 /** Events */
 export const events = {
+	agentOutput: makeEvent<AgentOutput>("agent:output"),
+	agentStatus: makeEvent<AgentStatus>("agent:status"),
 	appReady: makeEvent<AppReady>("app:ready"),
 };
 
 /* Types */
+/**  `agent:output`: a coalesced batch of raw terminal output. */
+export type AgentOutput = {
+	agentId: string,
+	/**  Base64 of the raw bytes (may split a UTF-8 sequence or an escape code). */
+	chunk: string,
+} & EventMeta;
+
+export type AgentStartOptions = {
+	promptFile: string | null,
+	sliceId: string | null,
+};
+
+/**  `agent:status`: a session changed state. */
+export type AgentStatus = {
+	agentId: string,
+	status: SessionStatus,
+	/**  Set with `exited` when the process reported one. */
+	exitCode: number | null,
+	pid: number | null,
+	/**  Epoch ms of this change. */
+	since: number,
+} & EventMeta;
+
+export type AgentStopOptions = {
+	/**  Skip the interrupt and the 5-second grace period. */
+	force: boolean,
+};
+
 /**  The error every command returns. Serializes to exactly `{ code, message }`. */
 export type AppError = {
 	code: ErrorCode,
@@ -216,7 +268,13 @@ export type ErrorCode =
 /**  Not a PNG, JPEG or WebP image (judged by its contents), or it can't be decoded. */
 "unsupported_image" | 
 /**  An input file is over the size cap. */
-"file_too_large";
+"file_too_large" | 
+/**  Something is still running against it: an agent session (stop it first). */
+"session_running" | 
+/**  `maxConcurrentAgents` sessions are already running. */
+"too_many_sessions" | 
+/**  The command exists in the contract but its backend isn't built yet. */
+"not_implemented";
 
 /**  Identity and timestamp shared by every event. Flatten it into the payload struct. */
 export type EventMeta = {
@@ -278,6 +336,22 @@ export type ProjectPatch = {
 	name: string | null,
 	tagline: string | null,
 };
+
+/**  A live session, as `agent_list` reports it. */
+export type SessionInfo = {
+	agentId: string,
+	projectId: string,
+	status: SessionStatus,
+	pid: number | null,
+	/**  Epoch ms when `status` last changed. */
+	since: number,
+};
+
+export type SessionStatus = 
+/**  No session (an agent that isn't running). */
+"idle" | 
+/**  Reserved; the process is being spawned. */
+"starting" | "running" | "exited";
 
 export type Settings = {
 	maxConcurrentAgents: number,

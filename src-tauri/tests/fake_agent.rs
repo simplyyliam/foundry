@@ -182,3 +182,43 @@ fn spawns_a_sleeping_child_that_outlives_it() {
         std::thread::sleep(Duration::from_millis(50));
     }
 }
+
+#[test]
+fn echo_upper_answers_each_line() {
+    let mut child = agent()
+        .arg("--echo-upper")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"hello\nworld\r\n")
+        .unwrap();
+    let mut out = String::new();
+    child
+        .stdout
+        .take()
+        .unwrap()
+        .read_to_string(&mut out)
+        .unwrap();
+    assert!(child.wait().unwrap().success());
+    assert_eq!(out.replace("\r\n", "\n"), "got:HELLO\ngot:WORLD\n");
+}
+
+#[test]
+fn bursts_numbered_lines_and_prints_cwd() {
+    let out = run(&["--burst", "3", "--print-cwd"]);
+    assert!(out.status.success());
+    let text = stdout(&out).replace("\r\n", "\n");
+    let cwd = std::env::current_dir().unwrap();
+    assert_eq!(
+        text,
+        format!(
+            "burst-00000\nburst-00001\nburst-00002\ncwd={}\n",
+            cwd.display()
+        )
+    );
+}

@@ -2,6 +2,10 @@
 //!
 //! Actions run in the order given, then the process exits:
 //!   --echo                   copy stdin to stdout until EOF
+//!   --echo-upper             for each stdin line, print `got:<LINE IN UPPERCASE>` until EOF
+//!                            (proves input reached this process, not just a terminal echo)
+//!   --burst <N>              print N lines `burst-00000`…, flushing after each
+//!   --print-cwd              print `cwd=<current directory>`
 //!   --print-env              print every environment variable as KEY=VALUE, sorted
 //!   --sleep-ms <N>           sleep N milliseconds
 //!   --spawn-child <N>        spawn a child fake-agent that sleeps N ms (sharing our stdio),
@@ -10,12 +14,15 @@
 //!
 //! Unknown or malformed arguments exit with code 2.
 
-use std::io::{self, Write};
+use std::io::{self, BufRead, Write};
 use std::process::{Command, ExitCode};
 use std::time::Duration;
 
 enum Action {
     Echo,
+    EchoUpper,
+    Burst(u64),
+    PrintCwd,
     PrintEnv,
     Sleep(u64),
     SpawnChild(u64),
@@ -38,6 +45,9 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<(Vec<Action>, u8), St
         let mut value = |name: &str| args.next().ok_or_else(|| format!("{name} needs a value"));
         match arg.as_str() {
             "--echo" => actions.push(Action::Echo),
+            "--echo-upper" => actions.push(Action::EchoUpper),
+            "--burst" => actions.push(Action::Burst(number(&value("--burst")?)?)),
+            "--print-cwd" => actions.push(Action::PrintCwd),
             "--print-env" => actions.push(Action::PrintEnv),
             "--sleep-ms" => actions.push(Action::Sleep(number(&value("--sleep-ms")?)?)),
             "--spawn-child" => actions.push(Action::SpawnChild(number(&value("--spawn-child")?)?)),
@@ -62,6 +72,24 @@ fn run(actions: Vec<Action>) -> Result<(), String> {
         match action {
             Action::Echo => {
                 io::copy(&mut io::stdin().lock(), &mut stdout).map_err(|e| e.to_string())?;
+            }
+            Action::EchoUpper => {
+                for line in io::stdin().lock().lines() {
+                    let line = line.map_err(|e| e.to_string())?;
+                    writeln!(stdout, "got:{}", line.trim_end().to_uppercase())
+                        .map_err(|e| e.to_string())?;
+                    stdout.flush().map_err(|e| e.to_string())?;
+                }
+            }
+            Action::Burst(lines) => {
+                for i in 0..lines {
+                    writeln!(stdout, "burst-{i:05}").map_err(|e| e.to_string())?;
+                    stdout.flush().map_err(|e| e.to_string())?;
+                }
+            }
+            Action::PrintCwd => {
+                let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+                writeln!(stdout, "cwd={}", cwd.display()).map_err(|e| e.to_string())?;
             }
             Action::PrintEnv => {
                 let mut vars: Vec<(String, String)> = std::env::vars().collect();

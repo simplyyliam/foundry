@@ -61,7 +61,13 @@ impl Env {
     }
 
     fn store_with(&self, git: Git) -> ProjectsStore {
-        ProjectsStore::load(self.data.path(), git, Default::default()).unwrap()
+        ProjectsStore::load(
+            self.data.path(),
+            git,
+            Default::default(),
+            Default::default(),
+        )
+        .unwrap()
     }
 }
 
@@ -1028,8 +1034,13 @@ fn repo_index_follows_create_relink_remove_and_restart() {
     let env = Env::new();
     let parent = TestRepo::new();
     let repos = Arc::new(RepoIndex::default());
-    let store =
-        ProjectsStore::load(env.data.path(), env.git_with_identity(), Arc::clone(&repos)).unwrap();
+    let store = ProjectsStore::load(
+        env.data.path(),
+        env.git_with_identity(),
+        Arc::clone(&repos),
+        Default::default(),
+    )
+    .unwrap();
     let project = create(&store, parent.path(), "Indexed").project;
     assert_eq!(
         repos.repo(&project.id).unwrap(),
@@ -1049,8 +1060,13 @@ fn repo_index_follows_create_relink_remove_and_restart() {
 
     // A fresh load publishes what's on disk.
     let fresh = Arc::new(RepoIndex::default());
-    let reloaded =
-        ProjectsStore::load(env.data.path(), env.git_with_identity(), Arc::clone(&fresh)).unwrap();
+    let reloaded = ProjectsStore::load(
+        env.data.path(),
+        env.git_with_identity(),
+        Arc::clone(&fresh),
+        Default::default(),
+    )
+    .unwrap();
     assert_eq!(fresh.repo(&project.id).unwrap(), moved);
 
     reloaded.archive_project(&project.id).unwrap();

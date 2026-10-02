@@ -8,6 +8,7 @@ pub mod ids;
 pub mod paths;
 pub mod repo_write;
 pub mod repos;
+pub mod sessions;
 pub mod slug;
 pub mod trash;
 

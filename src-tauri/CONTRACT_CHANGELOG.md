@@ -52,7 +52,7 @@ All additive. Every command returns `Result<T, AppError>`.
 | type | `ErrorCode` | adds `"not_archived"` | Returned when an action needs the project archived first. |
 | type | `Project` | adds `archived: boolean` | Foundry-side flag stored in `projects.json` (missing in older files → `false`). Never touches the folder. |
 | command | `list_projects` | unchanged signature; each `Project` now carries `archived` | Returns archived and active projects alike (no server-side filter); the frontend splits them. |
-| command | `archive_project` | — → `archiveProject(id): Project` | Sets `archived = true`. Registry only; idempotent. `not_found` for an unknown id. If it's the active project it's also closed (`activeProject()` → null, same as no project open); no event is emitted. Follow-up for P7: refuse while the project has a running agent session (not enforceable yet: no session state exists). |
+| command | `archive_project` | — → `archiveProject(id): Project` | Sets `archived = true`. Registry only; idempotent. `not_found` for an unknown id. If it's the active project it's also closed (`activeProject()` → null, same as no project open); no event is emitted. Refuses with `session_running` while the project has a live agent session (added in P7, see below). |
 | command | `unarchive_project` | — → `unarchiveProject(id): Project` | Sets `archived = false`. This is the restore action (nothing left disk). Idempotent. `not_found` for an unknown id. |
 | command | `remove_project` | `removeProject(id): null` (any project) → `removeProject(id): null`, **archived projects only**; otherwise `not_archived` and nothing changes | The backend enforces "you can only delete what you've already archived". Still unregisters only and never deletes repo files. Chosen instead of adding a new `delete_project` (the human decided). |
 
@@ -96,3 +96,26 @@ No command or type changed. The UI shows an image with `convertFileSrc(<dir>/<fi
 - At runtime, each project's `docs/bakery/` folder is added to the scope (not recursively) the first time any Bakery command touches it after the folder exists. Only files directly inside it load. The rest of the repo, `.foundry/`, subfolders and links pointing elsewhere are refused (the scope resolves links before matching).
 - `remove_project` and `delete_repository` both revoke the grant: once the folder leaves the registry, its `docs/bakery/` is forbidden, recursively, whether or not the files remain on disk. Tauri 2.11 has no way to remove a granted folder; a forbid always overrides a grant, so this is the revocation. A forbid can't be lifted at runtime either. If the same folder is linked again in that session (after a remove, or after a restore from the Recycle Bin), its Bakery images won't display until the app restarts.
 - `csp` is `null`, so nothing else is needed. If a CSP is ever set, it must allow `img-src asset: http://asset.localhost`.
+
+## P7 — agent sessions (engine; launch pending P3/P6/P8)
+
+All additive. `agent_start` is a stub until the roster and launch message (P6), the subscription preflight (P3) and the hook server (P8) exist. The other commands and both events are real, working against sessions the engine runs.
+
+| Kind | Name | Before → After | Why |
+| --- | --- | --- | --- |
+| type | `ErrorCode` | adds `"session_running" \| "too_many_sessions" \| "not_implemented"` | `session_running` (approved in P1): an agent session is live, either for the project being archived or for the agent being started. `too_many_sessions` is the spec's TooManySessions. `not_implemented`: the `agent_start` stub, which goes away once P3/P6/P8 land; removing it then is a contract change for approval. |
+| type | `SessionStatus` | — → `"idle" \| "starting" \| "running" \| "exited"` | |
+| type | `SessionInfo` | — → `{ agentId, projectId, status: SessionStatus, pid: number \| null, since: number }` | A live session. `since` = epoch ms of the last status change. |
+| type | `AgentStartOptions` | — → `{ promptFile: string \| null, sliceId: string \| null }` | |
+| type | `AgentStopOptions` | — → `{ force: boolean }` | |
+| command | `agent_list` | — → `agentList(): SessionInfo[]` | Live sessions, ordered by agent id. Idle roster agents join once P6 exists. |
+| command | `agent_start` | — → `agentStart(agentId, options): SessionInfo` | **Stub:** always `not_implemented`, starts nothing. |
+| command | `agent_write` | — → `agentWrite(agentId, data: string): null` | Keystrokes or pasted text. `not_found` if the agent has no running session. |
+| command | `agent_resize` | — → `agentResize(agentId, cols, rows): null` | Both ≥ 1 (`invalid_input`). |
+| command | `agent_stop` | — → `agentStop(agentId, options): null` | Sends Ctrl+C, waits 5 s, then kills the whole process tree (`force`: kill at once). Resolves once the process is gone. Stopping an agent that already exited is fine; one that never ran → `not_found`. |
+| command | `agent_snapshot` | — → `agentSnapshot(agentId): string` | Base64 of the newest ≤ 256 KB of output, for a remounting terminal. Empty if the agent hasn't run. Kept after exit, until the agent starts again. Memory only, never on disk. |
+| event | `agent:output` | — → `AgentOutput = { id, ts, agentId, chunk: string }` | `chunk` = base64 of raw terminal bytes, coalesced into ~16 ms batches (≤ 64 KB). A batch may split a UTF-8 sequence or an escape code, so feed it to the terminal as bytes. |
+| event | `agent:status` | — → `AgentStatus = { id, ts, agentId, status, exitCode: number \| null, pid: number \| null, since }` | `starting` → `running` (with `pid`) → `exited` (with `exitCode` when known; 1 when killed). A failed spawn goes `starting` → `exited`. |
+| command | `archive_project` | now `session_running` while a session is live for the project | Closes the P1 gap. Nothing changes when refused. |
+
+Internal (not contract): `core::sessions::SessionRegistry` holds live session state (`reserve`, `set_running`, `release`, `is_project_active`, `list`), shared by the agent-sessions engine and projects (Law 1). `ProjectsStore::load` takes it as a required argument. Dependencies added (approved): `portable-pty` 0.9, `base64` 0.22, and `windows` features `Win32_Security` (required by `CreateJobObjectW`), `Win32_System_JobObjects` and `Win32_System_Threading`.

@@ -11,10 +11,14 @@ use specta_typescript::Typescript;
 use tauri::{Manager, Runtime};
 use tauri_specta::{collect_commands, collect_events};
 
+use crate::core::events;
 use crate::core::git::Git;
 use crate::core::repos::RepoIndex;
+use crate::core::sessions::SessionRegistry;
 use crate::core::AppError;
-use crate::features::{app, bakery, folders, projects};
+#[cfg(test)]
+use crate::core::ErrorCode;
+use crate::features::{agent_sessions, app, bakery, folders, projects};
 
 /// Where the generated TypeScript bindings live. Never hand-edit that file.
 pub const BINDINGS_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../src/lib/bindings.ts");
@@ -49,8 +53,18 @@ pub fn specta_builder<R: Runtime>() -> tauri_specta::Builder<R> {
             bakery::commands::bakery_update,
             bakery::commands::bakery_move,
             bakery::commands::bakery_remove,
+            agent_sessions::commands::agent_list,
+            agent_sessions::commands::agent_start,
+            agent_sessions::commands::agent_write,
+            agent_sessions::commands::agent_resize,
+            agent_sessions::commands::agent_stop,
+            agent_sessions::commands::agent_snapshot,
         ])
-        .events(collect_events![app::AppReady])
+        .events(collect_events![
+            app::AppReady,
+            agent_sessions::AgentOutput,
+            agent_sessions::AgentStatus
+        ])
 }
 
 pub fn export_bindings<R: Runtime>(
@@ -70,10 +84,11 @@ pub fn projects_store<R: Runtime>(
     data_dir: std::path::PathBuf,
     git: Git,
     repos: Arc<RepoIndex>,
+    sessions: Arc<SessionRegistry>,
 ) -> Result<projects::ProjectsStore, AppError> {
     let scope = app.asset_protocol_scope();
     Ok(
-        projects::ProjectsStore::load(data_dir, git, repos)?.with_released_hook(move |repo| {
+        projects::ProjectsStore::load(data_dir, git, repos, sessions)?.with_released_hook(move |repo| {
             if let Err(err) = scope.forbid_directory(bakery::image_dir(repo), true) {
                 tracing::warn!(error = %err, "could not revoke asset access to a released repo");
             }
@@ -96,6 +111,40 @@ pub fn bakery_store<R: Runtime>(
     })
 }
 
+/// Sends session events to the webview.
+struct TauriSessionEvents<R: Runtime> {
+    app: tauri::AppHandle<R>,
+}
+
+impl<R: Runtime> agent_sessions::SessionEvents for TauriSessionEvents<R> {
+    // emit() already logs failures; a missed frame isn't worth more.
+    fn output(&self, event: agent_sessions::AgentOutput) {
+        let _ = events::emit(&self.app, &event);
+    }
+
+    fn status(&self, event: agent_sessions::AgentStatus) {
+        let _ = events::emit(&self.app, &event);
+    }
+}
+
+/// The session manager, emitting to the webview, with the cap read from the
+/// `maxConcurrentAgents` setting on every start.
+pub fn session_manager<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    sessions: Arc<SessionRegistry>,
+    projects: Arc<projects::ProjectsStore>,
+) -> agent_sessions::SessionManager {
+    agent_sessions::SessionManager::new(
+        sessions,
+        move || {
+            projects
+                .get_settings()
+                .map_or(1, |settings| settings.max_concurrent_agents)
+        },
+        Arc::new(TauriSessionEvents { app: app.clone() }),
+    )
+}
+
 /// Wires commands, events and setup onto a Tauri builder (real or mock runtime).
 pub fn app_builder<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
     let specta = specta_builder::<R>();
@@ -105,12 +154,20 @@ pub fn app_builder<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> 
             specta.mount_events(app);
             let data_dir = app.path().app_data_dir()?;
             let repos = Arc::new(RepoIndex::default());
-            app.manage(Arc::new(projects_store(
+            let sessions = Arc::new(SessionRegistry::default());
+            let projects = Arc::new(projects_store(
                 app.handle(),
                 data_dir,
                 Git::system(),
                 Arc::clone(&repos),
-            )?));
+                Arc::clone(&sessions),
+            )?);
+            app.manage(Arc::new(session_manager(
+                app.handle(),
+                sessions,
+                Arc::clone(&projects),
+            )));
+            app.manage(projects);
             app.manage(Arc::new(bakery_store(app.handle(), repos)));
             app::init(app.handle())?;
             Ok(())
@@ -133,10 +190,22 @@ pub fn run() {
         );
     }
 
-    if let Err(err) = app_builder(builder).run(tauri::generate_context!()) {
-        tracing::error!(%err, "error while running tauri application");
-        std::process::exit(1);
-    }
+    let app = match app_builder(builder).build(tauri::generate_context!()) {
+        Ok(app) => app,
+        Err(err) => {
+            tracing::error!(%err, "error while building tauri application");
+            std::process::exit(1);
+        }
+    };
+    app.run(|handle, event| {
+        // Kill every agent's process tree on the way out. (Each session's Job Object would
+        // also kill them when Foundry's handles close, even on a crash.)
+        if let tauri::RunEvent::Exit = event {
+            if let Some(manager) = handle.try_state::<Arc<agent_sessions::SessionManager>>() {
+                manager.shutdown();
+            }
+        }
+    });
 }
 
 #[cfg(test)]
@@ -174,6 +243,7 @@ mod tests {
             data.path().into(),
             Git::system(),
             Arc::clone(&repos),
+            Default::default(),
         )
         .unwrap();
         let bakery = bakery_store(app.handle(), repos);
@@ -254,6 +324,75 @@ mod tests {
         assert!(!scope.is_allowed(&t.image));
     }
 
+    /// P1's archive_project refuses while the project has a live agent session (the real
+    /// fake-agent process, wired exactly as the app wires it), and changes nothing.
+    #[test]
+    fn archive_project_refuses_while_an_agent_session_runs() {
+        use crate::features::agent_sessions::{HookEnv, LaunchSpec};
+        use crate::features::projects::LinkRepositoryInput;
+        use crate::testing::{fake_agent_path, TestRepo};
+        use tauri::test::{mock_builder, mock_context, noop_assets};
+
+        let app = app_builder(mock_builder())
+            .build(mock_context(noop_assets()))
+            .unwrap();
+        // A mock app doesn't run setup, where the real app registers its typed events.
+        specta_builder::<tauri::test::MockRuntime>().mount_events(&app);
+        let (data, repo) = (TestRepo::new(), TestRepo::new());
+        let sessions = Arc::new(SessionRegistry::default());
+        let projects = Arc::new(
+            projects_store(
+                app.handle(),
+                data.path().into(),
+                Git::system(),
+                Default::default(),
+                Arc::clone(&sessions),
+            )
+            .unwrap(),
+        );
+        let manager = session_manager(app.handle(), sessions, Arc::clone(&projects));
+        let id = projects
+            .link_repository(LinkRepositoryInput {
+                folder: repo.path().to_string_lossy().into_owned(),
+            })
+            .unwrap()
+            .project
+            .id;
+        projects.open_project(&id).unwrap();
+        manager
+            .start(LaunchSpec {
+                agent_id: "builder".into(),
+                project_id: id.clone(),
+                program: fake_agent_path(),
+                args: vec!["--sleep-ms".into(), "60000".into()],
+                cwd: repo.path().into(),
+                hook: HookEnv {
+                    port: 1,
+                    token: "t".into(),
+                },
+                cols: 80,
+                rows: 24,
+            })
+            .unwrap();
+
+        let refused = projects.archive_project(&id).unwrap_err();
+
+        assert_eq!(refused.code, ErrorCode::SessionRunning);
+        let listed = projects.list().unwrap();
+        assert!(!listed[0].archived, "nothing changed");
+        assert_eq!(
+            projects.active_project().unwrap().unwrap().id,
+            id,
+            "still open"
+        );
+
+        manager.stop("builder", true).unwrap();
+        assert!(
+            projects.archive_project(&id).unwrap().archived,
+            "allowed once stopped"
+        );
+    }
+
     /// Regenerates the real bindings file, then checks the contract is in it.
     #[test]
     fn export_bindings_regenerates_file_with_app_info() {
@@ -291,6 +430,16 @@ mod tests {
             "export type BakeryState",
             "unlabeledCount: number",
             "\"bakery_full\"",
+            "agentList",
+            "agentStart",
+            "agentWrite",
+            "agentResize",
+            "agentStop",
+            "agentSnapshot",
+            "\"agent:output\"",
+            "\"agent:status\"",
+            "\"session_running\"",
+            "\"too_many_sessions\"",
         ] {
             assert!(ts.contains(name), "{name} missing from bindings");
         }

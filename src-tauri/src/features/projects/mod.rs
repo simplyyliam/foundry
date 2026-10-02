@@ -17,6 +17,7 @@ use specta::Type;
 use crate::core::git::{self, Git, GitRun};
 use crate::core::paths::{self, PathKind};
 use crate::core::repos::RepoIndex;
+use crate::core::sessions::SessionRegistry;
 use crate::core::{ids, repo_write, trash, AppError, ErrorCode};
 use scaffold::ProjectFile;
 use storage::{now_ms, RegistryEntry, RegistryFile};
@@ -114,6 +115,8 @@ pub struct ProjectsStore {
     git: Git,
     /// Kept in step with the saved registry, for other features to look repos up in.
     repos: Arc<RepoIndex>,
+    /// Live agent sessions; archiving refuses while a project has one.
+    sessions: Arc<SessionRegistry>,
     on_released: Option<ReleasedHook>,
     state: Mutex<State>,
 }
@@ -191,11 +194,13 @@ fn path_string(path: &Path) -> String {
 
 impl ProjectsStore {
     /// Loads `projects.json` and `settings.json` from `data_dir`, creating it if needed, and
-    /// publishes every project's folder to `repos`.
+    /// publishes every project's folder to `repos`. `sessions` is the shared live-session
+    /// state that `archive_project` checks.
     pub fn load(
         data_dir: impl Into<PathBuf>,
         git: Git,
         repos: Arc<RepoIndex>,
+        sessions: Arc<SessionRegistry>,
     ) -> Result<Self, AppError> {
         let data_dir = data_dir.into();
         fs::create_dir_all(&data_dir)?;
@@ -207,6 +212,7 @@ impl ProjectsStore {
             data_dir,
             git,
             repos,
+            sessions,
             on_released: None,
             state: Mutex::new(State {
                 registry: registry.projects,
@@ -559,10 +565,17 @@ impl ProjectsStore {
     }
 
     /// Archives the project and, if it's the active one, closes it (active becomes null).
-    /// Registry only: the folder is never touched. Idempotent.
-    // TODO(P7): refuse while the project has a running agent session.
+    /// Registry only: the folder is never touched. Idempotent. `session_running` (and nothing
+    /// changes) while an agent session is live for it.
     pub fn archive_project(&self, id: &str) -> Result<Project, AppError> {
         let mut state = self.lock()?;
+        Self::find(&state, id)?;
+        if self.sessions.is_project_active(id) {
+            return Err(AppError::new(
+                ErrorCode::SessionRunning,
+                "stop this project's agent session before archiving it",
+            ));
+        }
         let project = self.set_archived(&mut state, id, true)?;
         if state.active.as_deref() == Some(id) {
             state.active = None;
