@@ -122,7 +122,7 @@ Internal (not contract): `core::sessions::SessionRegistry` holds live session st
 
 ## P3 — roadmap generation (plan loading pending P2)
 
-All additive. Loading the result into the plan as `proposed`, and the `discardConfirmed` guard, wait for the plan store (P2). Adding `discardConfirmed` to `generate_roadmap` then will be a signature change, for approval.
+All additive. Loading the result into the plan is done by the plan's `load_roadmap` (see "P3's plan half" below). `generate_roadmap`'s signature is unchanged.
 
 | Kind | Name | Before → After | Why |
 | --- | --- | --- | --- |
@@ -220,3 +220,14 @@ All additive, except `Settings` gaining `agentsTemplateId` (the UI must send it 
 | command | `generate_agents` | — → `generateAgents(projectId, { overwrite }): GenerateAgentsResult` | Writes AGENTS.md (template minus its usage note and "(TEMPLATE)", decided by the human), copies matching library files byte-identical into `docs/design/`, writes `docs/design/manifest.md`, and removes earlier copies that no longer match (tracked in `.foundry/design-files.json`). Refuses on unconfirmed placeholders or a leftover marker. A differing AGENTS.md → `agents_md_exists` unless `overwrite`, which backs it up to `.foundry/backups/AGENTS.<ms>.md` first. No matching library file → `designCopySkipped: true` plus `unmatchedFamilies`, not an error. |
 
 Template check: `resources/templates/AGENTS.template.md` Section 6 already routes through `docs/design/manifest.md`, has the Bakery paragraph, and ranks token file (3) → Bakery (4) → guideline files (5). Unchanged.
+
+## P3's plan half: `load_roadmap` (decided by the human)
+
+All additive. The plan feature stays the only writer of `plan.json`: it reads `.foundry/roadmap.json` from disk. The frontend calls `generate_roadmap`, then, on success, `load_roadmap`.
+
+| Kind | Name | Before → After | Why |
+| --- | --- | --- | --- |
+| command | `load_roadmap` | — → `loadRoadmap(projectId, options: { discardConfirmed: boolean }, expectedRevision: number \| null): RoadmapLoaded` | Replaces the plan (a fresh proposal, not a merge) with the roadmap's slices (dependencies by name → ids), requirements (assigned and unassigned, `unsourced` kept, all `proposed`), deferred items and open questions. One mutation: one revision bump, one `vsm_data.js` write, one `plan:changed`. Any inconsistency (unknown kind, unknown dependency, cycle, duplicate slice name, unreadable file) fails the whole load and changes nothing. No roadmap → `not_found`. |
+| type | `ErrorCode` | adds `"confirmed_requirements"` | `load_roadmap` while any requirement is confirmed and `discardConfirmed` is false (the spec's R-3-8 guard). |
+| type | `RoadmapLoaded` | — → `{ plan, slices, requirements, deferred, openQuestions: number, unanchoredDeferred: string[] }` | Counts of what was loaded. `unanchoredDeferred`: labels of deferred items whose `anchoredTo` names no slice (P3's prompt allows "the slice or family"), so they couldn't be anchored and weren't loaded: reported, not dropped silently. |
+| type | `Plan` (and `plan.json`) | adds `openQuestions: OpenQuestion[]` | Project-wide open questions (the roadmap's aren't tied to a slice). Older `plan.json` files load with an empty list. Not mirrored into `vsm_data.js`, whose schema has no project-level slot. |

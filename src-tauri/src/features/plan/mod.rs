@@ -7,6 +7,7 @@
 pub mod commands;
 mod graph;
 mod mirror;
+mod roadmap_file;
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -27,6 +28,8 @@ pub use graph::Derived;
 const PLAN_FILE: &str = ".foundry/plan.json";
 const PROJECT_FILE: &str = ".foundry/project.json";
 const BRAIN_DUMP: &str = "docs/brain-dump.md";
+/// Written by roadmap generation (P3); read here, never written.
+const ROADMAP_FILE: &str = ".foundry/roadmap.json";
 const PLAN_VERSION: u32 = 1;
 const MAX_NAME_CHARS: usize = 200;
 
@@ -120,6 +123,9 @@ pub struct PlanFile {
     pub requirements: Vec<Requirement>,
     #[serde(default)]
     pub deferred: Vec<Deferred>,
+    /// Project-wide open questions (a slice's own live on the slice).
+    #[serde(default)]
+    pub open_questions: Vec<OpenQuestion>,
 }
 
 // ---------- what the UI gets ----------
@@ -145,6 +151,29 @@ pub struct Plan {
     pub slices: Vec<SliceView>,
     pub requirements: Vec<Requirement>,
     pub deferred: Vec<Deferred>,
+    /// Project-wide open questions.
+    pub open_questions: Vec<OpenQuestion>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LoadRoadmapOptions {
+    /// Replace the plan even though some requirements are confirmed.
+    pub discard_confirmed: bool,
+}
+
+/// What `load_roadmap` loaded.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RoadmapLoaded {
+    pub plan: Plan,
+    pub slices: u32,
+    pub requirements: u32,
+    pub deferred: u32,
+    pub open_questions: u32,
+    /// Labels of deferred items whose `anchoredTo` names no slice (e.g. a feature family),
+    /// so they couldn't be anchored and weren't loaded.
+    pub unanchored_deferred: Vec<String>,
 }
 
 /// What an `add_*` command returns: the new item's id and the plan after it.
@@ -361,6 +390,7 @@ pub fn view(plan: &PlanFile) -> Plan {
             .collect(),
         requirements: plan.requirements.clone(),
         deferred: plan.deferred.clone(),
+        open_questions: plan.open_questions.clone(),
     }
 }
 
@@ -947,6 +977,66 @@ impl PlanStore {
             Ok(())
         })?;
         Ok(plan)
+    }
+
+    // ---------- loading a generated roadmap ----------
+
+    /// Replaces the plan with `.foundry/roadmap.json`, everything `proposed`: one mutation
+    /// (one revision, one `vsm_data.js` write, one `plan:changed`). Refused
+    /// (`confirmed_requirements`) while any requirement is confirmed, unless
+    /// `discardConfirmed`. Any problem with the roadmap fails the whole load and changes
+    /// nothing.
+    pub fn load_roadmap(
+        &self,
+        project_id: &str,
+        options: LoadRoadmapOptions,
+        expected: Option<u32>,
+    ) -> Result<RoadmapLoaded, AppError> {
+        let (counts, plan) = self.mutate(project_id, expected, |plan, repo| {
+            let confirmed = plan
+                .requirements
+                .iter()
+                .filter(|r| r.state == RequirementState::Confirmed)
+                .count();
+            if confirmed > 0 && !options.discard_confirmed {
+                return Err(AppError::new(
+                    ErrorCode::ConfirmedRequirements,
+                    format!(
+                        "loading the roadmap would replace {confirmed} confirmed \
+                         requirement(s); load with discardConfirmed to do it anyway"
+                    ),
+                ));
+            }
+            let text = repo_write::read_to_string(repo, ROADMAP_FILE)?.ok_or_else(|| {
+                AppError::not_found("there's no generated roadmap yet: generate one first")
+            })?;
+            let roadmap: roadmap_file::RoadmapFile =
+                serde_json::from_str(&text).map_err(|err| {
+                    AppError::invalid_input(format!("{ROADMAP_FILE} is unreadable: {err}"))
+                })?;
+            let (loaded, unanchored) = roadmap_file::to_plan(roadmap)?;
+            let counts = (
+                loaded.slices.len(),
+                loaded.requirements.len(),
+                loaded.deferred.len(),
+                loaded.open_questions.len(),
+                unanchored,
+            );
+            *plan = PlanFile {
+                revision: plan.revision,
+                ..loaded
+            };
+            Ok(counts)
+        })?;
+        let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+        Ok(RoadmapLoaded {
+            plan,
+            slices: count(counts.0),
+            requirements: count(counts.1),
+            deferred: count(counts.2),
+            open_questions: count(counts.3),
+            unanchored_deferred: counts.4,
+        })
     }
 
     // ---------- deferred ----------

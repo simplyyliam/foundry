@@ -85,6 +85,7 @@ pub fn specta_builder<R: Runtime>() -> tauri_specta::Builder<R> {
             plan::commands::unconfirm_requirement,
             plan::commands::add_deferred,
             plan::commands::remove_deferred,
+            plan::commands::load_roadmap,
             team::commands::role_handbook_list,
             team::commands::role_handbook_add,
             team::commands::role_handbook_update,
@@ -1061,6 +1062,218 @@ opus-test"
         manager.shutdown();
     }
 
+    // ---------- P3's plan half: generate_roadmap, then load_roadmap ----------
+
+    enum Canned {
+        Text(String),
+        /// Wait until the run is cancelled or times out.
+        Block,
+    }
+
+    /// A model that replies from a queue.
+    struct CannedRunner(std::sync::Mutex<std::collections::VecDeque<Canned>>);
+
+    impl core::llm::LlmRunner for CannedRunner {
+        fn run(&self, _prompt: &str, control: &core::llm::RunControl) -> Result<String, AppError> {
+            let next = self.0.lock().unwrap().pop_front();
+            match next {
+                Some(Canned::Text(text)) => Ok(text),
+                Some(Canned::Block) => loop {
+                    control.check()?;
+                    std::thread::sleep(Duration::from_millis(10));
+                },
+                None => Err(AppError::internal("no more replies")),
+            }
+        }
+    }
+
+    #[derive(Default)]
+    struct Recorded(std::sync::Mutex<Vec<String>>);
+
+    impl roadmap::ProgressSink for Recorded {
+        fn progress(&self, event: roadmap::RoadmapProgress) {
+            self.0.lock().unwrap().push(format!("{:?}", event.stage));
+        }
+    }
+
+    impl plan::PlanEvents for Recorded {
+        fn changed(&self, event: plan::PlanChanged) {
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("plan:{}", event.revision));
+        }
+    }
+
+    const BRAIN: &str = "Users can save a reading list.\n\nIt must work offline for a week.\n";
+
+    fn valid_roadmap_reply() -> String {
+        serde_json::json!({
+            "goal": "Read anywhere",
+            "targetUsers": [], "featureMap": [],
+            "slices": [
+                { "name": "Core", "delivers": ["save"], "dependsOn": [] },
+                { "name": "Offline", "delivers": ["offline"], "dependsOn": ["Core"] }
+            ],
+            "requirements": [
+                { "text": "Save a list", "kind": "behavior", "sourceExcerpt": "save a reading list",
+                  "sliceName": "Core", "verifiedBy": "add one" },
+                { "text": "Offline a week", "kind": "constraint", "sourceExcerpt": "made-up words",
+                  "sliceName": "Offline", "verifiedBy": "wait" }
+            ],
+            "deferred": [{ "label": "Sharing", "anchoredTo": "Core" }],
+            "openQuestions": ["Pricing?"]
+        })
+        .to_string()
+    }
+
+    /// One repo with a brain dump, the real roadmap and plan stores sharing it.
+    struct Pipeline {
+        repo: crate::testing::TestRepo,
+        roadmap: Arc<roadmap::RoadmapStore>,
+        plan: plan::PlanStore,
+        runner: Arc<CannedRunner>,
+        plan_events: Arc<Recorded>,
+    }
+
+    fn pipeline(timeout: Duration) -> Pipeline {
+        let repo = crate::testing::TestRepo::new();
+        repo.write("docs/brain-dump.md", BRAIN);
+        let repos = Arc::new(RepoIndex::default());
+        repos.replace_all([("p", repo.path())]);
+        let runner = Arc::new(CannedRunner(Default::default()));
+        let source = Arc::clone(&runner);
+        let roadmap = roadmap::RoadmapStore::new(
+            Arc::clone(&repos),
+            move || Ok(Arc::clone(&source) as Arc<dyn core::llm::LlmRunner>),
+            || core::claude::status_with(None, None),
+            Arc::new(Recorded::default()),
+        )
+        .with_timeout(timeout);
+        let plan_events = Arc::new(Recorded::default());
+        let plan = plan::PlanStore::new(
+            repos,
+            Git::system(),
+            Arc::clone(&plan_events) as Arc<dyn plan::PlanEvents>,
+        );
+        Pipeline {
+            repo,
+            roadmap: Arc::new(roadmap),
+            plan,
+            runner,
+            plan_events,
+        }
+    }
+
+    impl Pipeline {
+        fn replies(&self, replies: Vec<Canned>) {
+            *self.runner.0.lock().unwrap() = replies.into();
+        }
+
+        /// plan.json, vsm_data.js and roadmap.json bytes (None when absent).
+        fn files(&self) -> [Option<Vec<u8>>; 3] {
+            [".foundry/plan.json", "vsm_data.js", ".foundry/roadmap.json"]
+                .map(|f| std::fs::read(self.repo.path().join(f)).ok())
+        }
+    }
+
+    // R-3-1, end to end through both features.
+    #[test]
+    fn a_generated_roadmap_loads_into_the_plan_as_proposed() {
+        let p = pipeline(Duration::from_secs(10));
+        p.replies(vec![Canned::Text(valid_roadmap_reply())]);
+
+        let generated = p.roadmap.generate("p").unwrap();
+        assert_eq!(generated.roadmap.requirements.len(), 2);
+        assert!(
+            p.files()[0].is_none(),
+            "generation alone doesn't touch the plan"
+        );
+
+        let loaded = p
+            .plan
+            .load_roadmap("p", plan::LoadRoadmapOptions::default(), None)
+            .unwrap();
+
+        let plan = loaded.plan;
+        assert_eq!(plan.revision, 1);
+        assert_eq!(
+            *p.plan_events.0.lock().unwrap(),
+            ["plan:1"],
+            "one plan:changed"
+        );
+        let names: Vec<&str> = plan.slices.iter().map(|s| s.slice.name.as_str()).collect();
+        assert_eq!(names, ["Core", "Offline"]);
+        assert!(plan
+            .requirements
+            .iter()
+            .all(|r| r.state == plan::RequirementState::Proposed));
+        let unsourced: Vec<bool> = plan.requirements.iter().map(|r| r.unsourced).collect();
+        assert_eq!(
+            unsourced,
+            [false, true],
+            "P3's unsourced flags carried into the plan"
+        );
+        assert_eq!(plan.deferred[0].label, "Sharing");
+        assert_eq!(plan.open_questions[0].text, "Pricing?");
+        assert!(p.files()[1].is_some(), "vsm_data.js written with it");
+    }
+
+    // The plan half of R-3-4 and R-3-9: a failed, cancelled or timed-out generation leaves
+    // the plan (and vsm_data.js, and the last roadmap) exactly as they were.
+    #[test]
+    fn a_failed_cancelled_or_timed_out_generation_leaves_the_plan_untouched() {
+        let p = pipeline(Duration::from_secs(10));
+        // An existing plan and roadmap to protect.
+        p.replies(vec![Canned::Text(valid_roadmap_reply())]);
+        p.roadmap.generate("p").unwrap();
+        p.plan
+            .load_roadmap("p", plan::LoadRoadmapOptions::default(), None)
+            .unwrap();
+        let before = p.files();
+        let events_before = p.plan_events.0.lock().unwrap().len();
+
+        // Invalid twice (R-3-4).
+        p.replies(vec![Canned::Text("nope".into()), Canned::Text("{}".into())]);
+        let err = p.roadmap.generate("p").unwrap_err();
+        assert_eq!(err.code, ErrorCode::GenerationFailed);
+        assert_eq!(p.files(), before, "after a failed generation");
+
+        // Cancelled (R-3-9).
+        p.replies(vec![Canned::Block]);
+        let roadmap = Arc::clone(&p.roadmap);
+        let run = std::thread::spawn(move || roadmap.generate("p"));
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !p.roadmap.cancel("p") {
+            assert!(std::time::Instant::now() < deadline, "never started");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(run.join().unwrap().unwrap_err().code, ErrorCode::Cancelled);
+        assert_eq!(p.files(), before, "after a cancelled generation");
+
+        // Timed out (R-3-9).
+        let slow = pipeline(Duration::from_millis(200));
+        std::fs::create_dir_all(slow.repo.path().join(".foundry")).unwrap();
+        for (i, rel) in [".foundry/plan.json", "vsm_data.js", ".foundry/roadmap.json"]
+            .iter()
+            .enumerate()
+        {
+            std::fs::write(slow.repo.path().join(rel), before[i].as_ref().unwrap()).unwrap();
+        }
+        slow.replies(vec![Canned::Block]);
+        assert_eq!(
+            slow.roadmap.generate("p").unwrap_err().code,
+            ErrorCode::TimedOut
+        );
+        assert_eq!(slow.files(), before, "after a timed-out generation");
+
+        assert_eq!(
+            p.plan_events.0.lock().unwrap().len(),
+            events_before,
+            "no plan:changed for any of them"
+        );
+    }
+
     /// Regenerates the real bindings file, then checks the contract is in it.
     #[test]
     fn export_bindings_regenerates_file_with_app_info() {
@@ -1131,6 +1344,8 @@ opus-test"
             "designLibraryList",
             "\"team_confirmed\"",
             "\"placeholders_unconfirmed\"",
+            "loadRoadmap",
+            "\"confirmed_requirements\"",
         ] {
             assert!(ts.contains(name), "{name} missing from bindings");
         }

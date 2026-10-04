@@ -175,6 +175,12 @@ export const commands = {
 	/**  `anchoredTo` must be a slice id. */
 	addDeferred: (projectId: string, deferred: NewDeferred, expectedRevision: number | null) => typedError<PlanAdded, AppError>(__TAURI_INVOKE("add_deferred", { projectId, deferred, expectedRevision })),
 	removeDeferred: (projectId: string, deferredId: string, expectedRevision: number | null) => typedError<Plan, AppError>(__TAURI_INVOKE("remove_deferred", { projectId, deferredId, expectedRevision })),
+	/**
+	 *  Replaces the plan with the last generated roadmap (`.foundry/roadmap.json`), everything
+	 *  `proposed`, in one mutation. `confirmed_requirements` while any requirement is confirmed,
+	 *  unless `discardConfirmed`. Call after `generate_roadmap` succeeds.
+	 */
+	loadRoadmap: (projectId: string, options: LoadRoadmapOptions, expectedRevision: number | null) => typedError<RoadmapLoaded, AppError>(__TAURI_INVOKE("load_roadmap", { projectId, options, expectedRevision })),
 	/**  The Role Handbook (seeded with the starter roles the first time). */
 	roleHandbookList: () => typedError<HandbookRole[], AppError>(__TAURI_INVOKE("role_handbook_list")),
 	roleHandbookAdd: (role: NewHandbookRole) => typedError<HandbookRole[], AppError>(__TAURI_INVOKE("role_handbook_add", { role })),
@@ -482,7 +488,9 @@ export type ErrorCode =
 /**  AGENTS.md placeholders still need confirming. */
 "placeholders_unconfirmed" | 
 /**  An AGENTS.md that differs already exists: pass `overwrite: true` (it's backed up). */
-"agents_md_exists";
+"agents_md_exists" | 
+/**  Loading a roadmap would replace confirmed requirements: pass `discardConfirmed`. */
+"confirmed_requirements";
 
 /**  Identity and timestamp shared by every event. Flatten it into the payload struct. */
 export type EventMeta = {
@@ -579,6 +587,11 @@ export type LinkRepositoryResult = {
 	createdFiles: string[],
 };
 
+export type LoadRoadmapOptions = {
+	/**  Replace the plan even though some requirements are confirmed. */
+	discardConfirmed: boolean,
+};
+
 export type NewDeferred = {
 	label: string,
 	anchoredTo: string,
@@ -631,6 +644,8 @@ export type Plan = {
 	slices: SliceView[],
 	requirements: PlanRequirement[],
 	deferred: PlanDeferred[],
+	/**  Project-wide open questions. */
+	openQuestions: OpenQuestion[],
 };
 
 /**  What an `add_*` command returns: the new item's id and the plan after it. */
@@ -754,6 +769,20 @@ export type Roadmap = {
 	requirements: Requirement[],
 	deferred: Deferred[],
 	openQuestions: string[],
+};
+
+/**  What `load_roadmap` loaded. */
+export type RoadmapLoaded = {
+	plan: Plan,
+	slices: number,
+	requirements: number,
+	deferred: number,
+	openQuestions: number,
+	/**
+	 *  Labels of deferred items whose `anchoredTo` names no slice (e.g. a feature family),
+	 *  so they couldn't be anchored and weren't loaded.
+	 */
+	unanchoredDeferred: string[],
 };
 
 /**  `roadmap:progress`. */

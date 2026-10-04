@@ -1009,3 +1009,260 @@ fn commands_round_trip_over_ipc() {
         "B is in progress, so neither ready nor blocked"
     );
 }
+
+// ---------- loading a generated roadmap (P3's plan half) ----------
+
+/// `.foundry/roadmap.json` as roadmap generation writes it.
+fn roadmap_json() -> Value {
+    json!({
+        "roadmap": {
+            "goal": "Read anywhere",
+            "targetUsers": [], "featureMap": [],
+            "slices": [
+                { "name": "Core", "delivers": ["save a list"], "dependsOn": [] },
+                { "name": "Offline", "delivers": ["read offline"], "dependsOn": ["Core"] }
+            ],
+            "requirements": [
+                { "text": "Save a reading list", "kind": "behavior", "sourceExcerpt": "save a reading list",
+                  "sliceName": "Core", "verifiedBy": "add one", "unsourced": false },
+                { "text": "Share lists", "kind": "interaction", "sourceExcerpt": "made up",
+                  "sliceName": "Offline", "verifiedBy": "share one", "unsourced": true }
+            ],
+            "deferred": [
+                { "label": "Sync later", "anchoredTo": "Offline" },
+                { "label": "Social", "anchoredTo": "Library family" }
+            ],
+            "openQuestions": ["What does it cost?", "  "]
+        },
+        "unassigned": [
+            { "text": "Works for a week", "kind": "constraint", "sourceExcerpt": "a week",
+              "sliceName": null, "verifiedBy": "wait", "unsourced": false }
+        ],
+        "uncoveredParagraphs": [], "attempts": 1, "generatedAt": 1
+    })
+}
+
+fn write_roadmap(env: &Env, value: &Value) {
+    env.repo.write(".foundry/roadmap.json", &value.to_string());
+}
+
+fn load(env: &Env, discard: bool) -> Result<RoadmapLoaded, AppError> {
+    env.store.load_roadmap(
+        P,
+        LoadRoadmapOptions {
+            discard_confirmed: discard,
+        },
+        None,
+    )
+}
+
+/// Bytes of plan.json and vsm_data.js (None when absent or a folder), and the event count.
+fn plan_state(env: &Env) -> (Option<Vec<u8>>, Option<Vec<u8>>, usize) {
+    (
+        fs::read(env.repo.path().join(".foundry/plan.json")).ok(),
+        fs::read(env.repo.path().join("vsm_data.js")).ok(),
+        env.events.0.lock().unwrap().len(),
+    )
+}
+
+// R-3-1
+#[test]
+fn a_generated_roadmap_lands_in_the_plan_as_proposed_in_one_mutation() {
+    let env = Env::new();
+    let old = env.slice("Old slice", &[]);
+    write_roadmap(&env, &roadmap_json());
+
+    let loaded = load(&env, false).unwrap();
+
+    let plan = &loaded.plan;
+    assert_eq!(plan.revision, 2, "exactly one revision for the whole load");
+    assert_eq!(
+        *env.events.0.lock().unwrap(),
+        [1, 2],
+        "exactly one plan:changed"
+    );
+    assert!(
+        !plan.slices.iter().any(|s| s.slice.id == old),
+        "replaced, not merged"
+    );
+    let names: Vec<&str> = plan.slices.iter().map(|s| s.slice.name.as_str()).collect();
+    assert_eq!(names, ["Core", "Offline"]);
+    let core = &plan.slices[0];
+    let offline = &plan.slices[1];
+    assert_eq!(
+        offline.slice.depends_on,
+        std::slice::from_ref(&core.slice.id),
+        "names became ids"
+    );
+    assert_eq!(offline.layer, 1);
+    assert!(plan
+        .slices
+        .iter()
+        .all(|s| s.slice.status == SliceStatus::Queued));
+
+    assert_eq!(plan.requirements.len(), 3, "assigned + unassigned");
+    assert!(plan
+        .requirements
+        .iter()
+        .all(|r| r.state == RequirementState::Proposed));
+    let by_text = |t: &str| plan.requirements.iter().find(|r| r.text == t).unwrap();
+    assert_eq!(
+        by_text("Save a reading list").slice_id.as_ref(),
+        Some(&core.slice.id)
+    );
+    assert_eq!(
+        by_text("Save a reading list").kind,
+        RequirementKind::Behavior
+    );
+    assert!(
+        by_text("Share lists").unsourced,
+        "unsourced flag carried over"
+    );
+    assert!(!by_text("Save a reading list").unsourced);
+    assert_eq!(
+        by_text("Works for a week").slice_id,
+        None,
+        "unassigned stays unassigned"
+    );
+
+    assert_eq!(plan.deferred.len(), 1);
+    assert_eq!(plan.deferred[0].anchored_to, offline.slice.id);
+    assert_eq!(
+        loaded.unanchored_deferred,
+        ["Social"],
+        "reported, not silently dropped"
+    );
+    let questions: Vec<&str> = plan
+        .open_questions
+        .iter()
+        .map(|q| q.text.as_str())
+        .collect();
+    assert_eq!(questions, ["What does it cost?"]);
+    assert_eq!(
+        (
+            loaded.slices,
+            loaded.requirements,
+            loaded.deferred,
+            loaded.open_questions
+        ),
+        (2, 3, 1, 1)
+    );
+    assert_eq!(env.plan(), *plan, "what was returned is what's on disk");
+    assert_mirror_matches(&env);
+}
+
+// R-3-8
+#[test]
+fn loading_is_refused_over_confirmed_requirements_unless_discard_confirmed() {
+    let env = Env::new();
+    let s = env.slice("A", &[]);
+    let r = env.requirement(Some(&s));
+    env.store.confirm_requirement(P, &r, None).unwrap();
+    write_roadmap(&env, &roadmap_json());
+    let before = plan_state(&env);
+
+    let err = load(&env, false).unwrap_err();
+
+    assert_eq!(err.code, ErrorCode::ConfirmedRequirements);
+    assert!(err.message.contains("1 confirmed"), "{}", err.message);
+    assert_eq!(
+        plan_state(&env),
+        before,
+        "plan.json, vsm_data.js and events untouched"
+    );
+
+    let loaded = load(&env, true).unwrap();
+    assert_eq!(loaded.plan.requirements.len(), 3);
+    assert!(loaded
+        .plan
+        .requirements
+        .iter()
+        .all(|r| r.state == RequirementState::Proposed));
+}
+
+/// Any problem anywhere in the roadmap fails the whole load: plan.json, vsm_data.js and the
+/// event stream are exactly as before.
+#[test]
+fn a_load_that_fails_midway_changes_nothing() {
+    let env = Env::new();
+    env.slice("A", &[]);
+    let base = roadmap_json();
+    let mut bad_kind = base.clone();
+    bad_kind["unassigned"][0]["kind"] = json!("functional"); // the very last item
+    let mut unknown_dep = base.clone();
+    unknown_dep["roadmap"]["slices"][1]["dependsOn"] = json!(["Core", "Ghost"]);
+    let mut cycle = base.clone();
+    cycle["roadmap"]["slices"][0]["dependsOn"] = json!(["Offline"]);
+    let mut duplicate = base.clone();
+    duplicate["roadmap"]["slices"][1]["name"] = json!("Core");
+
+    let cases = [
+        (
+            "bad kind",
+            Some(bad_kind.to_string()),
+            ErrorCode::InvalidInput,
+        ),
+        (
+            "unknown dependency",
+            Some(unknown_dep.to_string()),
+            ErrorCode::InvalidInput,
+        ),
+        ("cycle", Some(cycle.to_string()), ErrorCode::DependencyCycle),
+        (
+            "duplicate slice",
+            Some(duplicate.to_string()),
+            ErrorCode::InvalidInput,
+        ),
+        (
+            "unreadable",
+            Some("{ nope".to_string()),
+            ErrorCode::InvalidInput,
+        ),
+        ("missing", None, ErrorCode::NotFound),
+    ];
+    for (case, roadmap, code) in cases {
+        let path = env.repo.path().join(".foundry/roadmap.json");
+        match &roadmap {
+            Some(text) => fs::write(&path, text).unwrap(),
+            None => {
+                let _ = fs::remove_file(&path);
+            }
+        }
+        let before = plan_state(&env);
+        let err = load(&env, true).unwrap_err();
+        assert_eq!(err.code, code, "{case}: {}", err.message);
+        assert_eq!(plan_state(&env), before, "{case}: something changed");
+    }
+
+    // The last step failing (vsm_data.js can't be written) also leaves both files as they
+    // were: plan.json is restored.
+    write_roadmap(&env, &base);
+    let before = plan_state(&env);
+    fs::remove_file(env.repo.path().join("vsm_data.js")).unwrap();
+    fs::create_dir(env.repo.path().join("vsm_data.js")).unwrap();
+    assert!(load(&env, true).is_err());
+    assert_eq!(
+        fs::read(env.repo.path().join(".foundry/plan.json")).ok(),
+        before.0
+    );
+    assert!(
+        env.repo.path().join("vsm_data.js").is_dir(),
+        "mirror untouched"
+    );
+    assert_eq!(env.events.0.lock().unwrap().len(), before.2, "no event");
+}
+
+#[test]
+fn load_roadmap_honours_expected_revision() {
+    let env = Env::new();
+    env.slice("A", &[]);
+    write_roadmap(&env, &roadmap_json());
+    let stale = env
+        .store
+        .load_roadmap(P, LoadRoadmapOptions::default(), Some(0));
+    assert_eq!(stale.unwrap_err().code, ErrorCode::StaleRevision);
+    let fresh = env
+        .store
+        .load_roadmap(P, LoadRoadmapOptions::default(), Some(1));
+    assert_eq!(fresh.unwrap().plan.revision, 2);
+}

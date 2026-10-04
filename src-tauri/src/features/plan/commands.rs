@@ -6,8 +6,8 @@ use std::sync::Arc;
 use tauri::State;
 
 use super::{
-    NewDeferred, NewRequirement, NewSlice, Plan, PlanAdded, PlanStore, PlanSummary,
-    RequirementPatch, SlicePatch, SliceStatus, StatusOptions,
+    LoadRoadmapOptions, NewDeferred, NewRequirement, NewSlice, Plan, PlanAdded, PlanStore,
+    PlanSummary, RequirementPatch, RoadmapLoaded, SlicePatch, SliceStatus, StatusOptions,
 };
 use crate::core::AppError;
 
@@ -301,6 +301,23 @@ pub async fn remove_deferred(
 ) -> Result<Plan, AppError> {
     blocking(&store, move |s| {
         s.remove_deferred(&project_id, &deferred_id, expected_revision)
+    })
+    .await
+}
+
+/// Replaces the plan with the last generated roadmap (`.foundry/roadmap.json`), everything
+/// `proposed`, in one mutation. `confirmed_requirements` while any requirement is confirmed,
+/// unless `discardConfirmed`. Call after `generate_roadmap` succeeds.
+#[tauri::command]
+#[specta::specta]
+pub async fn load_roadmap(
+    store: Store<'_>,
+    project_id: String,
+    options: LoadRoadmapOptions,
+    expected_revision: Option<u32>,
+) -> Result<RoadmapLoaded, AppError> {
+    blocking(&store, move |s| {
+        s.load_roadmap(&project_id, options, expected_revision)
     })
     .await
 }

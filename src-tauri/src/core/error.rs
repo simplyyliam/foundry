@@ -80,6 +80,8 @@ pub enum ErrorCode {
     PlaceholdersUnconfirmed,
     /// An AGENTS.md that differs already exists: pass `overwrite: true` (it's backed up).
     AgentsMdExists,
+    /// Loading a roadmap would replace confirmed requirements: pass `discardConfirmed`.
+    ConfirmedRequirements,
 }
 
 impl ErrorCode {
@@ -121,6 +123,7 @@ impl ErrorCode {
             Self::TeamNotConfirmed => "team_not_confirmed",
             Self::PlaceholdersUnconfirmed => "placeholders_unconfirmed",
             Self::AgentsMdExists => "agents_md_exists",
+            Self::ConfirmedRequirements => "confirmed_requirements",
         }
     }
 }
@@ -233,6 +236,7 @@ mod tests {
             ErrorCode::TeamNotConfirmed,
             ErrorCode::PlaceholdersUnconfirmed,
             ErrorCode::AgentsMdExists,
+            ErrorCode::ConfirmedRequirements,
         ] {
             assert_eq!(serde_json::to_value(code).unwrap(), json!(code.as_str()));
         }
