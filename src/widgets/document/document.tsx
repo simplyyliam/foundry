@@ -46,12 +46,14 @@ function LoadedDocumentView({ projectId, loaded, loadError }: LoadedDocumentView
   const { editor, status } = useDocumentEditor({ projectId, loaded, uncovered: uncovered.paragraphs });
 
   return (
-    <div ref={setScroller} className="flex h-full w-full flex-col overflow-y-auto bg-background">
+    <div className="flex h-full w-full flex-col bg-background">
       <DocumentHeader note={uncovered.error?.message}>
         <SaveStatus status={status} />
       </DocumentHeader>
-      {loadError !== null && <LoadError message={loadError} />}
-      <DocumentEditor editor={editor} scrollTarget={scroller} />
+      <div ref={setScroller} className="min-h-0 flex-1 overflow-y-auto">
+        {loadError !== null && <LoadError message={loadError} />}
+        <DocumentEditor editor={editor} scrollTarget={scroller} />
+      </div>
     </div>
   );
 }

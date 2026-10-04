@@ -3,6 +3,7 @@ import { RouterBrowser } from "./Router";
 import { TooltipProvider } from "./components/ui/tooltip";
 import { useEffect } from "react";
 import { commands } from "./lib/bindings";
+import { AppContextMenu } from "./shared";
 
 export default function App() {
   useEffect(() => {
@@ -22,7 +23,10 @@ export default function App() {
 
   return (
     <TooltipProvider>
-      <RouterProvider router={RouterBrowser} />
+      {/* The app-wide right-click menu (replaces the webview's native one). */}
+      <AppContextMenu>
+        <RouterProvider router={RouterBrowser} />
+      </AppContextMenu>
     </TooltipProvider>
   )
 }

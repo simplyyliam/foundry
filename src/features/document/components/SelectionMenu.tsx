@@ -1,4 +1,4 @@
-import { useEffect, useState, type ComponentType, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type ComponentType, type KeyboardEvent, type RefObject } from "react";
 import type { Editor } from "@tiptap/core";
 import { NodeSelection } from "@tiptap/pm/state";
 import { useEditorState } from "@tiptap/react";
@@ -8,9 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { usePressScale } from "@/shared";
-
-const MOD = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl+";
+import { shortcut, usePressScale } from "@/shared";
 
 interface MenuButtonProps {
   Icon: ComponentType<LucideProps>;
@@ -49,7 +47,7 @@ function MenuButton({ Icon, label, shortcut, active, onPress }: MenuButtonProps)
   );
 }
 
-function LinkField({ editor, onDone }: { editor: Editor; onDone: () => void }) {
+function LinkField({ editor, onDone, inputRef }: { editor: Editor; onDone: () => void; inputRef: RefObject<HTMLInputElement | null> }) {
   const [href, setHref] = useState(() => (editor.getAttributes("link").href as string | undefined) ?? "");
 
   const apply = () => {
@@ -75,6 +73,7 @@ function LinkField({ editor, onDone }: { editor: Editor; onDone: () => void }) {
 
   return (
     <Input
+      ref={inputRef}
       autoFocus
       value={href}
       onChange={(event) => setHref(event.target.value)}
@@ -90,8 +89,9 @@ function LinkField({ editor, onDone }: { editor: Editor; onDone: () => void }) {
  * The small menu over a text selection: bold, italic, link, headings 1–3 and lists. Hidden
  * in code blocks and when the editor is read-only. Ctrl/⌘+K opens the link field.
  */
-export function SelectionMenu({ editor, scrollTarget }: { editor: Editor; scrollTarget?: HTMLElement | null }) {
+export function SelectionMenu({ editor, scrollTarget }: { editor: Editor; scrollTarget: HTMLElement }) {
   const [mode, setMode] = useState<"format" | "link">("format");
+  const linkInput = useRef<HTMLInputElement>(null);
   const active = useEditorState({
     editor,
     selector: ({ editor: current }) => ({
@@ -128,10 +128,19 @@ export function SelectionMenu({ editor, scrollTarget }: { editor: Editor; scroll
       options={{
         placement: "top",
         offset: 8,
-        flip: true,
-        shift: { padding: 12 },
-        scrollTarget: scrollTarget ?? undefined,
+        // The menu is positioned outside the scroll area (it isn't a containing block), so it's
+        // never clipped and draws over everything. The scroll area is still the limit it
+        // flips against: below the selection when there's no room above inside it. TipTap
+        // runs flip before offset, so the padding stands in for the 8px gap.
+        flip: { boundary: scrollTarget, padding: 8, fallbackPlacements: ["bottom"] },
+        shift: { boundary: scrollTarget, padding: 12 },
+        // Out of sight once the selection scrolls out of the scroll area.
+        hide: { boundary: scrollTarget },
+        scrollTarget,
         onHide: () => setMode("format"),
+        // autoFocus misses when the field mounted while the menu was hidden (opened from the
+        // context menu, before the editor had focus back).
+        onShow: () => linkInput.current?.focus(),
       }}
       shouldShow={({ editor: current, state, view, element, from, to }) =>
         current.isEditable &&
@@ -140,15 +149,15 @@ export function SelectionMenu({ editor, scrollTarget }: { editor: Editor; scroll
         !current.isActive("codeBlock") &&
         (view.hasFocus() || element.contains(document.activeElement))
       }
-      className="doc-selection-menu flex items-center gap-0.5 rounded-lg border bg-popover p-1 text-popover-foreground shadow-md"
+      className="doc-selection-menu z-30 flex items-center gap-0.5 rounded-lg border bg-popover p-1 text-popover-foreground shadow-md"
     >
       {mode === "link" ? (
-        <LinkField editor={editor} onDone={() => setMode("format")} />
+        <LinkField editor={editor} inputRef={linkInput} onDone={() => setMode("format")} />
       ) : (
         <>
-          <MenuButton Icon={Bold} label="Bold" shortcut={`${MOD}B`} active={active?.bold ?? false} onPress={() => run((c) => c.toggleBold())} />
-          <MenuButton Icon={Italic} label="Italic" shortcut={`${MOD}I`} active={active?.italic ?? false} onPress={() => run((c) => c.toggleItalic())} />
-          <MenuButton Icon={Link2} label="Link" shortcut={`${MOD}K`} active={active?.link ?? false} onPress={() => setMode("link")} />
+          <MenuButton Icon={Bold} label="Bold" shortcut={shortcut("B")} active={active?.bold ?? false} onPress={() => run((c) => c.toggleBold())} />
+          <MenuButton Icon={Italic} label="Italic" shortcut={shortcut("I")} active={active?.italic ?? false} onPress={() => run((c) => c.toggleItalic())} />
+          <MenuButton Icon={Link2} label="Link" shortcut={shortcut("K")} active={active?.link ?? false} onPress={() => setMode("link")} />
           <Separator orientation="vertical" className="mx-0.5 h-4" />
           <MenuButton Icon={Heading1} label="Heading 1" active={active?.h1 ?? false} onPress={() => run((c) => c.toggleHeading({ level: 1 }))} />
           <MenuButton Icon={Heading2} label="Heading 2" active={active?.h2 ?? false} onPress={() => run((c) => c.toggleHeading({ level: 2 }))} />
