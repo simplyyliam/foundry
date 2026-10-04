@@ -23,7 +23,7 @@ The JSON object has exactly these fields:
     }
   ],
   "deferred": [
-    { "label": "something mentioned but not for now", "anchoredTo": "the slice or family it belongs with later" }
+    { "label": "something mentioned but not for now", "anchoredTo": "the name of the slice it belongs with later" }
   ],
   "openQuestions": ["decisions the brain dump leaves open"]
 }
@@ -32,6 +32,7 @@ Rules:
 - "kind" is exactly one of: "behavior" (what the product does), "interaction" (how the user works with it), "constraint" (a limit it must respect).
 - Every requirement's sourceExcerpt must be copied word for word from the brain dump: a sentence or phrase, not a paraphrase. If a requirement has no source in the brain dump, leave it out.
 - Cover the whole brain dump. Every idea in it should become a requirement, a deferred item or an open question.
+- Every deferred item's "anchoredTo" must be the name of a slice in "slices" (not a feature family).
 - Every sliceName and every dependsOn entry must be the name of a slice in "slices". Slice dependencies must not form a cycle.
 - Use only what the brain dump says. Don't invent features.
 

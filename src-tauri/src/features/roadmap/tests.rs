@@ -159,7 +159,7 @@ fn valid() -> Value {
               "sourceExcerpt": "must work offline for at least a week",
               "sliceName": "Offline", "verifiedBy": "airplane mode for 7 days" }
         ],
-        "deferred": [{ "label": "Social sharing", "anchoredTo": "Library" }],
+        "deferred": [{ "label": "Social sharing", "anchoredTo": "Core" }],
         "openQuestions": ["What does it cost?"]
     })
 }
@@ -355,6 +355,42 @@ fn requirement_kinds_must_be_the_plans() {
     assert!(prompts[0].contains(r#""kind": "behavior | interaction | constraint""#));
     assert!(prompts[1]
         .contains(r#"must be one of "behavior", "interaction", "constraint" (got "functional")"#));
+}
+
+/// Deferred items anchor to a slice of the same reply, so the plan can anchor them. A
+/// feature family (or anything else) fails validation and is retried with the slice names.
+#[test]
+fn a_deferred_item_anchored_to_a_non_slice_is_rejected_and_retried() {
+    let mut family = valid();
+    family["deferred"][0]["anchoredTo"] = json!("Library");
+    let errors = check(&family.to_string(), BRAIN).unwrap_err();
+    assert_eq!(
+        errors,
+        [
+            r#"roadmap.deferred[0].anchoredTo must be the name of a slice: one of "Core", "Offline" (got "Library")"#
+        ]
+    );
+    family["deferred"][0]["anchoredTo"] = json!("core");
+    assert!(
+        check(&family.to_string(), BRAIN).is_err(),
+        "names match exactly"
+    );
+
+    let mut fixed = valid();
+    fixed["deferred"][0]["anchoredTo"] = json!("Offline");
+    assert!(check(&fixed.to_string(), BRAIN).is_ok());
+
+    let mut bad = valid();
+    bad["deferred"][0]["anchoredTo"] = json!("Library");
+    let env = Env::new(vec![text(&bad), text(&fixed)]);
+    let result = env.store.generate(P).unwrap();
+    assert_eq!(result.attempts, 2);
+    assert_eq!(result.roadmap.deferred[0].anchored_to, "Offline");
+    let prompts = env.runner.prompts();
+    assert!(prompts[0].contains("must be the name of a slice in \"slices\" (not a feature family)"));
+    assert!(prompts[1].contains(
+        r#"anchoredTo must be the name of a slice: one of "Core", "Offline" (got "Library")"#
+    ));
 }
 
 // ---------- R-3-6 ----------

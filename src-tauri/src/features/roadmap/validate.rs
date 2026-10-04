@@ -28,6 +28,7 @@ pub fn check(output: &str, brain_dump: &str) -> Result<Checked, Errors> {
     let value = parse(output)?;
     let mut roadmap = schema(&value)?;
     graph(&roadmap.slices)?;
+    anchors(&roadmap)?;
 
     let source = normalize(brain_dump);
     for requirement in &mut roadmap.requirements {
@@ -281,6 +282,42 @@ fn graph(slices: &[Slice]) -> Result<(), Errors> {
         )]);
     }
     Ok(())
+}
+
+/// Every deferred item is anchored to a slice of this roadmap, by name (so it can be
+/// anchored in the plan). The error lists the slice names allowed.
+fn anchors(roadmap: &Roadmap) -> Result<(), Errors> {
+    let names: Vec<&str> = roadmap.slices.iter().map(|s| s.name.as_str()).collect();
+    let allowed = if names.is_empty() {
+        "there are no slices".to_string()
+    } else {
+        format!(
+            "one of {}",
+            names
+                .iter()
+                .map(|n| format!("\"{n}\""))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+    let errors: Errors = roadmap
+        .deferred
+        .iter()
+        .enumerate()
+        .filter(|(_, d)| !names.contains(&d.anchored_to.as_str()))
+        .map(|(i, d)| {
+            format!(
+                "roadmap.deferred[{i}].anchoredTo must be the name of a slice: {allowed} \
+                 (got \"{}\")",
+                d.anchored_to
+            )
+        })
+        .collect();
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
 }
 
 /// A cycle as slice names (first repeated at the end), via depth-first search.
