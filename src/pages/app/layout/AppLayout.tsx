@@ -8,11 +8,15 @@ import {
   SidebarProvider,
   WindowFrame,
 } from "@/shared";
-import { AppSidebar, ContextualPanel, InsetHeader } from "@/widgets";
+import { useRoadmapProgressListener } from "@/features/roadmap";
+import { AppSidebar, InsetHeader } from "@/widgets";
+import { ContextualPanelFrame } from "./contextual-panel/ContextualPanelFrame";
 
 export default function AppLayout() {
   const { pathname } = useLocation();
   const fallbackCrumbs = useMemo(() => getRouteCrumbs(pathname), [pathname]);
+  // From app start, so a roadmap run is tracked whatever the panel shows.
+  useRoadmapProgressListener();
 
   return (
     <WindowFrame titlebar={<Apptitlebar />}>
@@ -27,7 +31,7 @@ export default function AppLayout() {
                 <Outlet />
               </div>
             </SidebarInset>
-            <ContextualPanel />
+            <ContextualPanelFrame />
           </SidebarProvider>
         </SidebarProvider>
       </PageHeaderProvider>
