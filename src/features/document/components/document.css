@@ -1,0 +1,105 @@
+@reference "../../../index.css";
+
+/* The document's typography, from the theme tokens: a large H1, H2 section headings, muted
+   body text and simple bullets. */
+
+.doc-prose {
+  @apply min-h-[50vh] text-[15px] leading-7 text-muted-foreground outline-none;
+  caret-color: var(--foreground);
+  overflow-wrap: break-word;
+}
+
+.doc-prose > * + * {
+  @apply mt-3;
+}
+
+.doc-prose h1 {
+  @apply mb-1 text-[30px] leading-tight font-semibold tracking-tight text-foreground;
+}
+.doc-prose h2 {
+  @apply text-[19px] leading-snug font-semibold tracking-tight text-foreground;
+}
+.doc-prose h3,
+.doc-prose h4,
+.doc-prose h5,
+.doc-prose h6 {
+  @apply text-[15px] leading-snug font-semibold text-foreground;
+}
+.doc-prose > * + h1,
+.doc-prose > * + h2 {
+  @apply mt-9;
+}
+.doc-prose > * + h3,
+.doc-prose > * + h4,
+.doc-prose > * + h5,
+.doc-prose > * + h6 {
+  @apply mt-6;
+}
+
+.doc-prose strong {
+  @apply font-semibold text-foreground;
+}
+.doc-prose a {
+  @apply cursor-text text-foreground underline decoration-border decoration-1 underline-offset-[3px];
+}
+
+.doc-prose ul,
+.doc-prose ol {
+  @apply pl-5;
+}
+.doc-prose ul {
+  @apply list-disc;
+}
+.doc-prose ol {
+  @apply list-decimal;
+}
+.doc-prose ul ul {
+  list-style-type: circle;
+}
+.doc-prose li {
+  @apply pl-1 marker:text-muted-foreground/60;
+}
+.doc-prose li + li,
+.doc-prose li > * + * {
+  @apply mt-1;
+}
+
+.doc-prose blockquote {
+  @apply border-l-2 border-border pl-4;
+}
+
+.doc-prose code {
+  @apply rounded-[5px] bg-muted px-[0.3em] py-[0.1em] font-mono text-[0.86em] text-foreground;
+}
+.doc-prose pre {
+  @apply overflow-x-auto rounded-lg bg-muted px-4 py-3 font-mono text-[13px] leading-6 text-foreground;
+}
+.doc-prose pre code {
+  @apply bg-transparent p-0 text-[inherit];
+}
+
+.doc-prose hr {
+  @apply my-8 border-border;
+}
+.doc-prose hr.ProseMirror-selectednode {
+  @apply border-ring;
+}
+
+.doc-prose ::selection {
+  @apply bg-ring/30;
+}
+
+/* Placeholder on an empty document. */
+.doc-prose p.is-editor-empty:first-child::before {
+  @apply pointer-events-none float-left h-0 text-muted-foreground/50;
+  content: attr(data-placeholder);
+}
+
+/* A block the roadmap didn't pick up. Painted with shadows, so the text never moves:
+   a soft accent field around the block and a thin bar at its left edge. */
+.doc-prose .doc-uncovered {
+  @apply rounded-[3px] bg-accent;
+  box-shadow:
+    0 0 0 6px var(--accent),
+    -8px 0 0 0 var(--ring);
+}
