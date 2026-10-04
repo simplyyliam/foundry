@@ -19,7 +19,9 @@ use crate::core::sessions::SessionRegistry;
 use crate::core::AppError;
 #[cfg(test)]
 use crate::core::ErrorCode;
-use crate::features::{agent_sessions, app, bakery, folders, plan, projects, roadmap};
+use crate::features::{
+    agent_sessions, app, bakery, design, folders, plan, projects, roadmap, team,
+};
 
 /// Where the generated TypeScript bindings live. Never hand-edit that file.
 pub const BINDINGS_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../src/lib/bindings.ts");
@@ -83,6 +85,23 @@ pub fn specta_builder<R: Runtime>() -> tauri_specta::Builder<R> {
             plan::commands::unconfirm_requirement,
             plan::commands::add_deferred,
             plan::commands::remove_deferred,
+            team::commands::role_handbook_list,
+            team::commands::role_handbook_add,
+            team::commands::role_handbook_update,
+            team::commands::role_handbook_remove,
+            team::commands::compose_team,
+            team::commands::confirm_team,
+            team::commands::add_agent_manually,
+            team::commands::get_team,
+            team::commands::builtin_avatar_list,
+            team::commands::set_agent_avatar,
+            design::commands::design_library_list,
+            design::commands::design_library_add_from_paths,
+            design::commands::design_library_update,
+            design::commands::design_library_remove,
+            design::commands::agents_placeholders,
+            design::commands::confirm_placeholder,
+            design::commands::generate_agents,
         ])
         .events(collect_events![
             app::AppReady,
@@ -217,6 +236,52 @@ pub fn roadmap_store<R: Runtime>(
     })
 }
 
+/// The `claude -p` runner, after the subscription preflight, with `claudePath` and
+/// `defaultModel` read from settings on every run.
+fn print_runner(
+    projects: &Arc<projects::ProjectsStore>,
+) -> impl Fn() -> Result<Arc<dyn core::llm::LlmRunner>, AppError> + Send + Sync + 'static {
+    let projects = Arc::clone(projects);
+    move || {
+        let settings = projects.get_settings().unwrap_or_default();
+        let program = core::claude::preflight(settings.claude_path.as_deref())?;
+        let runner = core::llm::ClaudeRunner::new(program).with_model(settings.default_model);
+        Ok(Arc::new(runner) as Arc<dyn core::llm::LlmRunner>)
+    }
+}
+
+/// The team store: the Role Handbook in app data, `compose_team` on the real runner, its
+/// time limit from `generationTimeoutMs`.
+pub fn team_store(
+    data_dir: &Path,
+    repos: Arc<RepoIndex>,
+    projects: Arc<projects::ProjectsStore>,
+) -> team::TeamStore {
+    let for_timeout = Arc::clone(&projects);
+    team::TeamStore::new(data_dir, repos, print_runner(&projects), move || {
+        Duration::from_millis(u64::from(
+            for_timeout
+                .get_settings()
+                .unwrap_or_default()
+                .generation_timeout_ms,
+        ))
+    })
+}
+
+/// The design store: the Design Library in app data, the template from `agentsTemplateId`.
+pub fn design_store(
+    data_dir: &Path,
+    repos: Arc<RepoIndex>,
+    projects: Arc<projects::ProjectsStore>,
+) -> design::DesignStore {
+    design::DesignStore::new(data_dir, repos, move || {
+        projects
+            .get_settings()
+            .unwrap_or_default()
+            .agents_template_id
+    })
+}
+
 /// Wires commands, events and setup onto a Tauri builder (real or mock runtime).
 pub fn app_builder<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
     let specta = specta_builder::<R>();
@@ -229,7 +294,7 @@ pub fn app_builder<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> 
             let sessions = Arc::new(SessionRegistry::default());
             let projects = Arc::new(projects_store(
                 app.handle(),
-                data_dir,
+                data_dir.clone(),
                 Git::system(),
                 Arc::clone(&repos),
                 Arc::clone(&sessions),
@@ -242,6 +307,16 @@ pub fn app_builder<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> 
             )));
             app.manage(Arc::new(roadmap_store(
                 app.handle(),
+                Arc::clone(&repos),
+                Arc::clone(&projects),
+            )));
+            app.manage(Arc::new(team_store(
+                &data_dir,
+                Arc::clone(&repos),
+                Arc::clone(&projects),
+            )));
+            app.manage(Arc::new(design_store(
+                &data_dir,
                 Arc::clone(&repos),
                 Arc::clone(&projects),
             )));
@@ -1048,6 +1123,14 @@ opus-test"
             "\"plan:changed\"",
             "\"stale_revision\"",
             "\"dependency_cycle\"",
+            "composeTeam",
+            "confirmTeam",
+            "addAgentManually",
+            "generateAgents",
+            "agentsPlaceholders",
+            "designLibraryList",
+            "\"team_confirmed\"",
+            "\"placeholders_unconfirmed\"",
         ] {
             assert!(ts.contains(name), "{name} missing from bindings");
         }

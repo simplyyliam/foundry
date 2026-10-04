@@ -10,7 +10,6 @@
 //! `core::repos::RepoIndex`, which the projects feature keeps current.
 
 pub mod commands;
-mod images;
 mod manifest;
 
 use std::collections::HashMap;
@@ -27,7 +26,8 @@ use crate::core::repos::RepoIndex;
 use crate::core::slug::slugify;
 use crate::core::{ids, repo_write, AppError, ErrorCode};
 
-pub use images::{MAX_EDGE, MAX_INPUT_BYTES};
+use crate::core::image as images;
+pub use crate::core::image::{MAX_EDGE, MAX_INPUT_BYTES};
 
 const LAYOUT_FILE: &str = ".foundry/bakery.json";
 const IMAGE_DIR: &str = "docs/bakery";

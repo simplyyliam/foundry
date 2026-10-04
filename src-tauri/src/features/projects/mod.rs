@@ -54,7 +54,12 @@ pub struct Settings {
     pub default_model: Option<String>,
     /// How long one roadmap generation may run. At least 1.
     pub generation_timeout_ms: u32,
+    /// Which embedded AGENTS.md template `generate_agents` fills (one exists today).
+    pub agents_template_id: String,
 }
+
+/// Default for `agentsTemplateId`: the one embedded AGENTS.md template.
+pub const DEFAULT_AGENTS_TEMPLATE_ID: &str = "default";
 
 /// A model alias or full name (`sonnet`, `claude-opus-4-1`, `opus[1m]`): ASCII letters,
 /// digits and `. - _ : / @ [ ]`. Nothing a shell or cmd.exe would interpret.
@@ -77,6 +82,7 @@ impl Default for Settings {
             claude_path: None,
             default_model: None,
             generation_timeout_ms: DEFAULT_GENERATION_TIMEOUT_MS,
+            agents_template_id: DEFAULT_AGENTS_TEMPLATE_ID.into(),
         }
     }
 }
@@ -759,6 +765,9 @@ impl ProjectsStore {
                 .map(|model| model.trim().to_string())
                 .filter(|model| !model.is_empty()),
             generation_timeout_ms: settings.generation_timeout_ms,
+            agents_template_id: Some(settings.agents_template_id.trim().to_string())
+                .filter(|id| !id.is_empty())
+                .unwrap_or_else(|| DEFAULT_AGENTS_TEMPLATE_ID.into()),
         };
         let mut state = self.lock()?;
         storage::save_settings(&self.data_dir, &settings)?;

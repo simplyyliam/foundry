@@ -48,6 +48,7 @@ pub struct SettingsFile {
     claude_path: Option<String>,
     default_model: Option<String>,
     generation_timeout_ms: u32,
+    agents_template_id: String,
 }
 
 impl Default for SettingsFile {
@@ -59,6 +60,7 @@ impl Default for SettingsFile {
             claude_path: defaults.claude_path,
             default_model: defaults.default_model,
             generation_timeout_ms: defaults.generation_timeout_ms,
+            agents_template_id: defaults.agents_template_id,
         }
     }
 }
@@ -79,6 +81,9 @@ impl From<SettingsFile> for Settings {
                 0 => super::DEFAULT_GENERATION_TIMEOUT_MS,
                 ms => ms,
             },
+            agents_template_id: Some(file.agents_template_id.trim().to_string())
+                .filter(|id| !id.is_empty())
+                .unwrap_or_else(|| super::DEFAULT_AGENTS_TEMPLATE_ID.into()),
         }
     }
 }

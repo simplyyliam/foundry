@@ -69,6 +69,17 @@ pub enum ErrorCode {
     RequirementUnassigned,
     /// A slice can't be removed while requirements, dependents or deferred items point at it.
     SliceInUse,
+    /// Only `.md` files can go in the Design Library.
+    UnsupportedFile,
+    /// The project already has a confirmed team: add agents with `add_agent_manually`;
+    /// re-proposing a confirmed team is out of scope (AGENTS.md, Law 6).
+    TeamConfirmed,
+    /// The project has no confirmed team yet (`confirm_team` first).
+    TeamNotConfirmed,
+    /// AGENTS.md placeholders still need confirming.
+    PlaceholdersUnconfirmed,
+    /// An AGENTS.md that differs already exists: pass `overwrite: true` (it's backed up).
+    AgentsMdExists,
 }
 
 impl ErrorCode {
@@ -105,6 +116,11 @@ impl ErrorCode {
             Self::DependenciesNotDone => "dependencies_not_done",
             Self::RequirementUnassigned => "requirement_unassigned",
             Self::SliceInUse => "slice_in_use",
+            Self::UnsupportedFile => "unsupported_file",
+            Self::TeamConfirmed => "team_confirmed",
+            Self::TeamNotConfirmed => "team_not_confirmed",
+            Self::PlaceholdersUnconfirmed => "placeholders_unconfirmed",
+            Self::AgentsMdExists => "agents_md_exists",
         }
     }
 }
@@ -212,6 +228,11 @@ mod tests {
             ErrorCode::DependenciesNotDone,
             ErrorCode::RequirementUnassigned,
             ErrorCode::SliceInUse,
+            ErrorCode::UnsupportedFile,
+            ErrorCode::TeamConfirmed,
+            ErrorCode::TeamNotConfirmed,
+            ErrorCode::PlaceholdersUnconfirmed,
+            ErrorCode::AgentsMdExists,
         ] {
             assert_eq!(serde_json::to_value(code).unwrap(), json!(code.as_str()));
         }

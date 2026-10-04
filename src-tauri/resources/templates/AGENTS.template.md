@@ -88,6 +88,10 @@ Design guideline files are the user's own input from their Design Library, copie
 
 **Gate.** In the first response of any UI-touching slice, state the design family and which manifest files you will apply before writing code — or that none matched, if that's the case. Before calling the slice done, if any matched file names a Do/Don't checklist, run it and report anything you could not satisfy. Design requirements in the hand-off count under Law 9: each is assigned to a slice and checked off individually.
 
+### 7. TEAM
+
+This project's agents are listed in `agents/roles.json`. Each has a role file at `agents/roles/<agent>.md` covering what it reads, what it may write, what it hands off, what done means, and what to do when blocked. If you were started with a message naming your role, read that role file first and stay inside its write boundaries. If `agents/roles.json` doesn't exist, no team has been confirmed yet: work from the task you were given. Never edit `agents/**` yourself; the team is changed through Foundry, not by agents.
+
 ---
 
 ### 🛠️ Day-One Entrypoint Setup (optional — replace if not using Express)

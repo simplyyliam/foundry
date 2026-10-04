@@ -646,6 +646,7 @@ fn registry_and_settings_survive_a_restart() {
                 claude_path: None,
                 default_model: Some("sonnet".into()),
                 generation_timeout_ms: 90_000,
+                agents_template_id: "default".into(),
             })
             .unwrap();
         (store.list().unwrap(), settings)
@@ -673,6 +674,7 @@ fn settings_default_and_validate() {
             claude_path: None,
             default_model: None,
             generation_timeout_ms: 300_000,
+            agents_template_id: "default".into(),
         }
     );
     let zero = store
@@ -756,6 +758,10 @@ fn settings_files_missing_fields_take_defaults() {
     assert_eq!(settings.claude_path.as_deref(), Some("/opt/tools/claude"));
     assert_eq!(settings.default_model, None);
     assert_eq!(settings.generation_timeout_ms, 300_000, "unset → 5 minutes");
+    assert_eq!(
+        settings.agents_template_id, "default",
+        "unset → the one template"
+    );
 
     fs::write(
         env.data.path().join("settings.json"),

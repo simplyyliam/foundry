@@ -6,6 +6,8 @@ pub mod events;
 pub mod fsx;
 pub mod git;
 pub mod ids;
+pub mod image;
+pub mod llm;
 pub mod paths;
 pub mod process_tree;
 pub mod repo_write;

@@ -175,6 +175,40 @@ export const commands = {
 	/**  `anchoredTo` must be a slice id. */
 	addDeferred: (projectId: string, deferred: NewDeferred, expectedRevision: number | null) => typedError<PlanAdded, AppError>(__TAURI_INVOKE("add_deferred", { projectId, deferred, expectedRevision })),
 	removeDeferred: (projectId: string, deferredId: string, expectedRevision: number | null) => typedError<Plan, AppError>(__TAURI_INVOKE("remove_deferred", { projectId, deferredId, expectedRevision })),
+	/**  The Role Handbook (seeded with the starter roles the first time). */
+	roleHandbookList: () => typedError<HandbookRole[], AppError>(__TAURI_INVOKE("role_handbook_list")),
+	roleHandbookAdd: (role: NewHandbookRole) => typedError<HandbookRole[], AppError>(__TAURI_INVOKE("role_handbook_add", { role })),
+	roleHandbookUpdate: (id: string, patch: HandbookRolePatch) => typedError<HandbookRole[], AppError>(__TAURI_INVOKE("role_handbook_update", { id, patch })),
+	roleHandbookRemove: (id: string) => typedError<HandbookRole[], AppError>(__TAURI_INVOKE("role_handbook_remove", { id })),
+	/**  The Product Lead's proposed roster. Writes nothing; edit it, then `confirm_team`. */
+	composeTeam: (projectId: string) => typedError<TeamProposal, AppError>(__TAURI_INVOKE("compose_team", { projectId })),
+	/**  Writes the confirmed roster: `agents/roles.json` and one role file per agent. */
+	confirmTeam: (projectId: string, roster: RosterAgent[]) => typedError<TeamWritten, AppError>(__TAURI_INVOKE("confirm_team", { projectId, roster })),
+	/**  Adds one agent to a confirmed team, leaving every existing agent as it was. */
+	addAgentManually: (projectId: string, agent: RosterAgent) => typedError<TeamWritten, AppError>(__TAURI_INVOKE("add_agent_manually", { projectId, agent })),
+	/**  The confirmed team, or null. */
+	getTeam: (projectId: string) => typedError<{
+	agents: TeamAgent[],
+} | null, AppError>(__TAURI_INVOKE("get_team", { projectId })),
+	/**  Ids of the built-in avatars (empty until images are added). */
+	builtinAvatarList: () => typedError<string[], AppError>(__TAURI_INVOKE("builtin_avatar_list")),
+	/**  A built-in avatar, or an uploaded image (processed like a Bakery image). */
+	setAgentAvatar: (projectId: string, agentId: string, choice: AvatarChoice) => typedError<TeamAgent, AppError>(__TAURI_INVOKE("set_agent_avatar", { projectId, agentId, choice })),
+	/**  The Design Library, with `untaggedCount` (untagged files are never copied). */
+	designLibraryList: () => typedError<DesignLibrary, AppError>(__TAURI_INVOKE("design_library_list")),
+	/**
+	 *  Adds `.md` files (absolute paths), untagged. All or nothing; other files →
+	 *  `unsupported_file`.
+	 */
+	designLibraryAddFromPaths: (paths: string[]) => typedError<DesignLibrary, AppError>(__TAURI_INVOKE("design_library_add_from_paths", { paths })),
+	designLibraryUpdate: (id: string, patch: DesignFilePatch) => typedError<DesignLibrary, AppError>(__TAURI_INVOKE("design_library_update", { id, patch })),
+	designLibraryRemove: (id: string) => typedError<DesignLibrary, AppError>(__TAURI_INVOKE("design_library_remove", { id })),
+	/**  The template's markers (`inTemplate: true`) plus `designFamily`, with confirmed values. */
+	agentsPlaceholders: (projectId: string) => typedError<Placeholder[], AppError>(__TAURI_INVOKE("agents_placeholders", { projectId })),
+	/**  Confirms one placeholder. `designFamily` takes comma-separated tags. */
+	confirmPlaceholder: (projectId: string, key: string, value: string) => typedError<Placeholder[], AppError>(__TAURI_INVOKE("confirm_placeholder", { projectId, key, value })),
+	/**  Writes AGENTS.md, docs/design/ copies and docs/design/manifest.md. */
+	generateAgents: (projectId: string, options: GenerateOptions) => typedError<GenerateAgentsResult, AppError>(__TAURI_INVOKE("generate_agents", { projectId, options })),
 };
 
 /** Events */
@@ -235,6 +269,12 @@ export type AppInfo = {
 export type AppReady = {
 	version: string,
 } & EventMeta;
+
+export type AvatarChoice = {
+	/**  Exactly one of `builtinId` and `bytes`. */
+	builtinId: string | null,
+	bytes: number[] | null,
+};
 
 export type BakeryAddResult = {
 	/**  Ids of the new items, in input order. */
@@ -321,9 +361,38 @@ export type CreateRepositoryResult = {
 	initialCommit: boolean,
 };
 
+/**  A role that isn't in the handbook. */
+export type CustomRole = {
+	title: string,
+	description: string,
+	skillTemplate: string,
+};
+
 export type Deferred = {
 	label: string,
 	anchoredTo: string,
+};
+
+export type DesignFile = {
+	id: string,
+	/**  Also its name in a project's `docs/design/`. Unique in the library. */
+	filename: string,
+	/**  Free-text tags (lowercase). A file with none is never copied into a project. */
+	families: string[],
+	description: string,
+};
+
+export type DesignFilePatch = {
+	families: string[],
+	description: string,
+};
+
+export type DesignLibrary = {
+	/**  Ordered by filename. */
+	files: DesignFile[],
+	untaggedCount: number,
+	/**  Every family tag in use, sorted. */
+	families: string[],
 };
 
 export type DropPoint = {
@@ -400,7 +469,20 @@ export type ErrorCode =
 /**  A requirement can't be confirmed while it has no slice. */
 "requirement_unassigned" | 
 /**  A slice can't be removed while requirements, dependents or deferred items point at it. */
-"slice_in_use";
+"slice_in_use" | 
+/**  Only `.md` files can go in the Design Library. */
+"unsupported_file" | 
+/**
+ *  The project already has a confirmed team: add agents with `add_agent_manually`;
+ *  re-proposing a confirmed team is out of scope (AGENTS.md, Law 6).
+ */
+"team_confirmed" | 
+/**  The project has no confirmed team yet (`confirm_team` first). */
+"team_not_confirmed" | 
+/**  AGENTS.md placeholders still need confirming. */
+"placeholders_unconfirmed" | 
+/**  An AGENTS.md that differs already exists: pass `overwrite: true` (it's backed up). */
+"agents_md_exists";
 
 /**  Identity and timestamp shared by every event. Flatten it into the payload struct. */
 export type EventMeta = {
@@ -415,6 +497,12 @@ export type Feature = {
 	description: string,
 	features: string[],
 	relatesTo: string[],
+};
+
+/**  Protected globs that had to be put back on an agent. */
+export type FloorRestored = {
+	agentId: string,
+	globs: string[],
 };
 
 export type FolderEntry = {
@@ -440,6 +528,46 @@ export type FolderLocations = {
 	roots: string[],
 };
 
+export type GenerateAgentsResult = {
+	/**  False when AGENTS.md already had exactly these bytes. */
+	agentsMdWritten: boolean,
+	/**  Where the previous AGENTS.md was backed up, if it was replaced. */
+	backup: string | null,
+	/**  The project's confirmed design families. */
+	designFamilies: string[],
+	/**  Library files copied into `docs/design/`, by filename. */
+	copied: string[],
+	/**  True when no library file matched, so nothing was copied (not an error). */
+	designCopySkipped: boolean,
+	/**  Project families no library file has. */
+	unmatchedFamilies: string[],
+	/**  Earlier copies removed because they no longer match. */
+	removed: string[],
+};
+
+export type GenerateOptions = {
+	/**  Replace an existing AGENTS.md that differs (it's backed up first). */
+	overwrite: boolean,
+};
+
+export type HandbookRole = {
+	id: string,
+	title: string,
+	description: string,
+	typicalWriteGlobs: string[],
+	typicalProtectedGlobs: string[],
+	/**  Who they are and what they provide: merged into the role file of agents made from it. */
+	skillTemplate: string,
+};
+
+export type HandbookRolePatch = {
+	title: string | null,
+	description: string | null,
+	typicalWriteGlobs: string[] | null,
+	typicalProtectedGlobs: string[] | null,
+	skillTemplate: string | null,
+};
+
 export type LinkRepositoryInput = {
 	folder: string,
 };
@@ -454,6 +582,14 @@ export type LinkRepositoryResult = {
 export type NewDeferred = {
 	label: string,
 	anchoredTo: string,
+};
+
+export type NewHandbookRole = {
+	title: string,
+	description: string,
+	typicalWriteGlobs: string[],
+	typicalProtectedGlobs: string[],
+	skillTemplate: string,
 };
 
 export type NewRequirement = {
@@ -473,6 +609,21 @@ export type NewSlice = {
 export type OpenQuestion = {
 	id: string,
 	text: string,
+};
+
+export type Placeholder = {
+	key: string,
+	label: string,
+	/**  The template's own guidance for it. */
+	hint: string,
+	/**  False for `designFamily`, which picks Design Library files rather than filling text. */
+	inTemplate: boolean,
+	/**  An empty value is allowed (it removes the line, as the template says). */
+	optional: boolean,
+	value: string | null,
+	confirmed: boolean,
+	/**  For `designFamily`: the Design Library's family tags. */
+	suggestions: string[],
 };
 
 export type Plan = {
@@ -562,6 +713,16 @@ export type ProjectPatch = {
 	tagline: string | null,
 };
 
+export type ProposedAgent = {
+	tempId: string,
+	handbookRoleId: string | null,
+	customRole: CustomRole | null,
+	displayName: string,
+	title: string,
+	rationale: string,
+	relatedSliceIds: string[],
+};
+
 export type Requirement = {
 	text: string,
 	kind: string,
@@ -615,6 +776,23 @@ export type RoadmapResult = {
 	generatedAt: number,
 };
 
+/**  One agent as the human confirms it (also `add_agent_manually`'s input). */
+export type RosterAgent = {
+	/**  Exactly one of `handbookRoleId` and `customRole`. */
+	handbookRoleId: string | null,
+	customRole: CustomRole | null,
+	displayName: string,
+	/**  Defaults to the role's title. */
+	title: string | null,
+	relatedSliceIds: string[],
+	/**  A built-in avatar id (see `builtin_avatar_list`). */
+	avatarBuiltinId: string | null,
+	/**  Defaults to the handbook role's typical write globs (none for a custom role). */
+	writeGlobs: string[] | null,
+	/**  Defaults to the handbook role's typical protected globs. The floor is always added. */
+	protectedGlobs: string[] | null,
+};
+
 /**  A live session, as `agent_list` reports it. */
 export type SessionInfo = {
 	agentId: string,
@@ -641,6 +819,8 @@ export type Settings = {
 	defaultModel: string | null,
 	/**  How long one roadmap generation may run. At least 1. */
 	generationTimeoutMs: number,
+	/**  Which embedded AGENTS.md template `generate_agents` fills (one exists today). */
+	agentsTemplateId: string,
 };
 
 export type Slice = {
@@ -679,6 +859,36 @@ export type TargetUser = {
 	name: string,
 	description: string,
 	painPoints: string[],
+};
+
+export type Team = {
+	agents: TeamAgent[],
+};
+
+/**  One entry in `agents/roles.json`. */
+export type TeamAgent = {
+	id: string,
+	displayName: string,
+	title: string,
+	/**  `builtin:<id>`, a repo-relative path under `.foundry/agents/`, or null. */
+	avatarPath: string | null,
+	reads: string[],
+	writeGlobs: string[],
+	protectedGlobs: string[],
+	sourceHandbookRoleId: string | null,
+};
+
+/**  What `compose_team` returns. Nothing is written until `confirm_team`. */
+export type TeamProposal = {
+	agents: ProposedAgent[],
+};
+
+export type TeamWritten = {
+	team: Team,
+	/**  Ids of the agents this call created. */
+	created: string[],
+	/**  Where the protected floor was missing from what was asked for, and was restored. */
+	floorRestored: FloorRestored[],
 };
 
 /* Tauri Specta runtime */
