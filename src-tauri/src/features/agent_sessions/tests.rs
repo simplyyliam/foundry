@@ -493,8 +493,12 @@ fn stop_kills_after_the_grace_period_when_the_interrupt_is_ignored() {
     let env = Env::new(3);
     let mut spec = env.spec("shell", &[]);
     spec.program = "cmd.exe".into();
-    spec.args = vec!["/Q".into(), "/K".into()];
+    // A custom prompt that only appears once cmd.exe is in its interactive input loop, the
+    // state where it ignores Ctrl+C. Before that, Ctrl+C can end it during startup.
+    spec.args = vec!["/Q".into(), "/K".into(), "prompt FOUNDRY-READY$G".into()];
     let pid = env.manager.start(spec).unwrap().pid.unwrap();
+    env.events
+        .wait_text(LONG, |text| text.contains("FOUNDRY-READY>"));
 
     let started = Instant::now();
     env.manager.stop("shell", false).unwrap();
