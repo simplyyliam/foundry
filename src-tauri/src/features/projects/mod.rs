@@ -56,7 +56,75 @@ pub struct Settings {
     pub generation_timeout_ms: u32,
     /// Which embedded AGENTS.md template `generate_agents` fills (one exists today).
     pub agents_template_id: String,
+    // Stored and returned only: the frontend and later work read the fields below.
+    pub theme: Theme,
+    pub reduced_motion_override: bool,
+    pub auto_install_hooks: bool,
+    pub default_verify_mode: VerifyMode,
+    pub os_notifications_enabled: bool,
+    pub os_notification_severity: NotificationSeverity,
 }
+
+/// Declares a settings enum with a hidden catch-all variant. The catch-all keeps a bad value
+/// parseable (so `update_settings` can name it in an `invalid_input`, instead of Tauri failing
+/// to decode the argument) and is skipped in the bindings, so the TS type lists only the real
+/// values. It is never stored: `update_settings` rejects it and loading replaces it.
+macro_rules! settings_enum {
+    ($(#[$doc:meta])* $name:ident, $field:literal, { $($(#[$vdoc:meta])* $variant:ident = $value:literal),+ $(,)? }, default $default:ident) => {
+        $(#[$doc])*
+        #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+        pub enum $name {
+            $($(#[$vdoc])* #[serde(rename = $value)] $variant,)+
+            #[serde(untagged)]
+            #[specta(skip)]
+            Invalid(serde_json::Value),
+        }
+
+        impl Default for $name {
+            fn default() -> Self {
+                Self::$default
+            }
+        }
+
+        impl $name {
+            /// `invalid_input` naming the field, the bad value and the allowed ones.
+            fn validate(&self) -> Result<(), AppError> {
+                match self {
+                    Self::Invalid(value) => Err(AppError::invalid_input(format!(
+                        "{} must be one of {}, not {value}",
+                        $field,
+                        [$(concat!("\"", $value, "\"")),+].join(", "),
+                    ))),
+                    _ => Ok(()),
+                }
+            }
+
+            /// A value hand-edited into `settings.json` that isn't allowed loads as the default.
+            fn or_default(self) -> Self {
+                match self {
+                    Self::Invalid(_) => Self::default(),
+                    valid => valid,
+                }
+            }
+        }
+    };
+}
+
+settings_enum!(
+    /// The app's color theme. `system` follows the OS.
+    Theme, "theme", { Light = "light", Dark = "dark", System = "system" }, default System
+);
+settings_enum!(
+    /// How a finished slice is verified by default.
+    VerifyMode, "defaultVerifyMode", { Auto = "auto", Manual = "manual" }, default Manual
+);
+settings_enum!(
+    /// Which events raise an OS notification.
+    NotificationSeverity,
+    "osNotificationSeverity",
+    { Danger = "danger", WarnAndDanger = "warn_and_danger", All = "all" },
+    default Danger
+);
 
 /// Default for `agentsTemplateId`: the one embedded AGENTS.md template.
 pub const DEFAULT_AGENTS_TEMPLATE_ID: &str = "default";
@@ -83,6 +151,12 @@ impl Default for Settings {
             default_model: None,
             generation_timeout_ms: DEFAULT_GENERATION_TIMEOUT_MS,
             agents_template_id: DEFAULT_AGENTS_TEMPLATE_ID.into(),
+            theme: Theme::default(),
+            reduced_motion_override: false,
+            auto_install_hooks: true,
+            default_verify_mode: VerifyMode::default(),
+            os_notifications_enabled: true,
+            os_notification_severity: NotificationSeverity::default(),
         }
     }
 }
@@ -744,6 +818,9 @@ impl ProjectsStore {
                 "generationTimeoutMs must be at least 1",
             ));
         }
+        settings.theme.validate()?;
+        settings.default_verify_mode.validate()?;
+        settings.os_notification_severity.validate()?;
         let clean = |value: Option<String>| -> Result<Option<String>, AppError> {
             match value
                 .map(|v| v.trim().to_string())
@@ -768,6 +845,12 @@ impl ProjectsStore {
             agents_template_id: Some(settings.agents_template_id.trim().to_string())
                 .filter(|id| !id.is_empty())
                 .unwrap_or_else(|| DEFAULT_AGENTS_TEMPLATE_ID.into()),
+            theme: settings.theme,
+            reduced_motion_override: settings.reduced_motion_override,
+            auto_install_hooks: settings.auto_install_hooks,
+            default_verify_mode: settings.default_verify_mode,
+            os_notifications_enabled: settings.os_notifications_enabled,
+            os_notification_severity: settings.os_notification_severity,
         };
         let mut state = self.lock()?;
         storage::save_settings(&self.data_dir, &settings)?;

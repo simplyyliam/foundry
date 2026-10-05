@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use super::Settings;
+use super::{NotificationSeverity, Settings, Theme, VerifyMode};
 use crate::core::{fsx, AppError};
 
 pub const REGISTRY_FILE: &str = "projects.json";
@@ -49,6 +49,12 @@ pub struct SettingsFile {
     default_model: Option<String>,
     generation_timeout_ms: u32,
     agents_template_id: String,
+    theme: Theme,
+    reduced_motion_override: bool,
+    auto_install_hooks: bool,
+    default_verify_mode: VerifyMode,
+    os_notifications_enabled: bool,
+    os_notification_severity: NotificationSeverity,
 }
 
 impl Default for SettingsFile {
@@ -61,6 +67,12 @@ impl Default for SettingsFile {
             default_model: defaults.default_model,
             generation_timeout_ms: defaults.generation_timeout_ms,
             agents_template_id: defaults.agents_template_id,
+            theme: defaults.theme,
+            reduced_motion_override: defaults.reduced_motion_override,
+            auto_install_hooks: defaults.auto_install_hooks,
+            default_verify_mode: defaults.default_verify_mode,
+            os_notifications_enabled: defaults.os_notifications_enabled,
+            os_notification_severity: defaults.os_notification_severity,
         }
     }
 }
@@ -84,6 +96,13 @@ impl From<SettingsFile> for Settings {
             agents_template_id: Some(file.agents_template_id.trim().to_string())
                 .filter(|id| !id.is_empty())
                 .unwrap_or_else(|| super::DEFAULT_AGENTS_TEMPLATE_ID.into()),
+            // A hand-edited value outside each enum loads as that field's default.
+            theme: file.theme.or_default(),
+            reduced_motion_override: file.reduced_motion_override,
+            auto_install_hooks: file.auto_install_hooks,
+            default_verify_mode: file.default_verify_mode.or_default(),
+            os_notifications_enabled: file.os_notifications_enabled,
+            os_notification_severity: file.os_notification_severity.or_default(),
         }
     }
 }

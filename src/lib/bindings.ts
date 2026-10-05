@@ -624,6 +624,9 @@ export type NewSlice = {
 	dependsOn: string[],
 };
 
+/**  Which events raise an OS notification. */
+export type NotificationSeverity = "danger" | "warn_and_danger" | "all";
+
 export type OpenQuestion = {
 	id: string,
 	text: string,
@@ -855,6 +858,12 @@ export type Settings = {
 	generationTimeoutMs: number,
 	/**  Which embedded AGENTS.md template `generate_agents` fills (one exists today). */
 	agentsTemplateId: string,
+	theme: Theme,
+	reducedMotionOverride: boolean,
+	autoInstallHooks: boolean,
+	defaultVerifyMode: VerifyMode,
+	osNotificationsEnabled: boolean,
+	osNotificationSeverity: NotificationSeverity,
 };
 
 export type Slice = {
@@ -924,6 +933,12 @@ export type TeamWritten = {
 	/**  Where the protected floor was missing from what was asked for, and was restored. */
 	floorRestored: FloorRestored[],
 };
+
+/**  The app's color theme. `system` follows the OS. */
+export type Theme = "light" | "dark" | "system";
+
+/**  How a finished slice is verified by default. */
+export type VerifyMode = "auto" | "manual";
 
 /* Tauri Specta runtime */
 async function typedError<T, E>(result: Promise<T>): Promise<{ status: "ok"; data: T } | { status: "error"; error: E }> {

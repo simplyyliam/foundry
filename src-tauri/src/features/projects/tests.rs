@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
+use serde_json::json;
 use tempfile::TempDir;
 
 use super::*;
@@ -647,6 +648,7 @@ fn registry_and_settings_survive_a_restart() {
                 default_model: Some("sonnet".into()),
                 generation_timeout_ms: 90_000,
                 agents_template_id: "default".into(),
+                ..Settings::default()
             })
             .unwrap();
         (store.list().unwrap(), settings)
@@ -675,6 +677,12 @@ fn settings_default_and_validate() {
             default_model: None,
             generation_timeout_ms: 300_000,
             agents_template_id: "default".into(),
+            theme: Theme::System,
+            reduced_motion_override: false,
+            auto_install_hooks: true,
+            default_verify_mode: VerifyMode::Manual,
+            os_notifications_enabled: true,
+            os_notification_severity: NotificationSeverity::Danger,
         }
     );
     let zero = store
@@ -779,6 +787,163 @@ fn settings_files_missing_fields_take_defaults() {
     )
     .unwrap();
     assert_eq!(env.store().get_settings().unwrap().default_model, None);
+}
+
+#[test]
+fn an_old_settings_file_loads_every_app_wide_default() {
+    let env = Env::new();
+    // Written before any of the app-wide fields existed.
+    fs::write(
+        env.data.path().join("settings.json"),
+        r#"{ "maxConcurrentAgents": 4, "defaultProjectsDir": null, "claudePath": null }"#,
+    )
+    .unwrap();
+    assert_eq!(
+        env.store().get_settings().unwrap(),
+        Settings {
+            max_concurrent_agents: 4,
+            ..Settings::default()
+        }
+    );
+    let defaults = Settings::default();
+    assert_eq!(defaults.default_model, None);
+    assert_eq!(defaults.generation_timeout_ms, 300_000);
+    assert_eq!(defaults.agents_template_id, DEFAULT_AGENTS_TEMPLATE_ID);
+    assert_eq!(defaults.theme, Theme::System);
+    assert!(!defaults.reduced_motion_override);
+    assert!(defaults.auto_install_hooks);
+    assert_eq!(defaults.default_verify_mode, VerifyMode::Manual);
+    assert!(defaults.os_notifications_enabled);
+    assert_eq!(
+        defaults.os_notification_severity,
+        NotificationSeverity::Danger
+    );
+}
+
+#[test]
+fn update_settings_round_trips_every_app_wide_field() {
+    let env = Env::new();
+    let wanted = Settings {
+        theme: Theme::Dark,
+        reduced_motion_override: true,
+        auto_install_hooks: false,
+        default_verify_mode: VerifyMode::Auto,
+        os_notifications_enabled: false,
+        os_notification_severity: NotificationSeverity::WarnAndDanger,
+        ..Settings::default()
+    };
+    let saved = env.store().update_settings(wanted.clone()).unwrap();
+    assert_eq!(saved, wanted);
+    assert_eq!(
+        env.store().get_settings().unwrap(),
+        wanted,
+        "after a restart"
+    );
+
+    // On disk and over the wire: the camelCase names and snake_case values the TS type lists.
+    let file: serde_json::Value =
+        serde_json::from_slice(&fs::read(env.data.path().join("settings.json")).unwrap()).unwrap();
+    for (key, value) in [
+        ("theme", json!("dark")),
+        ("reducedMotionOverride", json!(true)),
+        ("autoInstallHooks", json!(false)),
+        ("defaultVerifyMode", json!("auto")),
+        ("osNotificationsEnabled", json!(false)),
+        ("osNotificationSeverity", json!("warn_and_danger")),
+    ] {
+        assert_eq!(file[key], value, "{key}");
+    }
+
+    for (theme, severity) in [
+        (Theme::Light, NotificationSeverity::All),
+        (Theme::System, NotificationSeverity::Danger),
+    ] {
+        let next = Settings {
+            theme: theme.clone(),
+            os_notification_severity: severity.clone(),
+            ..Settings::default()
+        };
+        let saved = env.store().update_settings(next).unwrap();
+        assert_eq!(
+            (saved.theme, saved.os_notification_severity),
+            (theme, severity)
+        );
+    }
+}
+
+/// Decodes `Settings` the way Tauri decodes the `update_settings` argument.
+fn from_frontend(patch: serde_json::Value) -> Settings {
+    let mut value = serde_json::to_value(Settings::default()).unwrap();
+    for (key, v) in patch.as_object().unwrap() {
+        value[key] = v.clone();
+    }
+    serde_json::from_value(value).expect("a bad enum value still decodes")
+}
+
+#[test]
+fn update_settings_rejects_a_bad_value_for_each_enum() {
+    let env = Env::new();
+    let store = env.store();
+    let before = fs::read(env.data.path().join("settings.json")).ok();
+    for (patch, field, allowed) in [
+        (
+            json!({ "theme": "neon" }),
+            "theme",
+            r#""light", "dark", "system""#,
+        ),
+        (
+            json!({ "theme": 5 }),
+            "theme",
+            r#""light", "dark", "system""#,
+        ),
+        (
+            json!({ "defaultVerifyMode": "sometimes" }),
+            "defaultVerifyMode",
+            r#""auto", "manual""#,
+        ),
+        (
+            json!({ "osNotificationSeverity": "warn" }),
+            "osNotificationSeverity",
+            r#""danger", "warn_and_danger", "all""#,
+        ),
+    ] {
+        let err = store
+            .update_settings(from_frontend(patch.clone()))
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::InvalidInput, "{patch}");
+        let bad = &patch[field];
+        assert_eq!(
+            err.message,
+            format!("{field} must be one of {allowed}, not {bad}")
+        );
+    }
+    assert_eq!(store.get_settings().unwrap(), Settings::default());
+    assert_eq!(fs::read(env.data.path().join("settings.json")).ok(), before);
+}
+
+#[test]
+fn a_hand_edited_bad_enum_in_the_file_loads_as_its_default() {
+    let env = Env::new();
+    fs::write(
+        env.data.path().join("settings.json"),
+        r#"{ "theme": "neon", "defaultVerifyMode": 3, "osNotificationSeverity": "loud",
+             "autoInstallHooks": false, "maxConcurrentAgents": 2 }"#,
+    )
+    .unwrap();
+    assert_eq!(
+        env.store().get_settings().unwrap(),
+        Settings {
+            auto_install_hooks: false,
+            max_concurrent_agents: 2,
+            ..Settings::default()
+        },
+        "only the bad enums fall back; the rest of the file is kept"
+    );
+    let aside = fs::read_dir(env.data.path())
+        .unwrap()
+        .filter_map(Result::ok)
+        .any(|e| e.file_name().to_string_lossy().contains(".corrupt-"));
+    assert!(!aside, "a bad enum isn't treated as a corrupt file");
 }
 
 #[test]

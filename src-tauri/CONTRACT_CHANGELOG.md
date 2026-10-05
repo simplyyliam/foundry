@@ -239,3 +239,15 @@ Additive. Read-only: writes nothing to the repo or app data, and never changes t
 | Kind | Name | Before → After | Why |
 | --- | --- | --- | --- |
 | command | `agent_avatar` | — → `agentAvatar(projectId: string, agentId: string): string \| null` | The UI needs to show avatars without asset-protocol access to `.foundry/agents/`. Returns a `data:` URL. Uploaded file (`avatarPath` under `.foundry/agents/`): resolved through `core::paths`, so a hand-edited `roles.json` can't point outside that folder (`path_escape`); returned at most 256 px on its long edge via `core::image::downscale`, in the stored format (`image/png` or `image/jpeg`), byte-identical when it already fits. `builtin:<id>`: the embedded bytes as `image/png`, unscaled (built-ins ship pre-sized). `null` when the agent has no avatar, the built-in id isn't embedded, or the file or folder is missing. Unknown project or agent → `not_found`; no confirmed team → `team_not_confirmed` (as `set_agent_avatar`). |
+
+## App-wide settings fields (storage only)
+
+`update_settings` still replaces the whole object, so the six new fields are a **contract change**: the frontend must now send them all (start from `get_settings` and change what's needed). Older `settings.json` files load with every default. No backend code reads these six fields; the frontend and later work do. `defaultModel` (`string | null`, `null`), `generationTimeoutMs` (`number`, `300000`) and `agentsTemplateId` (`"default"`, the one embedded template) already existed with these defaults, so they're unchanged.
+
+| Kind | Name | Before → After | Why |
+| --- | --- | --- | --- |
+| type | `Settings` | adds `theme: Theme` (`"system"`), `reducedMotionOverride: boolean` (`false`), `autoInstallHooks: boolean` (`true`), `defaultVerifyMode: VerifyMode` (`"manual"`), `osNotificationsEnabled: boolean` (`true`), `osNotificationSeverity: NotificationSeverity` (`"danger"`) | App-wide preferences, stored in `<app data>/settings.json`. |
+| type | `Theme` | — → `"light" \| "dark" \| "system"` | |
+| type | `VerifyMode` | — → `"auto" \| "manual"` | |
+| type | `NotificationSeverity` | — → `"danger" \| "warn_and_danger" \| "all"` | |
+| command | `update_settings` | now also requires the six fields above; any other enum value → `invalid_input`, e.g. `theme must be one of "light", "dark", "system", not "neon"`, and nothing is saved | Rejected, never coerced. Each enum keeps a hidden catch-all variant (left out of the bindings), so a bad value reaches the validation and comes back as an `AppError`, not as a Tauri decode error. A bad value hand-edited into `settings.json` loads as that field's default; the rest of the file is kept. |
