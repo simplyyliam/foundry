@@ -30,3 +30,4 @@ export type {
   ContextMenuSubmenu,
 } from "./lib/context-menu/types";
 export { shortcut } from "./utils/keys";
+export { PressButton, type PressButtonProps } from "./components/PressButton";

@@ -1,18 +1,15 @@
-import { ProjectRoute, type Project } from "@/features/projects";
+import { PROJECT_SECTIONS, ProjectRoute, projectSectionPath, type Project } from "@/features/projects";
 import { usePageHeader } from "@/shared";
+import { Blueprint } from "@/widgets";
 
-function Blueprint({ project }: { project: Project }) {
+const REQUIREMENTS = PROJECT_SECTIONS.find((section) => section.id === "requirements")!;
+
+function BlueprintPage({ project }: { project: Project }) {
   usePageHeader([{ title: project.name }, { title: "Blueprint" }]);
-
-  // Placeholder until the blueprints page is built.
-  return (
-    <div className="flex h-full w-full items-center justify-center bg-background text-sm text-muted-foreground">
-      Blueprint
-    </div>
-  );
+  return <Blueprint projectId={project.id} requirementsHref={projectSectionPath(project.id, REQUIREMENTS)} />;
 }
 
 /** /projects/:projectId/blueprints */
 export default function BlueprintsPage() {
-  return <ProjectRoute>{(project) => <Blueprint project={project} />}</ProjectRoute>;
+  return <ProjectRoute>{(project) => <BlueprintPage project={project} />}</ProjectRoute>;
 }

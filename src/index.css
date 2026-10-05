@@ -16,6 +16,9 @@
     --color-sidebar-primary: var(--sidebar-primary);
     --color-sidebar-foreground: var(--sidebar-foreground);
     --color-sidebar: var(--sidebar);
+    --color-slice: var(--slice);
+    --color-slice-fill: var(--slice-fill);
+    --color-slice-foreground: var(--slice-foreground);
     --color-chart-5: var(--chart-5);
     --color-chart-4: var(--chart-4);
     --color-chart-3: var(--chart-3);
@@ -81,6 +84,10 @@
     --sidebar-accent-foreground: oklch(0.205 0 0);
     --sidebar-border: oklch(0.922 0 0);
     --sidebar-ring: oklch(0.708 0 0);
+    /* Blueprint slice boxes (orange). */
+    --slice: oklch(0.7 0.16 52);
+    --slice-fill: oklch(0.965 0.035 62);
+    --slice-foreground: oklch(0.42 0.11 48);
 }
 
 .dark {
@@ -115,6 +122,9 @@
     --sidebar-accent-foreground: oklch(0.985 0 0);
     --sidebar-border: oklch(1 0 0 / 10%);
     --sidebar-ring: oklch(0.556 0 0);
+    --slice: oklch(0.74 0.15 55);
+    --slice-fill: oklch(0.3 0.06 50);
+    --slice-foreground: oklch(0.86 0.09 62);
 }
 
 @layer base {
