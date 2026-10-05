@@ -17,7 +17,7 @@ You work on Foundry's React frontend in `src/`. A separate agent owns the Rust b
 - New code calls `commands.*` or listens to events only in `src/features/<name>/hooks/`. Components get data from props or their feature's hooks. Older exceptions: `features/projects/model/store.ts`, the add-project folder picker, and `appInfo` in `App.tsx`.
 - Two features that need the same data each fetch it themselves and refetch on the backend's event (e.g. `plan:changed`), rather than importing each other.
 - Per-project screens take the project id from the route (`/projects/:projectId/...`), never from a shared "active project".
-- The contextual panel follows the route only, via `ROUTE_VIEWS` / `PANEL_VIEWS` in `layout/contextual-panel/views.tsx`. No manual view switching.
+- The route decides which contextual-panel views are possible, via `ROUTE_VIEWS` / `PANEL_VIEWS` in `layout/contextual-panel/views.tsx`. On project routes the panel title is a dropdown between that project's views (`PROJECT_VIEW_IDS`: Roadmap, References); the choice lasts the session and isn't saved. Never a cross-context view: no project view on a route without `:projectId`, no Agent Chats on a project page, and no switcher on non-project routes.
 
 ## Backend calls
 - Every command resolves to `{ status: "ok", data } | { status: "error", error: AppError }`. Also catch throws: a real IPC failure throws. Wrap calls in an `Outcome`-style helper, like `call()` in `features/roadmap/hooks/call.ts`.

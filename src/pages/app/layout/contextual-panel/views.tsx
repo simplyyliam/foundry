@@ -1,9 +1,11 @@
-import type { ComponentType } from "react";
-import { ContextualPanel, RoadmapPanel } from "@/widgets";
+import type { ComponentType, ReactNode } from "react";
+import { ContextualPanel, ReferencesPanel, RoadmapPanel } from "@/widgets";
 
 export interface PanelViewProps {
   /** The route's `:projectId`, or null. Never null for `needsProject` views. */
   projectId: string | null;
+  /** The header title. On project routes it's the switcher between project views. */
+  title?: ReactNode;
 }
 
 export interface PanelView {
@@ -21,7 +23,13 @@ export const PANEL_VIEWS = {
     id: "roadmap",
     title: "Roadmap",
     needsProject: true,
-    component: ({ projectId }) => (projectId ? <RoadmapPanel projectId={projectId} /> : null),
+    component: ({ projectId, title }) => (projectId ? <RoadmapPanel projectId={projectId} title={title} /> : null),
+  },
+  references: {
+    id: "references",
+    title: "References",
+    needsProject: true,
+    component: ({ projectId, title }) => (projectId ? <ReferencesPanel projectId={projectId} title={title} /> : null),
   },
   "agent-chats": {
     id: "agent-chats",
@@ -41,8 +49,9 @@ export const PANEL_VIEWS = {
 export type PanelViewId = keyof typeof PANEL_VIEWS;
 
 /**
- * Which view each route shows; first match wins. The panel follows the route only (no
- * manual switching). Routes not listed here, like Home, show no panel.
+ * Which view each route shows; first match wins. Routes not listed here, like Home, show no
+ * panel. On project routes the listed view is only the default: the title dropdown switches
+ * between the project views (`PROJECT_VIEW_IDS`), and that choice holds for the session.
  */
 export const ROUTE_VIEWS: readonly { path: string; view: PanelViewId }[] = [
   { path: "/projects/:projectId/idea", view: "roadmap" },

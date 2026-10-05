@@ -8,6 +8,8 @@ import { ProductLeadAvatar } from "./ProductLeadAvatar";
 
 interface RoadmapHeaderProps {
   projectId: string;
+  /** Replaces the plain "Roadmap" title (the panel passes its view switcher). */
+  title?: ReactNode;
   /** Shows the pop-out button. */
   onPopOut?: () => void;
   /** Extra actions after Regenerate, e.g. the pop-out's close button. */
@@ -15,7 +17,7 @@ interface RoadmapHeaderProps {
 }
 
 /** Product Lead avatar, title, then pop-out and Regenerate (once a roadmap exists). */
-export function RoadmapHeader({ projectId, onPopOut, trailing }: RoadmapHeaderProps) {
+export function RoadmapHeader({ projectId, title, onPopOut, trailing }: RoadmapHeaderProps) {
   const control = useGenerateControl(projectId);
   const popOutRef = usePressScale<HTMLButtonElement>();
   const regenerateRef = usePressScale<HTMLButtonElement>({ disabled: !control.canGenerate });
@@ -24,7 +26,7 @@ export function RoadmapHeader({ projectId, onPopOut, trailing }: RoadmapHeaderPr
     <div className="flex w-full items-center justify-between gap-2 px-2.5">
       <div className="flex min-w-0 items-center gap-2">
         <ProductLeadAvatar projectId={projectId} />
-        <h1 className="truncate text-[14px] font-medium">Roadmap</h1>
+        {title ?? <h1 className="truncate text-[14px] font-medium">Roadmap</h1>}
       </div>
       <div className="flex shrink-0 items-center gap-1.5">
         {onPopOut && (
