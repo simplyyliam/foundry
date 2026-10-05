@@ -13,12 +13,15 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use specta::Type;
 
 use crate::core::image;
 use crate::core::llm::{LlmRunner, RunControl};
+use crate::core::paths::{self, PathKind};
 use crate::core::repos::RepoIndex;
 use crate::core::slug::slugify;
 use crate::core::{fsx, repo_write, AppError, ErrorCode};
@@ -47,6 +50,8 @@ const HANDBOOK_FILE: &str = "index.json";
 const ROLES_FILE: &str = "agents/roles.json";
 const ROLE_DIR: &str = "agents/roles";
 const AVATAR_DIR: &str = ".foundry/agents";
+/// `agent_avatar` returns copies at most this many pixels on their long edge.
+pub const AVATAR_THUMB_EDGE: u32 = 256;
 const PLAN_FILE: &str = ".foundry/plan.json";
 const PROMPT: &str = include_str!("prompt.md");
 
@@ -675,6 +680,69 @@ impl TeamStore {
         save_roles(&repo, &file.agents)?;
         Ok(file.agents[at].clone())
     }
+
+    /// The agent's avatar as a data URL, at most [`AVATAR_THUMB_EDGE`] px on its long edge, or
+    /// null when it has none, its built-in id isn't embedded, or its file is missing. An
+    /// uploaded file must sit under `.foundry/agents/` (checked through `core::paths`, since
+    /// `roles.json` can be hand-edited). Read-only: the stored file is never touched.
+    pub fn avatar(&self, project_id: &str, agent_id: &str) -> Result<Option<String>, AppError> {
+        let repo = self.repos.repo(project_id)?;
+        let avatar_path = {
+            let _guard = lock(&self.lock);
+            let file = Self::load_team(&repo)?.ok_or_else(|| {
+                AppError::new(
+                    ErrorCode::TeamNotConfirmed,
+                    "this project has no confirmed team",
+                )
+            })?;
+            file.agents
+                .into_iter()
+                .find(|a| a.id == agent_id)
+                .ok_or_else(|| AppError::not_found(format!("no agent {agent_id}")))?
+                .avatar_path
+        };
+        let Some(avatar_path) = avatar_path else {
+            return Ok(None);
+        };
+
+        if let Some(id) = avatar_path.strip_prefix("builtin:") {
+            // Built-ins are shipped already sized, so they're served as embedded.
+            return Ok(BUILTIN_AVATARS
+                .iter()
+                .find(|(b, _)| *b == id)
+                .map(|(_, bytes)| data_url("image/png", bytes)));
+        }
+
+        let rel = paths::check(Path::new(&avatar_path), PathKind::Relative)?;
+        let inside = rel
+            .strip_prefix(AVATAR_DIR)
+            .ok()
+            .filter(|rest| rest.components().next().is_some())
+            .ok_or_else(|| {
+                AppError::path_escape(format!("avatar path is outside {AVATAR_DIR}/"))
+            })?;
+        let dir = paths::resolve(&repo, AVATAR_DIR)?;
+        if !dir.is_dir() {
+            return Ok(None);
+        }
+        let file = paths::resolve(&dir, inside)?;
+        let bytes = match fs::read(&file) {
+            Ok(bytes) => bytes,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => return Err(err.into()),
+        };
+        let thumb = image::downscale(&bytes, AVATAR_THUMB_EDGE)?;
+        let mime = if thumb.ext == "jpg" {
+            "image/jpeg"
+        } else {
+            "image/png"
+        };
+        Ok(Some(data_url(mime, &thumb.bytes)))
+    }
+}
+
+fn data_url(mime: &str, bytes: &[u8]) -> String {
+    format!("data:{mime};base64,{}", STANDARD.encode(bytes))
 }
 
 fn team_confirmed() -> AppError {

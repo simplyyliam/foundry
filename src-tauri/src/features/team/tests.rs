@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use ::image::{DynamicImage, GenericImageView, ImageFormat, RgbImage};
+use base64::Engine as _;
 use serde_json::json;
 use tempfile::TempDir;
 
@@ -729,6 +730,192 @@ fn an_uploaded_avatar_gets_bakery_processing_and_a_builtin_needs_none() {
     assert_eq!(
         env.store.set_avatar(P, "otto", not_image).unwrap_err().code,
         ErrorCode::UnsupportedImage
+    );
+}
+
+// ---------- agent_avatar ----------
+
+fn jpeg(w: u32, h: u32) -> Vec<u8> {
+    let mut out = Vec::new();
+    DynamicImage::ImageRgb8(RgbImage::from_pixel(w, h, ::image::Rgb([30, 30, 200])))
+        .write_to(&mut Cursor::new(&mut out), ImageFormat::Jpeg)
+        .unwrap();
+    out
+}
+
+fn upload(env: &Env, agent_id: &str, bytes: Vec<u8>) -> String {
+    env.store
+        .set_avatar(
+            P,
+            agent_id,
+            AvatarChoice {
+                builtin_id: None,
+                bytes: Some(bytes),
+            },
+        )
+        .unwrap()
+        .avatar_path
+        .unwrap()
+}
+
+/// Splits a data URL into its media type and decoded bytes.
+fn decode_data_url(url: &str) -> (String, Vec<u8>) {
+    let rest = url.strip_prefix("data:").expect("a data URL");
+    let (mime, b64) = rest.split_once(";base64,").expect("base64 data URL");
+    (
+        mime.to_string(),
+        STANDARD.decode(b64).expect("valid base64"),
+    )
+}
+
+/// Hand-edits `roles.json`, as a user could, to point an agent's avatar anywhere.
+fn hand_edit_avatar(env: &Env, agent_id: &str, avatar_path: &str) {
+    let mut roles: Value = serde_json::from_str(&env.read(ROLES_FILE).unwrap()).unwrap();
+    for agent in roles["agents"].as_array_mut().unwrap() {
+        if agent["id"] == agent_id {
+            agent["avatarPath"] = json!(avatar_path);
+        }
+    }
+    env.repo.write(ROLES_FILE, &roles.to_string());
+}
+
+#[test]
+fn an_uploaded_avatar_comes_back_as_a_data_url_at_most_256px_in_its_stored_format() {
+    let env = Env::new().with_plan();
+    env.store
+        .confirm(P, vec![custom_agent("Otto"), custom_agent("Ada")])
+        .unwrap();
+
+    upload(&env, "otto", photo(2000, 1000));
+    let (mime, bytes) = decode_data_url(&env.store.avatar(P, "otto").unwrap().unwrap());
+    assert_eq!(mime, "image/png");
+    assert_eq!(::image::guess_format(&bytes).unwrap(), ImageFormat::Png);
+    assert_eq!(
+        ::image::load_from_memory(&bytes).unwrap().dimensions(),
+        (256, 128)
+    );
+
+    upload(&env, "ada", jpeg(300, 900));
+    let (mime, bytes) = decode_data_url(&env.store.avatar(P, "ada").unwrap().unwrap());
+    assert_eq!(mime, "image/jpeg");
+    assert_eq!(::image::guess_format(&bytes).unwrap(), ImageFormat::Jpeg);
+    let (w, h) = ::image::load_from_memory(&bytes).unwrap().dimensions();
+    assert_eq!(h, 256);
+    assert!(w < 256, "{w}x{h} keeps the aspect ratio");
+
+    // Already small enough: served byte-identical to what's stored, never upscaled.
+    let rel = upload(&env, "ada", photo(64, 32));
+    let (_, bytes) = decode_data_url(&env.store.avatar(P, "ada").unwrap().unwrap());
+    assert_eq!(bytes, fs::read(env.repo.path().join(rel)).unwrap());
+}
+
+#[test]
+fn no_avatar_or_a_missing_file_returns_null() {
+    let env = Env::new().with_plan();
+    env.store.confirm(P, vec![custom_agent("Otto")]).unwrap();
+    assert_eq!(env.store.avatar(P, "otto").unwrap(), None);
+
+    let rel = upload(&env, "otto", photo(64, 64));
+    fs::remove_file(env.repo.path().join(&rel)).unwrap();
+    assert_eq!(env.store.avatar(P, "otto").unwrap(), None);
+
+    // The whole folder gone is missing too.
+    fs::remove_dir_all(env.repo.path().join(AVATAR_DIR)).unwrap();
+    assert_eq!(env.store.avatar(P, "otto").unwrap(), None);
+
+    assert_eq!(
+        env.store.avatar(P, "nobody").unwrap_err().code,
+        ErrorCode::NotFound
+    );
+}
+
+#[test]
+fn an_avatar_path_escaping_foundry_agents_is_refused() {
+    let env = Env::new().with_plan();
+    env.store.confirm(P, vec![custom_agent("Otto")]).unwrap();
+    upload(&env, "otto", photo(64, 64));
+    // Real images outside the folder, so only the path check can stop them.
+    fs::write(env.repo.path().join("elsewhere.png"), photo(8, 8)).unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    fs::write(outside.path().join("secret.png"), photo(8, 8)).unwrap();
+    crate::testing::link_dir(
+        outside.path(),
+        // Joined per component: mklink /J rejects forward slashes.
+        &env.repo
+            .path()
+            .join(".foundry")
+            .join("agents")
+            .join("escape"),
+    );
+
+    let absolute = outside.path().join("secret.png");
+    for path in [
+        "elsewhere.png",
+        "agents/roles.json",
+        ".foundry/agents",
+        ".foundry/agents/../../elsewhere.png",
+        "../elsewhere.png",
+        ".foundry/agents/escape/secret.png",
+        absolute.to_str().unwrap(),
+    ] {
+        hand_edit_avatar(&env, "otto", path);
+        assert_eq!(
+            env.store.avatar(P, "otto").unwrap_err().code,
+            ErrorCode::PathEscape,
+            "{path}"
+        );
+    }
+}
+
+#[test]
+fn a_builtin_avatar_resolves_from_the_embedded_set_and_an_unknown_id_is_null() {
+    let env = Env::new().with_plan();
+    env.store.confirm(P, vec![custom_agent("Otto")]).unwrap();
+    env.store
+        .set_avatar(
+            P,
+            "otto",
+            AvatarChoice {
+                builtin_id: Some("test-fixture".into()),
+                bytes: None,
+            },
+        )
+        .unwrap();
+    // The embedded bytes as they are: the fixture isn't decodable, so it can't have been
+    // run through image processing.
+    let (mime, bytes) = decode_data_url(&env.store.avatar(P, "otto").unwrap().unwrap());
+    assert_eq!(mime, "image/png");
+    assert_eq!(bytes, b"not an image");
+
+    hand_edit_avatar(&env, "otto", "builtin:nope");
+    assert_eq!(env.store.avatar(P, "otto").unwrap(), None);
+}
+
+#[test]
+fn agent_avatar_writes_nothing() {
+    let env = Env::new().with_plan();
+    env.store
+        .confirm(P, vec![custom_agent("Otto"), custom_agent("Ada")])
+        .unwrap();
+    upload(&env, "otto", photo(2000, 1000));
+    upload(&env, "ada", jpeg(64, 64));
+    let before = (snapshot(env.repo.path()), snapshot(env.data.path()));
+
+    for agent in ["otto", "ada"] {
+        assert!(env.store.avatar(P, agent).unwrap().is_some());
+    }
+    assert_eq!(
+        (snapshot(env.repo.path()), snapshot(env.data.path())),
+        before
+    );
+
+    // A refused path writes nothing either.
+    hand_edit_avatar(&env, "ada", "../elsewhere.png");
+    let before = (snapshot(env.repo.path()), snapshot(env.data.path()));
+    env.store.avatar(P, "ada").unwrap_err();
+    assert_eq!(
+        (snapshot(env.repo.path()), snapshot(env.data.path())),
+        before
     );
 }
 

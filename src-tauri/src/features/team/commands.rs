@@ -112,3 +112,15 @@ pub async fn set_agent_avatar(
     })
     .await
 }
+
+/// The agent's avatar as a data URL (at most 256 px on its long edge), or null when it has
+/// none or its file is missing. Read-only.
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_avatar(
+    store: Store<'_>,
+    project_id: String,
+    agent_id: String,
+) -> Result<Option<String>, AppError> {
+    blocking(&store, move |s| s.avatar(&project_id, &agent_id)).await
+}

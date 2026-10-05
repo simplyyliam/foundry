@@ -200,6 +200,11 @@ export const commands = {
 	builtinAvatarList: () => typedError<string[], AppError>(__TAURI_INVOKE("builtin_avatar_list")),
 	/**  A built-in avatar, or an uploaded image (processed like a Bakery image). */
 	setAgentAvatar: (projectId: string, agentId: string, choice: AvatarChoice) => typedError<TeamAgent, AppError>(__TAURI_INVOKE("set_agent_avatar", { projectId, agentId, choice })),
+	/**
+	 *  The agent's avatar as a data URL (at most 256 px on its long edge), or null when it has
+	 *  none or its file is missing. Read-only.
+	 */
+	agentAvatar: (projectId: string, agentId: string) => typedError<string | null, AppError>(__TAURI_INVOKE("agent_avatar", { projectId, agentId })),
 	/**  The Design Library, with `untaggedCount` (untagged files are never copied). */
 	designLibraryList: () => typedError<DesignLibrary, AppError>(__TAURI_INVOKE("design_library_list")),
 	/**

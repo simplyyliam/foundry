@@ -96,6 +96,7 @@ pub fn specta_builder<R: Runtime>() -> tauri_specta::Builder<R> {
             team::commands::get_team,
             team::commands::builtin_avatar_list,
             team::commands::set_agent_avatar,
+            team::commands::agent_avatar,
             design::commands::design_library_list,
             design::commands::design_library_add_from_paths,
             design::commands::design_library_update,

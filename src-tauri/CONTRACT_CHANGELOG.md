@@ -231,3 +231,11 @@ All additive. The plan feature stays the only writer of `plan.json`: it reads `.
 | type | `ErrorCode` | adds `"confirmed_requirements"` | `load_roadmap` while any requirement is confirmed and `discardConfirmed` is false (the spec's R-3-8 guard). |
 | type | `RoadmapLoaded` | — → `{ plan, slices, requirements, deferred, openQuestions: number, unanchoredDeferred: string[] }` | Counts of what was loaded. `unanchoredDeferred`: labels of deferred items whose `anchoredTo` names no slice, so they couldn't be anchored and weren't loaded: reported, not dropped silently. Only `roadmap.json` files generated before `f039dc1` can still have these (anchored to a feature family); P3 now rejects any anchor that isn't a slice name. |
 | type | `Plan` (and `plan.json`) | adds `openQuestions: OpenQuestion[]` | Project-wide open questions (the roadmap's aren't tied to a slice). Older `plan.json` files load with an empty list. Not mirrored into `vsm_data.js`, whose schema has no project-level slot. |
+
+## Agent avatars for display: `agent_avatar`
+
+Additive. Read-only: writes nothing to the repo or app data, and never changes the stored file.
+
+| Kind | Name | Before → After | Why |
+| --- | --- | --- | --- |
+| command | `agent_avatar` | — → `agentAvatar(projectId: string, agentId: string): string \| null` | The UI needs to show avatars without asset-protocol access to `.foundry/agents/`. Returns a `data:` URL. Uploaded file (`avatarPath` under `.foundry/agents/`): resolved through `core::paths`, so a hand-edited `roles.json` can't point outside that folder (`path_escape`); returned at most 256 px on its long edge via `core::image::downscale`, in the stored format (`image/png` or `image/jpeg`), byte-identical when it already fits. `builtin:<id>`: the embedded bytes as `image/png`, unscaled (built-ins ship pre-sized). `null` when the agent has no avatar, the built-in id isn't embedded, or the file or folder is missing. Unknown project or agent → `not_found`; no confirmed team → `team_not_confirmed` (as `set_agent_avatar`). |

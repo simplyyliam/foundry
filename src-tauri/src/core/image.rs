@@ -83,3 +83,50 @@ pub fn process(input: &[u8]) -> Result<Processed, AppError> {
         height: img.height(),
     })
 }
+
+/// A copy of an already-stored image, at most `max_edge` pixels on its long edge, in the same
+/// format (PNG or JPEG only, judged by the bytes). An image that already fits comes back
+/// byte-identical; nothing is upscaled.
+pub fn downscale(input: &[u8], max_edge: u32) -> Result<Processed, AppError> {
+    if input.len() as u64 > MAX_INPUT_BYTES {
+        return Err(too_large("this image"));
+    }
+    let mut reader = ImageReader::new(Cursor::new(input))
+        .with_guessed_format()
+        .map_err(|err| unsupported(format!("could not read the image: {err}")))?;
+    let (format, ext) = match reader.format() {
+        Some(ImageFormat::Png) => (ImageFormat::Png, "png"),
+        Some(ImageFormat::Jpeg) => (ImageFormat::Jpeg, "jpg"),
+        _ => return Err(unsupported("only PNG and JPEG images can be downscaled")),
+    };
+    let mut limits = Limits::default();
+    limits.max_image_width = Some(MAX_DECODE_EDGE);
+    limits.max_image_height = Some(MAX_DECODE_EDGE);
+    reader.limits(limits);
+    let img = reader
+        .decode()
+        .map_err(|err| unsupported(format!("could not decode the image: {err}")))?;
+
+    if img.width().max(img.height()) <= max_edge {
+        return Ok(Processed {
+            bytes: input.to_vec(),
+            ext,
+            width: img.width(),
+            height: img.height(),
+        });
+    }
+    let img = img.resize(max_edge, max_edge, FilterType::Lanczos3);
+    let mut bytes = Vec::new();
+    let encoded = match format {
+        ImageFormat::Jpeg => DynamicImage::ImageRgb8(img.to_rgb8())
+            .write_with_encoder(JpegEncoder::new_with_quality(&mut bytes, JPEG_QUALITY)),
+        _ => img.write_to(&mut Cursor::new(&mut bytes), ImageFormat::Png),
+    };
+    encoded.map_err(|err| AppError::internal(format!("could not encode the image: {err}")))?;
+    Ok(Processed {
+        bytes,
+        ext,
+        width: img.width(),
+        height: img.height(),
+    })
+}
