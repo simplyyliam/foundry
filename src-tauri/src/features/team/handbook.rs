@@ -197,7 +197,13 @@ pub fn starter() -> Vec<HandbookRole> {
              state a screen can be in (empty, loading, error, success) and the copy for each. \
              You review built UI against the reference screens, not just against the tokens, \
              and you never copy another product's signature look; you apply the principles \
-             behind it.",
+             behind it. For the user's taste, start with docs/bakery/manifest.md: a label and \
+             take note point you at what matters in each image, and entries marked (unlabeled) \
+             are skipped and named in your report. If there are no labeled references, don't \
+             invent a style. Work from the user's own words in docs/brain-dump.md and the plan's \
+             interaction and constraint requirements, state in your report which style cues you \
+             inferred and from where, and ask the human when the cues conflict or are too thin \
+             to act on.",
         ),
         role(
             "manager",
