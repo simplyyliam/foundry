@@ -1,14 +1,13 @@
 import { ArrowUp, HardDrive, House, LoaderCircle } from "lucide-react";
-import { motion, useReducedMotion } from "motion/react";
+import { motion, useReducedMotionConfig } from "motion/react";
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { commands, type FolderListing, type FolderLocations } from "@/lib/bindings";
-import { basename } from "@/features/projects";
-import { usePressScale } from "@/shared";
+import { basename } from "./basename";
+import { PressButton, usePressScale } from "@/shared";
 import { FolderRow } from "./FolderRow";
 import { LocationChip } from "./LocationChip";
-import { PressButton } from "./PressButton";
 
-interface FolderBrowserProps {
+export interface FolderBrowserProps {
   /** Folder to open first; null opens the home folder. */
   initialPath: string | null;
   locations: FolderLocations | null;
@@ -16,6 +15,8 @@ interface FolderBrowserProps {
   confirmVerb: string;
   onSelect: (path: string) => void;
   onCancel: () => void;
+  /** Label of the secondary button that calls `onCancel`. */
+  cancelLabel?: string;
 }
 
 type Load =
@@ -35,8 +36,15 @@ async function fetchListing(path: string | null): Promise<Load> {
 }
 
 /** In-app folder picker: styleable, unlike the native OS dialog. */
-export function FolderBrowser({ initialPath, locations, confirmVerb, onSelect, onCancel }: FolderBrowserProps) {
-  const reducedMotion = useReducedMotion();
+export function FolderBrowser({
+  initialPath,
+  locations,
+  confirmVerb,
+  onSelect,
+  onCancel,
+  cancelLabel = "Back",
+}: FolderBrowserProps) {
+  const reducedMotion = useReducedMotionConfig();
   const [path, setPath] = useState(initialPath);
   // The latest settled request; it's loading while that isn't for the current path.
   const [settled, setSettled] = useState<{ path: string | null; load: Load } | null>(null);
@@ -180,7 +188,7 @@ export function FolderBrowser({ initialPath, locations, confirmVerb, onSelect, o
         </span>
         <div className="flex shrink-0 gap-2">
           <PressButton variant="ghost" size="sm" onClick={onCancel}>
-            Back
+            {cancelLabel}
           </PressButton>
           <PressButton
             size="sm"

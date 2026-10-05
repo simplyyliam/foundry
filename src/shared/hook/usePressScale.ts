@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { animate, press, type AnimationOptions } from "motion";
-import { useReducedMotion } from "motion/react";
+import { useReducedMotionConfig } from "motion/react";
 
 /** Quick, damped dip on press. */
 const PRESS: AnimationOptions = { type: "spring", visualDuration: 0.12, bounce: 0 };
@@ -26,7 +26,7 @@ export function usePressScale<T extends Element>({
   disabled = false,
 }: PressScaleOptions = {}) {
   const ref = useRef<T>(null);
-  const reducedMotion = useReducedMotion();
+  const reducedMotion = useReducedMotionConfig();
 
   useEffect(() => {
     const element = ref.current;

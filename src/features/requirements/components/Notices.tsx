@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { AnimatePresence, motion, useReducedMotion } from "motion/react";
+import { AnimatePresence, motion, useReducedMotionConfig } from "motion/react";
 import { RotateCw, TriangleAlert, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { AppError } from "@/lib/bindings";
@@ -11,7 +11,7 @@ const STALE_DISMISS_MS = 8000;
 
 /** Floating notice over the canvas: a reload after `stale_revision`, or a refused action. */
 export function NoticeBanner({ notice, onDismiss }: { notice: PlanNotice | null; onDismiss: () => void }) {
-  const reducedMotion = useReducedMotion();
+  const reducedMotion = useReducedMotionConfig();
 
   useEffect(() => {
     // A reload notice is informational and goes away; an error stays until dismissed.

@@ -1,5 +1,5 @@
 import { Folder, FolderGit2, LoaderCircle, Plus, Search } from "lucide-react";
-import { AnimatePresence, motion, MotionConfig } from "motion/react";
+import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { commands, type FolderEntry, type FolderListing, type FolderLocations } from "@/lib/bindings";
@@ -13,8 +13,9 @@ import {
   type Project,
 } from "@/features/projects";
 import { useElementHeight } from "@/shared";
+import { useDefaultProjectsDir } from "../../hooks/useDefaultProjectsDir";
 import { DirectoryButton } from "./DirectoryButton";
-import { FolderBrowser } from "./FolderBrowser";
+import { FolderBrowser } from "@/components/folder-picker";
 import { PressButton } from "./PressButton";
 import { ProjectOption } from "./ProjectOption";
 import { HEIGHT, view } from "./motion";
@@ -61,7 +62,11 @@ type Option =
  */
 export function AddProjectFlow({ onDone }: { onDone: (project: Project) => void }) {
   const projects = useProjects();
-  const [dir, setDir] = useState(readDir);
+  const defaultDir = useDefaultProjectsDir();
+  /** A folder picked in this dialog; until then the settings default, else the last pick. */
+  const [picked, setPicked] = useState<string | null>(null);
+  const settingsLoading = defaultDir === undefined;
+  const dir = picked ?? (settingsLoading ? null : (defaultDir ?? readDir()));
   const [browsing, setBrowsing] = useState(false);
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
@@ -101,13 +106,14 @@ export function AddProjectFlow({ onDone }: { onDone: (project: Project) => void 
     };
   }, [dir]);
 
-  // On open and back from the folder browser: typing goes straight to search.
+  // On open (once the settings default is known) and back from the folder browser:
+  // typing goes straight to search.
   useEffect(() => {
     if (!browsing) inputRef.current?.focus({ preventScroll: true });
-  }, [browsing]);
+  }, [browsing, settingsLoading]);
 
   const load = dir && settled?.dir === dir ? settled.load : null;
-  const loading = dir !== null && load === null;
+  const loading = settingsLoading || (dir !== null && load === null);
 
   const options = useMemo<Option[]>(() => {
     if (load?.status !== "ready") return [];
@@ -179,7 +185,7 @@ export function AddProjectFlow({ onDone }: { onDone: (project: Project) => void 
 
   const pickDir = (path: string) => {
     saveDir(path);
-    setDir(path);
+    setPicked(path);
     setActiveIndex(0);
     setError(null);
     setBrowsing(false);
@@ -190,7 +196,7 @@ export function AddProjectFlow({ onDone }: { onDone: (project: Project) => void 
   const trimmed = query.trim();
 
   return (
-    <MotionConfig reducedMotion="user">
+    <>
       <DialogTitle className="sr-only">Add project</DialogTitle>
       <DialogDescription className="sr-only">
         Search the folders in your projects folder, pick one to add it, or type a new name to create a repository.
@@ -255,16 +261,16 @@ export function AddProjectFlow({ onDone }: { onDone: (project: Project) => void 
                 </div>
 
                 <div className="max-h-80 overflow-y-auto overscroll-contain p-1.5">
-                  {!dir ? (
+                  {loading ? (
+                    <div className="flex items-center justify-center py-10">
+                      <LoaderCircle aria-label="Loading" className="size-4 animate-spin text-muted-foreground" />
+                    </div>
+                  ) : !dir ? (
                     <div className="flex flex-col items-center gap-3 px-6 py-10 text-center">
                       <p className="text-[13px] text-muted-foreground">Choose the folder where your projects live.</p>
                       <PressButton size="sm" variant="outline" onClick={() => setBrowsing(true)}>
                         Choose folder
                       </PressButton>
-                    </div>
-                  ) : loading ? (
-                    <div className="flex items-center justify-center py-10">
-                      <LoaderCircle aria-label="Loading" className="size-4 animate-spin text-muted-foreground" />
                     </div>
                   ) : load?.status === "error" ? (
                     <div className="flex flex-col items-center gap-3 px-6 py-10 text-center">
@@ -325,6 +331,6 @@ export function AddProjectFlow({ onDone }: { onDone: (project: Project) => void 
           </AnimatePresence>
         </div>
       </motion.div>
-    </MotionConfig>
+    </>
   );
 }

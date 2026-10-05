@@ -1,5 +1,5 @@
 import { ChevronRight } from "lucide-react";
-import { motion, useReducedMotion } from "motion/react";
+import { motion, useReducedMotionConfig } from "motion/react";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { usePressScale, type Crumb } from "@/shared";
@@ -29,7 +29,7 @@ interface CrumbItemProps {
 }
 
 export function CrumbItem({ crumb, index, isCurrent }: CrumbItemProps) {
-  const reducedMotion = useReducedMotion();
+  const reducedMotion = useReducedMotionConfig();
 
   const content = (
     <>

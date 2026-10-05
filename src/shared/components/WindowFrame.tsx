@@ -1,6 +1,7 @@
-import { useMemo, type HTMLAttributes, type PointerEvent, type ReactNode } from "react";
+import { useMemo, useState, type HTMLAttributes, type PointerEvent, type ReactNode } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { cn } from "@/lib/utils";
+import { PortalContainerContext } from "@/lib/portal-container";
 import { useClickThroughMargin } from "../hook/useClickthrough";
 import { useWindowFlat } from "../hook/useWindowFlat";
 import { type ResizeDirection, type FrameMetrics, getResizeHandles } from "../utils/geometry";
@@ -55,6 +56,8 @@ export function WindowFrame({
   ...props
 }: WindowFrameProps) {
   const flat = useWindowFlat();
+  // Dialogs and sheets portal here (see @/lib/portal-container); state so they re-render once it exists.
+  const [modalLayer, setModalLayer] = useState<HTMLDivElement | null>(null);
 
   const metrics = useMemo<FrameMetrics>(
     () => ({ margin, radius, edge: resizeEdge, corner: resizeCorner }),
@@ -74,10 +77,24 @@ export function WindowFrame({
         )}
         style={{ borderRadius: flat ? 0 : radius }}
       >
-        {titlebar}
-        <div className={cn("min-h-0 flex-1", className)} {...props}>
-          {children}
-        </div>
+        <PortalContainerContext.Provider value={modalLayer}>
+          {titlebar}
+          <div className={cn("min-h-0 flex-1", className)} {...props}>
+            {children}
+          </div>
+        </PortalContainerContext.Provider>
+
+        {/*
+          Modal layer: covers the card exactly. `contain: layout` makes it the containing block
+          for `fixed` children, so an overlay's `fixed inset-0` fills the card (not the
+          transparent margin) and is clipped by the card's rounded corners. It ignores the
+          pointer itself; whatever is portaled into it takes clicks again.
+        */}
+        <div
+          ref={setModalLayer}
+          data-slot="modal-layer"
+          className="pointer-events-none absolute inset-0 z-50 overflow-hidden [contain:layout] *:pointer-events-auto"
+        />
       </div>
 
       {!flat &&

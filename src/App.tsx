@@ -4,6 +4,7 @@ import { TooltipProvider } from "./components/ui/tooltip";
 import { useEffect } from "react";
 import { commands } from "./lib/bindings";
 import { AppContextMenu } from "./shared";
+import { AppearanceRoot } from "./features/settings";
 
 export default function App() {
   useEffect(() => {
@@ -22,11 +23,14 @@ export default function App() {
   }, []);
 
   return (
-    <TooltipProvider>
-      {/* The app-wide right-click menu (replaces the webview's native one). */}
-      <AppContextMenu>
-        <RouterProvider router={RouterBrowser} />
-      </AppContextMenu>
-    </TooltipProvider>
+    // Theme and reduced motion from settings, applied from startup in every window.
+    <AppearanceRoot>
+      <TooltipProvider>
+        {/* The app-wide right-click menu (replaces the webview's native one). */}
+        <AppContextMenu>
+          <RouterProvider router={RouterBrowser} />
+        </AppContextMenu>
+      </TooltipProvider>
+    </AppearanceRoot>
   )
 }

@@ -4,6 +4,8 @@ import {
   SidebarContent,
   SidebarFooter,
   SidebarHeader,
+  usePressScale,
+  useSettingsDialog,
 } from "@/shared"
 import { IconButton } from "@/shared/components/IconButton"
 import type { Tab } from "@/routing"
@@ -16,6 +18,9 @@ export interface AppSidebarProps {
 }
 
 export function AppSidebar({ tabs }: AppSidebarProps) {
+  const { openSettings } = useSettingsDialog()
+  const settingsRef = usePressScale<HTMLButtonElement>({ scale: 0.92 })
+
   return (
     <Sidebar variant="inset">
       <SidebarHeader>
@@ -39,7 +44,7 @@ export function AppSidebar({ tabs }: AppSidebarProps) {
             <h1 className="font-medium text-[15px]">Simplyliam</h1>
           </div>
           <div className="flex items-center gap-2">
-            <IconButton Icon={Settings} />
+            <IconButton ref={settingsRef} Icon={Settings} ariaLabel="Settings" title="Settings" onClick={() => openSettings()} />
             <IconButton Icon={Bell} />
           </div>
         </div>

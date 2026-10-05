@@ -4,12 +4,13 @@ import { getRouteCrumbs, tabs } from "@/routing";
 import {
   Apptitlebar,
   PageHeaderProvider,
+  SettingsDialogProvider,
   SidebarInset,
   SidebarProvider,
   WindowFrame,
 } from "@/shared";
 import { useRoadmapProgressListener } from "@/features/roadmap";
-import { AppSidebar, InsetHeader } from "@/widgets";
+import { AppSidebar, InsetHeader, SettingsDialog } from "@/widgets";
 import { ContextualPanelFrame } from "./contextual-panel/ContextualPanelFrame";
 
 export default function AppLayout() {
@@ -20,21 +21,25 @@ export default function AppLayout() {
 
   return (
     <WindowFrame titlebar={<Apptitlebar />}>
-      <PageHeaderProvider>
-        <SidebarProvider storageKey="foundry:sidebar-open">
-          <AppSidebar tabs={tabs} />
-          {/* Nested provider: the contextual panel has its own open state and shortcut. */}
-          <SidebarProvider keyboardShortcut="mod+alt+b" storageKey="foundry:contextual-panel-open">
-            <SidebarInset>
-              <InsetHeader fallback={fallbackCrumbs} />
-              <div className="min-h-0 flex-1 overflow-auto">
-                <Outlet />
-              </div>
-            </SidebarInset>
-            <ContextualPanelFrame />
+      {/* Lets the sidebar's gear open the Settings dialog (widgets can't import each other). */}
+      <SettingsDialogProvider>
+        <PageHeaderProvider>
+          <SidebarProvider storageKey="foundry:sidebar-open">
+            <AppSidebar tabs={tabs} />
+            {/* Nested provider: the contextual panel has its own open state and shortcut. */}
+            <SidebarProvider keyboardShortcut="mod+alt+b" storageKey="foundry:contextual-panel-open">
+              <SidebarInset>
+                <InsetHeader fallback={fallbackCrumbs} />
+                <div className="min-h-0 flex-1 overflow-auto">
+                  <Outlet />
+                </div>
+              </SidebarInset>
+              <ContextualPanelFrame />
+            </SidebarProvider>
           </SidebarProvider>
-        </SidebarProvider>
-      </PageHeaderProvider>
+        </PageHeaderProvider>
+        <SettingsDialog />
+      </SettingsDialogProvider>
     </WindowFrame>
   );
 }
