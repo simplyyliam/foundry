@@ -10,8 +10,9 @@ import {
   WindowFrame,
 } from "@/shared";
 import { useRoadmapProgressListener } from "@/features/roadmap";
-import { AppSidebar, InsetHeader, SettingsDialog } from "@/widgets";
+import { AppSidebar, InsetHeader } from "@/widgets";
 import { ContextualPanelFrame } from "./contextual-panel/ContextualPanelFrame";
+import { SettingsFrame } from "./settings/SettingsFrame";
 
 export default function AppLayout() {
   const { pathname } = useLocation();
@@ -38,7 +39,7 @@ export default function AppLayout() {
             </SidebarProvider>
           </SidebarProvider>
         </PageHeaderProvider>
-        <SettingsDialog />
+        <SettingsFrame />
       </SettingsDialogProvider>
     </WindowFrame>
   );

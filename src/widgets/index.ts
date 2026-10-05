@@ -6,4 +6,13 @@ export { RoadmapPanel, type RoadmapPanelProps } from "./roadmap";
 export { Blueprint, type BlueprintProps } from "./blueprint";
 export { Requirements, type RequirementsProps } from "./requirements";
 export { ReferencesPanel, type ReferencesPanelProps } from "./references";
-export { SettingsDialog } from "./settings";
+export {
+  AboutSettings,
+  AgentsSettings,
+  AppearanceSettings,
+  GeneralSettings,
+  ModelsSettings,
+  NotificationsSettings,
+} from "./settings";
+export { DesignLibrary } from "./design-library";
+export { RoleHandbook } from "./role-handbook";

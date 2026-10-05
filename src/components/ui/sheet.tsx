@@ -26,7 +26,10 @@ function SheetPortal({ container, ...props }: SheetPrimitive.Portal.Props) {
 
 function SheetOverlay({ className, ...props }: SheetPrimitive.Backdrop.Props) {
   return (
+    // Rendered even when nested (a sheet opened from a dialog), so it dims the dialog and a
+    // click on it closes the sheet. Base UI skips nested backdrops by default.
     <SheetPrimitive.Backdrop
+      forceRender
       data-slot="sheet-overlay"
       className={cn(
         "fixed inset-0 z-50 bg-black/30 transition-opacity duration-150 data-ending-style:opacity-0 data-starting-style:opacity-0 supports-backdrop-filter:backdrop-blur-sm",

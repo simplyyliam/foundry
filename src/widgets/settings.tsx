@@ -1,22 +1,39 @@
-import { Dialog, DialogContent } from "@/components/ui/dialog";
-import { SettingsPanel } from "@/features/settings";
-import { useSettingsDialog } from "@/shared";
+import {
+  AboutSection,
+  AgentsSection,
+  AppearanceSection,
+  GeneralSection,
+  ModelsSection,
+  NotificationsSection,
+  WithSettings,
+} from "@/features/settings";
 
-/**
- * The Settings dialog. Opened through `useSettingsDialog()` (the sidebar's gear); the
- * provider lives in the app layout. Escape, the close button or clicking outside closes it.
+/*
+ * The app-settings sections of the Settings dialog. The dialog frame and its section
+ * registry live in the app layout (`pages/app/layout/settings/`), which composes these
+ * with the Design Library and Role Handbook widgets.
  */
-export function SettingsDialog() {
-  const { open, section, setOpen } = useSettingsDialog();
 
-  return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogContent
-        showCloseButton={false}
-        className="flex h-[min(40rem,calc(100%-6rem))] w-[min(56rem,calc(100%-6rem))] max-w-none gap-0 overflow-hidden p-0 sm:max-w-none"
-      >
-        <SettingsPanel initialSection={section} />
-      </DialogContent>
-    </Dialog>
-  );
+export function GeneralSettings() {
+  return <WithSettings>{(settings) => <GeneralSection settings={settings} />}</WithSettings>;
+}
+
+export function AppearanceSettings() {
+  return <WithSettings>{(settings) => <AppearanceSection settings={settings} />}</WithSettings>;
+}
+
+export function ModelsSettings() {
+  return <WithSettings>{(settings) => <ModelsSection settings={settings} />}</WithSettings>;
+}
+
+export function AgentsSettings() {
+  return <WithSettings>{(settings) => <AgentsSection settings={settings} />}</WithSettings>;
+}
+
+export function NotificationsSettings() {
+  return <WithSettings>{(settings) => <NotificationsSection settings={settings} />}</WithSettings>;
+}
+
+export function AboutSettings() {
+  return <AboutSection />;
 }

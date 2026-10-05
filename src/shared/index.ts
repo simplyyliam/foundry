@@ -32,3 +32,4 @@ export type {
 export { shortcut } from "./utils/keys";
 export { PressButton, type PressButtonProps } from "./components/PressButton";
 export { SettingsDialogProvider, useSettingsDialog } from "./lib/settings-dialog";
+export { useFileDrop } from "./hook/useFileDrop";
