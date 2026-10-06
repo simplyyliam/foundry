@@ -11,6 +11,7 @@ pub mod llm;
 pub mod paths;
 pub mod process_tree;
 pub mod repo_write;
+pub mod report;
 pub mod repos;
 pub mod sessions;
 pub mod slug;

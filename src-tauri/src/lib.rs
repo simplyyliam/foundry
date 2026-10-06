@@ -20,7 +20,7 @@ use crate::core::AppError;
 #[cfg(test)]
 use crate::core::ErrorCode;
 use crate::features::{
-    agent_sessions, app, bakery, design, folders, plan, projects, roadmap, team,
+    agent_sessions, app, bakery, design, folders, plan, projects, prompts, roadmap, team,
 };
 
 /// Where the generated TypeScript bindings live. Never hand-edit that file.
@@ -105,6 +105,10 @@ pub fn specta_builder<R: Runtime>() -> tauri_specta::Builder<R> {
             design::commands::agents_placeholders,
             design::commands::confirm_placeholder,
             design::commands::generate_agents,
+            prompts::commands::generate_handoff,
+            prompts::commands::generate_task_prompt,
+            prompts::commands::launch_message,
+            prompts::commands::list_prompts,
         ])
         .events(collect_events![
             app::AppReady,
@@ -324,6 +328,7 @@ pub fn app_builder<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> 
                 Arc::clone(&projects),
             )));
             app.manage(projects);
+            app.manage(Arc::new(prompts::PromptsStore::new(Arc::clone(&repos))));
             app.manage(Arc::new(plan::PlanStore::new(
                 Arc::clone(&repos),
                 Git::system(),

@@ -85,6 +85,11 @@ pub enum ErrorCode {
     /// A role with that id is already in the Role Handbook (the message lists their titles):
     /// pass `replace` to update it.
     RoleExists,
+    /// The plan isn't confirmed yet (see `plan_summary`): every requirement assigned and
+    /// confirmed, at least one slice, no dependency cycle.
+    PlanNotConfirmed,
+    /// AGENTS.md is missing from the repo or still has a `[[ FILL IN` marker (`generate_agents`).
+    AgentsMdNotReady,
 }
 
 impl ErrorCode {
@@ -128,6 +133,8 @@ impl ErrorCode {
             Self::AgentsMdExists => "agents_md_exists",
             Self::ConfirmedRequirements => "confirmed_requirements",
             Self::RoleExists => "role_exists",
+            Self::PlanNotConfirmed => "plan_not_confirmed",
+            Self::AgentsMdNotReady => "agents_md_not_ready",
         }
     }
 }
@@ -242,6 +249,8 @@ mod tests {
             ErrorCode::AgentsMdExists,
             ErrorCode::ConfirmedRequirements,
             ErrorCode::RoleExists,
+            ErrorCode::PlanNotConfirmed,
+            ErrorCode::AgentsMdNotReady,
         ] {
             assert_eq!(serde_json::to_value(code).unwrap(), json!(code.as_str()));
         }

@@ -7,5 +7,6 @@ pub mod design;
 pub mod folders;
 pub mod plan;
 pub mod projects;
+pub mod prompts;
 pub mod roadmap;
 pub mod team;

@@ -225,6 +225,19 @@ export const commands = {
 	confirmPlaceholder: (projectId: string, key: string, value: string) => typedError<Placeholder[], AppError>(__TAURI_INVOKE("confirm_placeholder", { projectId, key, value })),
 	/**  Writes AGENTS.md, docs/design/ copies and docs/design/manifest.md. */
 	generateAgents: (projectId: string, options: GenerateOptions) => typedError<GenerateAgentsResult, AppError>(__TAURI_INVOKE("generate_agents", { projectId, options })),
+	/**
+	 *  Fills the hand-off template into `.foundry/prompts/handoff.md`. Refused unless the plan
+	 *  is confirmed (`plan_not_confirmed`) and AGENTS.md is ready (`agents_md_not_ready`).
+	 */
+	generateHandoff: (projectId: string) => typedError<HandoffResult, AppError>(__TAURI_INVOKE("generate_handoff", { projectId })),
+	/**
+	 *  Writes `.foundry/prompts/<sliceId>-<agentId>.md`. Unfinished dependencies →
+	 *  `dependencies_not_done`, unless `force`.
+	 */
+	generateTaskPrompt: (projectId: string, sliceId: string, agentId: string, options: TaskPromptOptions) => typedError<TaskPromptResult, AppError>(__TAURI_INVOKE("generate_task_prompt", { projectId, sliceId, agentId, options })),
+	/**  One line that starts an agent's session on a prompt file under `.foundry/prompts/`. */
+	launchMessage: (projectId: string, agentId: string, promptFile: string) => typedError<string, AppError>(__TAURI_INVOKE("launch_message", { projectId, agentId, promptFile })),
+	listPrompts: (projectId: string) => typedError<PromptFile[], AppError>(__TAURI_INVOKE("list_prompts", { projectId })),
 };
 
 /** Events */
@@ -505,7 +518,14 @@ export type ErrorCode =
  *  A role with that id is already in the Role Handbook (the message lists their titles):
  *  pass `replace` to update it.
  */
-"role_exists";
+"role_exists" | 
+/**
+ *  The plan isn't confirmed yet (see `plan_summary`): every requirement assigned and
+ *  confirmed, at least one slice, no dependency cycle.
+ */
+"plan_not_confirmed" | 
+/**  AGENTS.md is missing from the repo or still has a `[[ FILL IN` marker (`generate_agents`). */
+"agents_md_not_ready";
 
 /**  Identity and timestamp shared by every event. Flatten it into the payload struct. */
 export type EventMeta = {
@@ -589,6 +609,13 @@ export type HandbookRolePatch = {
 	typicalWriteGlobs: string[] | null,
 	typicalProtectedGlobs: string[] | null,
 	skillTemplate: string | null,
+};
+
+export type HandoffResult = {
+	/**  Repo-relative: `.foundry/prompts/handoff.md`. */
+	path: string,
+	/**  Not refusals, e.g. unlabeled Bakery images. */
+	warnings: string[],
 };
 
 export type LinkRepositoryInput = {
@@ -745,6 +772,21 @@ export type ProjectPatch = {
 	name: string | null,
 	tagline: string | null,
 };
+
+export type PromptFile = {
+	/**  Repo-relative, e.g. `.foundry/prompts/handoff.md`. What `launch_message` takes. */
+	path: string,
+	kind: PromptKind,
+	/**  Task prompts only. */
+	sliceId: string | null,
+	/**  Task prompts only. */
+	agentId: string | null,
+	size: number,
+	/**  Epoch milliseconds. */
+	modifiedMs: number,
+};
+
+export type PromptKind = "handoff" | "task";
 
 export type ProposedAgent = {
 	tempId: string,
@@ -919,6 +961,19 @@ export type TargetUser = {
 	name: string,
 	description: string,
 	painPoints: string[],
+};
+
+export type TaskPromptOptions = {
+	/**  Generate even though some dependencies aren't done. */
+	force: boolean,
+};
+
+export type TaskPromptResult = {
+	/**  Repo-relative: `.foundry/prompts/<sliceId>-<agentId>.md`. */
+	path: string,
+	/**  Names of the dependencies that weren't done (only ever non-empty with `force`). */
+	unfinishedDependencies: string[],
+	warnings: string[],
 };
 
 export type Team = {
