@@ -69,7 +69,7 @@ pub enum ErrorCode {
     RequirementUnassigned,
     /// A slice can't be removed while requirements, dependents or deferred items point at it.
     SliceInUse,
-    /// Only `.md` files can go in the Design Library.
+    /// Only `.md` files are accepted (the Design Library, Role Handbook imports).
     UnsupportedFile,
     /// The project already has a confirmed team: add agents with `add_agent_manually`;
     /// re-proposing a confirmed team is out of scope (AGENTS.md, Law 6).
@@ -82,6 +82,9 @@ pub enum ErrorCode {
     AgentsMdExists,
     /// Loading a roadmap would replace confirmed requirements: pass `discardConfirmed`.
     ConfirmedRequirements,
+    /// A role with that id is already in the Role Handbook (the message lists their titles):
+    /// pass `replace` to update it.
+    RoleExists,
 }
 
 impl ErrorCode {
@@ -124,6 +127,7 @@ impl ErrorCode {
             Self::PlaceholdersUnconfirmed => "placeholders_unconfirmed",
             Self::AgentsMdExists => "agents_md_exists",
             Self::ConfirmedRequirements => "confirmed_requirements",
+            Self::RoleExists => "role_exists",
         }
     }
 }
@@ -237,6 +241,7 @@ mod tests {
             ErrorCode::PlaceholdersUnconfirmed,
             ErrorCode::AgentsMdExists,
             ErrorCode::ConfirmedRequirements,
+            ErrorCode::RoleExists,
         ] {
             assert_eq!(serde_json::to_value(code).unwrap(), json!(code.as_str()));
         }

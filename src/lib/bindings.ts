@@ -184,6 +184,11 @@ export const commands = {
 	/**  The Role Handbook (seeded with the starter roles the first time). */
 	roleHandbookList: () => typedError<HandbookRole[], AppError>(__TAURI_INVOKE("role_handbook_list")),
 	roleHandbookAdd: (role: NewHandbookRole) => typedError<HandbookRole[], AppError>(__TAURI_INVOKE("role_handbook_add", { role })),
+	/**
+	 *  One role per dropped `.md` file (frontmatter optional). All or nothing; an id the
+	 *  handbook already has is `role_exists` unless `replace`. The files are only read.
+	 */
+	roleHandbookAddFromPaths: (paths: string[], replace: boolean) => typedError<RolesImported, AppError>(__TAURI_INVOKE("role_handbook_add_from_paths", { paths, replace })),
 	roleHandbookUpdate: (id: string, patch: HandbookRolePatch) => typedError<HandbookRole[], AppError>(__TAURI_INVOKE("role_handbook_update", { id, patch })),
 	roleHandbookRemove: (id: string) => typedError<HandbookRole[], AppError>(__TAURI_INVOKE("role_handbook_remove", { id })),
 	/**  The Product Lead's proposed roster. Writes nothing; edit it, then `confirm_team`. */
@@ -481,7 +486,7 @@ export type ErrorCode =
 "requirement_unassigned" | 
 /**  A slice can't be removed while requirements, dependents or deferred items point at it. */
 "slice_in_use" | 
-/**  Only `.md` files can go in the Design Library. */
+/**  Only `.md` files are accepted (the Design Library, Role Handbook imports). */
 "unsupported_file" | 
 /**
  *  The project already has a confirmed team: add agents with `add_agent_manually`;
@@ -495,7 +500,12 @@ export type ErrorCode =
 /**  An AGENTS.md that differs already exists: pass `overwrite: true` (it's backed up). */
 "agents_md_exists" | 
 /**  Loading a roadmap would replace confirmed requirements: pass `discardConfirmed`. */
-"confirmed_requirements";
+"confirmed_requirements" | 
+/**
+ *  A role with that id is already in the Role Handbook (the message lists their titles):
+ *  pass `replace` to update it.
+ */
+"role_exists";
 
 /**  Identity and timestamp shared by every event. Flatten it into the payload struct. */
 export type EventMeta = {
@@ -811,6 +821,13 @@ export type RoadmapResult = {
 	/**  1, or 2 when the first reply was rejected. */
 	attempts: number,
 	generatedAt: number,
+};
+
+/**  What `role_handbook_add_from_paths` did: role ids. */
+export type RolesImported = {
+	added: string[],
+	/**  Existing roles that kept their id and took the file's fields (`replace: true`). */
+	replaced: string[],
 };
 
 /**  One agent as the human confirms it (also `add_agent_manually`'s input). */

@@ -3,8 +3,8 @@ use std::sync::Arc;
 use tauri::State;
 
 use super::{
-    AvatarChoice, HandbookRole, HandbookRolePatch, NewHandbookRole, RosterAgent, Team, TeamAgent,
-    TeamProposal, TeamStore, TeamWritten,
+    AvatarChoice, HandbookRole, HandbookRolePatch, NewHandbookRole, RolesImported, RosterAgent,
+    Team, TeamAgent, TeamProposal, TeamStore, TeamWritten,
 };
 use crate::core::AppError;
 
@@ -34,6 +34,18 @@ pub async fn role_handbook_add(
     role: NewHandbookRole,
 ) -> Result<Vec<HandbookRole>, AppError> {
     blocking(&store, move |s| s.add_role(role)).await
+}
+
+/// One role per dropped `.md` file (frontmatter optional). All or nothing; an id the
+/// handbook already has is `role_exists` unless `replace`. The files are only read.
+#[tauri::command]
+#[specta::specta]
+pub async fn role_handbook_add_from_paths(
+    store: Store<'_>,
+    paths: Vec<String>,
+    replace: bool,
+) -> Result<RolesImported, AppError> {
+    blocking(&store, move |s| s.add_roles_from_paths(&paths, replace)).await
 }
 
 #[tauri::command]

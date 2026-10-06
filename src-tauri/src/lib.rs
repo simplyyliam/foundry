@@ -88,6 +88,7 @@ pub fn specta_builder<R: Runtime>() -> tauri_specta::Builder<R> {
             plan::commands::load_roadmap,
             team::commands::role_handbook_list,
             team::commands::role_handbook_add,
+            team::commands::role_handbook_add_from_paths,
             team::commands::role_handbook_update,
             team::commands::role_handbook_remove,
             team::commands::compose_team,
@@ -1347,6 +1348,8 @@ opus-test"
             "\"placeholders_unconfirmed\"",
             "loadRoadmap",
             "\"confirmed_requirements\"",
+            "roleHandbookAddFromPaths",
+            "\"role_exists\"",
         ] {
             assert!(ts.contains(name), "{name} missing from bindings");
         }

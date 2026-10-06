@@ -7,6 +7,8 @@
 
 pub mod commands;
 mod handbook;
+mod import;
+mod markdown;
 
 use std::collections::{BTreeSet, HashSet};
 use std::fs;
@@ -87,6 +89,25 @@ pub struct HandbookRolePatch {
     pub typical_write_globs: Option<Vec<String>>,
     pub typical_protected_globs: Option<Vec<String>>,
     pub skill_template: Option<String>,
+}
+
+/// What `role_handbook_add_from_paths` did: role ids.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RolesImported {
+    pub added: Vec<String>,
+    /// Existing roles that kept their id and took the file's fields (`replace: true`).
+    pub replaced: Vec<String>,
+}
+
+/// What `compose_team` tells the model about each handbook role: never the skill body.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RoleSummary<'a> {
+    id: &'a str,
+    title: &'a str,
+    description: &'a str,
+    typical_write_globs: &'a [String],
 }
 
 /// A role that isn't in the handbook.
@@ -218,6 +239,23 @@ fn required(what: &str, text: &str) -> Result<String, AppError> {
     } else {
         Ok(text.to_string())
     }
+}
+
+/// What `role_handbook_add` checks and cleans, with the id it starts from (`slug(title)`,
+/// or `role`). Making the id unique is the caller's job.
+fn validated_role(role: NewHandbookRole) -> Result<HandbookRole, AppError> {
+    let title = required("role title", &role.title)?;
+    let id = Some(slugify(&title))
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "role".into());
+    Ok(HandbookRole {
+        id,
+        title,
+        description: role.description.trim().to_string(),
+        typical_write_globs: clean_globs(role.typical_write_globs),
+        typical_protected_globs: clean_globs(role.typical_protected_globs),
+        skill_template: role.skill_template.trim().to_string(),
+    })
 }
 
 fn clean_globs(globs: Vec<String>) -> Vec<String> {
@@ -367,28 +405,92 @@ impl TeamStore {
     }
 
     pub fn add_role(&self, role: NewHandbookRole) -> Result<Vec<HandbookRole>, AppError> {
-        let title = required("role title", &role.title)?;
+        let mut role = validated_role(role)?;
         let _guard = lock(&self.lock);
         let mut roles = self.load_handbook()?;
-        let base = Some(slugify(&title))
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "role".into());
-        let mut id = base.clone();
+        let base = role.id.clone();
         let mut n = 2;
-        while roles.iter().any(|r| r.id == id) {
-            id = format!("{base}-{n}");
+        while roles.iter().any(|r| r.id == role.id) {
+            role.id = format!("{base}-{n}");
             n += 1;
         }
-        roles.push(HandbookRole {
-            id,
-            title,
-            description: role.description.trim().to_string(),
-            typical_write_globs: clean_globs(role.typical_write_globs),
-            typical_protected_globs: clean_globs(role.typical_protected_globs),
-            skill_template: role.skill_template.trim().to_string(),
-        });
+        roles.push(role);
         self.save_handbook(&roles)?;
         Ok(roles)
+    }
+
+    /// One role per `.md` file (absolute paths), validated and given an id exactly as
+    /// `add_role` does. All or nothing: any refused file, or (without `replace`) any id the
+    /// handbook already has, changes nothing. With `replace`, an existing role keeps its id
+    /// and takes the file's fields. The files are only read.
+    pub fn add_roles_from_paths(
+        &self,
+        sources: &[String],
+        replace: bool,
+    ) -> Result<RolesImported, AppError> {
+        if sources.is_empty() {
+            return Err(AppError::invalid_input("no files to add"));
+        }
+        if sources.len() > import::MAX_FILES {
+            return Err(AppError::invalid_input(format!(
+                "at most {} files at a time, not {}",
+                import::MAX_FILES,
+                sources.len()
+            )));
+        }
+        let mut incoming: Vec<(String, HandbookRole)> = Vec::new();
+        for source in sources {
+            let (name, role) = import::read_role(source)?;
+            let role = validated_role(role)
+                .map_err(|err| AppError::new(err.code, format!("{name}: {}", err.message)))?;
+            if let Some((other, _)) = incoming.iter().find(|(_, r)| r.id == role.id) {
+                return Err(AppError::invalid_input(format!(
+                    "{other} and {name} would both be the role \"{}\"",
+                    role.id
+                )));
+            }
+            incoming.push((name, role));
+        }
+
+        let _guard = lock(&self.lock);
+        let mut roles = self.load_handbook()?;
+        let existing: Vec<&str> = roles
+            .iter()
+            .filter(|r| incoming.iter().any(|(_, new)| new.id == r.id))
+            .map(|r| r.title.as_str())
+            .collect();
+        if !existing.is_empty() && !replace {
+            return Err(AppError::new(
+                ErrorCode::RoleExists,
+                format!(
+                    "the Role Handbook already has {}: replace them, or change the files' titles",
+                    existing.join(", ")
+                ),
+            ));
+        }
+        let mut imported = RolesImported {
+            added: Vec::new(),
+            replaced: Vec::new(),
+        };
+        for (_, role) in incoming {
+            match roles.iter_mut().find(|r| r.id == role.id) {
+                Some(slot) => {
+                    imported.replaced.push(role.id.clone());
+                    *slot = role;
+                }
+                None => {
+                    imported.added.push(role.id.clone());
+                    roles.push(role);
+                }
+            }
+        }
+        self.save_handbook(&roles)?;
+        tracing::info!(
+            added = imported.added.len(),
+            replaced = imported.replaced.len(),
+            "handbook roles imported"
+        );
+        Ok(imported)
     }
 
     pub fn update_role(
@@ -476,7 +578,16 @@ impl TeamStore {
         let control = RunControl::new((self.timeout)());
         let plan_json = serde_json::to_string_pretty(&slices)
             .map_err(|err| AppError::internal(format!("serialize the plan: {err}")))?;
-        let handbook_json = serde_json::to_string_pretty(&roles)
+        let summaries: Vec<RoleSummary> = roles
+            .iter()
+            .map(|r| RoleSummary {
+                id: &r.id,
+                title: &r.title,
+                description: &r.description,
+                typical_write_globs: &r.typical_write_globs,
+            })
+            .collect();
+        let handbook_json = serde_json::to_string_pretty(&summaries)
             .map_err(|err| AppError::internal(format!("serialize the handbook: {err}")))?;
         let prompt = PROMPT
             .replace("\r\n", "\n")
@@ -869,7 +980,7 @@ fn build_agent(
         protected_globs,
         source_handbook_role_id: source.map(|r| r.id.clone()),
     };
-    let role_file = role_file(&entry, &skill, &related);
+    let role_file = role_file(&entry, &markdown::demote_headings(&skill), &related);
     Ok(BuiltAgent {
         entry,
         role_file,
@@ -877,7 +988,8 @@ fn build_agent(
     })
 }
 
-/// `agents/roles/<id>.md`: the same five headings for every role. Deterministic.
+/// `agents/roles/<id>.md`: the same five headings for every role. Deterministic. `skill`
+/// must already have its headings demoted below them.
 fn role_file(agent: &TeamAgent, skill: &str, slices: &[&PlanSlice]) -> String {
     let bullets = |items: &[String]| {
         items

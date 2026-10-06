@@ -955,3 +955,363 @@ fn team_writes_stay_inside_the_allowlist() {
         );
     }
 }
+
+// ---------- role_handbook_add_from_paths ----------
+
+/// A folder of dropped files, outside the repo and the app data.
+struct Drops(TempDir);
+
+impl Drops {
+    fn new() -> Self {
+        Self(tempfile::tempdir().unwrap())
+    }
+
+    fn file(&self, name: &str, text: impl AsRef<[u8]>) -> String {
+        let path = self.0.path().join(name);
+        fs::write(&path, text).unwrap();
+        path.to_string_lossy().into_owned()
+    }
+}
+
+fn role<'a>(roles: &'a [HandbookRole], id: &str) -> &'a HandbookRole {
+    roles
+        .iter()
+        .find(|r| r.id == id)
+        .unwrap_or_else(|| panic!("no role {id}"))
+}
+
+#[test]
+fn frontmatter_is_parsed_with_inline_and_block_lists() {
+    let env = Env::new();
+    let drops = Drops::new();
+    let inline = drops.file(
+        "inline.md",
+        "\u{feff}---\r\ntitle: Release Manager\r\ndescription: \"Cuts releases: tags, notes\"\r\n\
+         writes: [CHANGELOG.md, \"release/**\"]\r\nprotected: ['src/**']\r\n---\r\n\
+         You ship releases.\r\n\r\nYou never skip the changelog.\r\n",
+    );
+    let block = drops.file(
+        "block.md",
+        "---\n# a comment\ntitle: Data Steward\nwrites:\n  - data/**\n  - \"docs/data/**\"\n\
+         protected:\n- migrations/**\n---\nYou look after the data.\n",
+    );
+
+    let imported = env
+        .store
+        .add_roles_from_paths(&[inline, block], false)
+        .unwrap();
+    assert_eq!(imported.added, ["release-manager", "data-steward"]);
+    assert!(imported.replaced.is_empty());
+
+    let roles = env.store.handbook().unwrap();
+    let release = role(&roles, "release-manager");
+    assert_eq!(release.title, "Release Manager");
+    assert_eq!(release.description, "Cuts releases: tags, notes");
+    assert_eq!(release.typical_write_globs, ["CHANGELOG.md", "release/**"]);
+    assert_eq!(release.typical_protected_globs, ["src/**"]);
+    assert_eq!(
+        release.skill_template, "You ship releases.\n\nYou never skip the changelog.",
+        "LF only, no BOM, no frontmatter"
+    );
+    let data = role(&roles, "data-steward");
+    assert_eq!(data.typical_write_globs, ["data/**", "docs/data/**"]);
+    assert_eq!(data.typical_protected_globs, ["migrations/**"]);
+    assert_eq!(data.description, "You look after the data.");
+}
+
+#[test]
+fn without_frontmatter_or_a_title_the_heading_then_the_file_name_is_the_title() {
+    let env = Env::new();
+    let drops = Drops::new();
+    let heading = drops.file(
+        "whatever.md",
+        "Some intro.\n\n# Accessibility Lead #\n\nYou own a11y.\n",
+    );
+    let untitled = drops.file(
+        "growth-hacker.md",
+        "---\ndescription: Grows things\n---\n## Not a title\n\nYou run experiments.\n",
+    );
+
+    let imported = env
+        .store
+        .add_roles_from_paths(&[heading, untitled], false)
+        .unwrap();
+    assert_eq!(imported.added, ["accessibility-lead", "growth-hacker"]);
+    let roles = env.store.handbook().unwrap();
+    assert_eq!(
+        role(&roles, "accessibility-lead").title,
+        "Accessibility Lead"
+    );
+    assert_eq!(role(&roles, "growth-hacker").title, "growth-hacker");
+    assert_eq!(role(&roles, "growth-hacker").description, "Grows things");
+}
+
+#[test]
+fn a_missing_description_is_the_first_non_heading_paragraph_cut_at_200_characters() {
+    let env = Env::new();
+    let drops = Drops::new();
+    let long = "word ".repeat(100);
+    let file = drops.file(
+        "writer.md",
+        format!("# Copywriter\n\n## Voice\n\n```\ncode is skipped\n```\n\n{long}\nsecond line\n\nLater paragraph.\n"),
+    );
+    env.store.add_roles_from_paths(&[file], false).unwrap();
+    let roles = env.store.handbook().unwrap();
+    let description = &role(&roles, "copywriter").description;
+    assert_eq!(
+        description.chars().count(),
+        199,
+        "200 characters, trailing space trimmed"
+    );
+    assert!(long.starts_with(description.as_str()), "{description}");
+
+    let short = drops.file("short.md", "# Short\nOne line.\nTwo lines.\n\nNext.\n");
+    env.store.add_roles_from_paths(&[short], false).unwrap();
+    let roles = env.store.handbook().unwrap();
+    assert_eq!(role(&roles, "short").description, "One line. Two lines.");
+}
+
+#[test]
+fn any_refused_file_refuses_the_whole_call_and_names_it() {
+    let env = Env::new();
+    let drops = Drops::new();
+    let good = drops.file("good.md", "# Good Role\n\nFine.\n");
+    let before = env.store.handbook().unwrap();
+    let handbook_bytes =
+        || fs::read(env.data.path().join(HANDBOOK_DIR).join(HANDBOOK_FILE)).unwrap();
+    let on_disk = handbook_bytes();
+
+    let cases: Vec<(String, ErrorCode, &str)> = vec![
+        (
+            drops.file("notes.txt", "# Not markdown\n"),
+            ErrorCode::UnsupportedFile,
+            "notes.txt",
+        ),
+        (
+            drops.file("huge.md", "x".repeat(100 * 1024 + 1)),
+            ErrorCode::FileTooLarge,
+            "huge.md",
+        ),
+        (
+            drops.file(
+                "bad.md",
+                "---\ntitle: Bad\nthis line is wrong\n---\nBody.\n",
+            ),
+            ErrorCode::InvalidInput,
+            "bad.md, line 3",
+        ),
+        (
+            drops.file("unknown.md", "---\ntitle: X\nowner: me\n---\n"),
+            ErrorCode::InvalidInput,
+            "unknown.md, line 3",
+        ),
+        (
+            drops.file("open.md", "---\ntitle: X\n"),
+            ErrorCode::InvalidInput,
+            "open.md, line 1",
+        ),
+        (
+            drops.file("stray.md", "---\ntitle: X\n- item\n---\n"),
+            ErrorCode::InvalidInput,
+            "stray.md, line 3",
+        ),
+    ];
+    for (bad, code, names) in cases {
+        let err = env
+            .store
+            .add_roles_from_paths(&[good.clone(), bad], false)
+            .unwrap_err();
+        assert_eq!(err.code, code, "{}", err.message);
+        assert!(err.message.contains(names), "{names}: {}", err.message);
+        assert_eq!(env.store.handbook().unwrap(), before, "nothing added");
+        assert_eq!(handbook_bytes(), on_disk);
+    }
+
+    let too_many: Vec<String> = (0..51)
+        .map(|i| drops.file(&format!("r{i}.md"), format!("# Role {i}\n")))
+        .collect();
+    let err = env
+        .store
+        .add_roles_from_paths(&too_many, false)
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::InvalidInput);
+    assert_eq!(env.store.handbook().unwrap(), before);
+    let fifty = env.store.add_roles_from_paths(&too_many[..50], false);
+    assert_eq!(fifty.unwrap().added.len(), 50);
+}
+
+#[test]
+fn a_duplicate_without_replace_is_role_exists_and_changes_nothing() {
+    let env = Env::new();
+    let drops = Drops::new();
+    let new = drops.file("new.md", "# Brand New\n");
+    let dup = drops.file("lead.md", "---\ntitle: Product Lead\n---\nMine.\n");
+    let before = env.store.handbook().unwrap();
+
+    let err = env
+        .store
+        .add_roles_from_paths(&[new.clone(), dup], false)
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::RoleExists);
+    assert_eq!(serde_json::to_value(&err).unwrap()["code"], "role_exists");
+    assert!(err.message.contains("Product Lead"), "{}", err.message);
+    assert_eq!(env.store.handbook().unwrap(), before);
+
+    // Two files in one call that would be the same role are refused too.
+    let twin = drops.file("twin.md", "# Brand New\n");
+    let err = env
+        .store
+        .add_roles_from_paths(&[new, twin], false)
+        .unwrap_err();
+    assert!(err.message.contains("new.md") && err.message.contains("twin.md"));
+    assert_eq!(env.store.handbook().unwrap(), before);
+}
+
+#[test]
+fn replace_keeps_the_id_and_position_and_takes_the_new_fields() {
+    let env = Env::new();
+    let drops = Drops::new();
+    let before = env.store.handbook().unwrap();
+    let at = before
+        .iter()
+        .position(|r| r.id == "backend-engineer")
+        .unwrap();
+    let file = drops.file(
+        "backend.md",
+        "---\ntitle: Backend Engineer\ndescription: APIs only\nwrites: [api/**]\nprotected: []\n---\nYou build APIs.\n",
+    );
+    let fresh = drops.file("fresh.md", "# Fresh Role\n");
+
+    let imported = env
+        .store
+        .add_roles_from_paths(&[file, fresh], true)
+        .unwrap();
+    assert_eq!(imported.replaced, ["backend-engineer"]);
+    assert_eq!(imported.added, ["fresh-role"]);
+
+    let roles = env.store.handbook().unwrap();
+    assert_eq!(roles.len(), before.len() + 1);
+    let backend = &roles[at];
+    assert_eq!(backend.id, "backend-engineer");
+    assert_eq!(backend.description, "APIs only");
+    assert_eq!(backend.typical_write_globs, ["api/**"]);
+    assert!(backend.typical_protected_globs.is_empty());
+    assert_eq!(backend.skill_template, "You build APIs.");
+    assert_eq!(
+        roles
+            .iter()
+            .filter(|r| r.title == "Backend Engineer")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn imported_skill_headings_sit_below_the_five_required_headings() {
+    let env = Env::new().with_plan();
+    let drops = Drops::new();
+    let file = drops.file(
+        "reviewer.md",
+        "---\ntitle: Code Reviewer\n---\n# Code Reviewer\n\nYou review.\n\n## Reads\n\nDiffs.\n\n\
+         Setext Two\n----------\n\n#### Deep\n\n###### Deepest\n\n```md\n## Writes in code\n```\n\n- item\n---\n",
+    );
+    env.store.add_roles_from_paths(&[file], false).unwrap();
+    env.store
+        .confirm(P, vec![handbook_agent("Rex", "code-reviewer", &["s1"])])
+        .unwrap();
+
+    let text = env.read("agents/roles/rex.md").unwrap();
+    // Exactly the five at level 2 (the fenced line isn't a heading), and only the file's
+    // own title at level 1.
+    let outside_code: Vec<&str> = text.lines().filter(|l| *l != "## Writes in code").collect();
+    assert_five_headings(&outside_code.join("\n"));
+    let level_one: Vec<&str> = text.lines().filter(|l| l.starts_with("# ")).collect();
+    assert_eq!(level_one, ["# Rex: Code Reviewer"]);
+    for kept in [
+        "### Code Reviewer\n",
+        "#### Reads\n",
+        "#### Setext Two\n",
+        "###### Deep\n",
+        "###### Deepest\n",
+        "```md\n## Writes in code\n```",
+        "- item\n---",
+    ] {
+        assert!(text.contains(kept), "{kept:?} missing in\n{text}");
+    }
+    assert!(!text.contains("----------"), "setext underline converted");
+}
+
+#[test]
+fn compose_team_sends_role_summaries_not_skill_bodies() {
+    let env = Env::new().with_plan();
+    let drops = Drops::new();
+    // The first paragraph becomes the description (which is sent); the rest must not be.
+    let body = format!(
+        "# Long Role\n\nShort intro.\n\n{}",
+        "UNIQUE-SKILL-MARKER ".repeat(4000)
+    );
+    let file = drops.file("long.md", body);
+    env.store.add_roles_from_paths(&[file], false).unwrap();
+
+    env.replies(vec![Ok(valid_proposal())]);
+    env.store.compose(P).unwrap();
+    let prompt = env.runner.prompts.lock().unwrap()[0].clone();
+    assert!(!prompt.contains("UNIQUE-SKILL-MARKER"), "no skill body");
+    assert!(
+        !prompt.contains("You build complete vertical slices"),
+        "no starter skill body either"
+    );
+    assert!(!prompt.contains("typicalProtectedGlobs"));
+    let handbook = prompt
+        .split("<role_handbook>")
+        .nth(1)
+        .and_then(|s| s.split("</role_handbook>").next())
+        .unwrap();
+    let sent: Value = serde_json::from_str(handbook.trim()).unwrap();
+    let full_stack = sent
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == "full-stack-engineer")
+        .unwrap();
+    let mut keys: Vec<&String> = full_stack.as_object().unwrap().keys().collect();
+    keys.sort();
+    assert_eq!(keys, ["description", "id", "title", "typicalWriteGlobs"]);
+    assert_eq!(full_stack["typicalWriteGlobs"][0], "packages/frontend/**");
+    assert!(sent
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|r| r["id"] == "long-role"));
+    assert!(prompt.len() < 20_000, "prompt is {} bytes", prompt.len());
+}
+
+#[test]
+fn dropped_files_are_only_read() {
+    let env = Env::new();
+    let drops = Drops::new();
+    drops.file("a.md", "---\ntitle: A Role\n---\r\nBody.\r\n");
+    drops.file("b.md", "\u{feff}# B Role\n");
+    drops.file("c.txt", "nope");
+    let path = |n: &str| drops.0.path().join(n).to_string_lossy().into_owned();
+    let before = snapshot(drops.0.path());
+
+    env.store
+        .add_roles_from_paths(&[path("a.md"), path("b.md")], false)
+        .unwrap();
+    env.store
+        .add_roles_from_paths(&[path("a.md")], false)
+        .unwrap_err();
+    env.store
+        .add_roles_from_paths(&[path("a.md"), path("c.txt")], true)
+        .unwrap_err();
+    env.store
+        .add_roles_from_paths(&[path("a.md"), path("b.md")], true)
+        .unwrap();
+
+    assert_eq!(
+        snapshot(drops.0.path()),
+        before,
+        "nothing modified or added"
+    );
+}

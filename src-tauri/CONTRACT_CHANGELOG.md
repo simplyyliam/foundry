@@ -251,3 +251,15 @@ Additive. Read-only: writes nothing to the repo or app data, and never changes t
 | type | `VerifyMode` | — → `"auto" \| "manual"` | |
 | type | `NotificationSeverity` | — → `"danger" \| "warn_and_danger" \| "all"` | |
 | command | `update_settings` | now also requires the six fields above; any other enum value → `invalid_input`, e.g. `theme must be one of "light", "dark", "system", not "neon"`, and nothing is saved | Rejected, never coerced. Each enum keeps a hidden catch-all variant (left out of the bindings), so a bad value reaches the validation and comes back as an `AppError`, not as a Tauri decode error. A bad value hand-edited into `settings.json` loads as that field's default; the rest of the file is kept. |
+
+## Role Handbook import: `role_handbook_add_from_paths`
+
+Additive command, type and error code. `compose_team` keeps its signature; what it sends the model changes (below).
+
+| Kind | Name | Before → After | Why |
+| --- | --- | --- | --- |
+| command | `role_handbook_add_from_paths` | — → `roleHandbookAddFromPaths(paths: string[], replace: boolean): RolesImported` | One handbook role per dropped `.md` file. Optional frontmatter (`title`, `description`, `writes`, `protected`; lists inline `[a, b]` or `- item` lines), parsed by hand; any other line → `invalid_input` naming the file and line. Body (BOM removed, LF) → `skillTemplate`. Title falls back to the first `# ` heading, then the file name without `.md`; description to the body's first non-heading paragraph, cut at 200 characters. `writes`/`protected` → `typicalWriteGlobs`/`typicalProtectedGlobs` (the floor is still added at `confirm_team`). Validated and given an id exactly as `role_handbook_add` (`slug(title)`, else `role`). `.md` only (`unsupported_file`), 100 KB per file (`file_too_large`), at most 50 files and two files with the same id → `invalid_input`. All or nothing; every refusal names the file. The files are only read. |
+| type | `RolesImported` | — → `{ added: string[], replaced: string[] }` | Role ids. `replaced`: existing roles that kept their id (and place) and took the file's fields. |
+| type | `ErrorCode` | adds `"role_exists"` | An imported role's id is already in the handbook and `replace` is false. Nothing changes; the message lists the existing titles. |
+| behaviour | `compose_team` | the handbook sent to the model: every field of each role (`id, title, description, typicalWriteGlobs, typicalProtectedGlobs, skillTemplate`) → `id, title, description, typicalWriteGlobs` only | Imported skills can be long (up to 100 KB each); the model only needs to pick roles. Validation of the reply is unchanged. |
+| behaviour | `confirm_team`, `add_agent_manually` | role files: the skill was embedded as written → its headings are demoted so the top one is level 3 (relative levels kept, capped at 6; setext headings become ATX; fenced code untouched) | A skill with its own headings must not add a heading at the level of the five required ones (Reads, Writes, Hands off, Done means, When blocked), which are unchanged. Skills without headings (all starter roles) give byte-identical files. |
