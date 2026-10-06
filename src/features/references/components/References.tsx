@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ImagePlus, TriangleAlert, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { AppError } from "@/lib/bindings";
-import { PressButton, useFileDrop } from "@/shared";
+import { DropOverlay, PressButton, useFileDrop } from "@/shared";
 import { addFromBytes, addFromPaths, useBakery } from "../hooks/useBakery";
 import { usePasteImage } from "../hooks/usePasteImage";
 import { newestFirst } from "../lib/reference";
@@ -104,19 +104,7 @@ export function References({ projectId, layout, className }: ReferencesProps) {
       )}
 
       {/* Over a non-empty grid, a drag shows where the files will go. */}
-      {items.length > 0 && (
-        <div
-          aria-hidden
-          className={cn(
-            "pointer-events-none absolute -inset-1.5 flex items-start justify-center rounded-2xl bg-background/70 pt-10 opacity-0 ring-2 ring-ring/40 transition-opacity duration-150",
-            dragging && "opacity-100",
-          )}
-        >
-          <span className="rounded-full bg-popover px-3 py-1.5 text-[12px] font-medium shadow-md ring-1 ring-foreground/5">
-            Drop to add
-          </span>
-        </div>
-      )}
+      {items.length > 0 && <DropOverlay active={dragging} />}
 
       {bakery && (
         <ReferenceSheet projectId={projectId} dir={bakery.dir} items={bakery.items} itemId={openId} onClose={() => setOpenId(null)} />

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { commands, type AppError, type HandbookRole, type HandbookRolePatch, type NewHandbookRole } from "@/lib/bindings";
+import { commands, type AppError, type HandbookRole, type HandbookRolePatch, type NewHandbookRole, type RolesImported } from "@/lib/bindings";
 import { call, type Outcome } from "./call";
 
 type RolesResult = Promise<{ status: "ok"; data: HandbookRole[] } | { status: "error"; error: AppError }>;
@@ -14,6 +14,11 @@ export interface RoleHandbookData {
   /** Only the non-null fields change. */
   update: (id: string, patch: Partial<HandbookRolePatch>) => Promise<Outcome<HandbookRole[]>>;
   remove: (id: string) => Promise<Outcome<HandbookRole[]>>;
+  /**
+   * One role per dropped `.md` file (all or nothing). Without `replace`, a role the handbook
+   * already has is `role_exists`. Lists again afterwards either way.
+   */
+  addFromPaths: (paths: string[], replace: boolean) => Promise<Outcome<RolesImported>>;
 }
 
 const EMPTY_PATCH: HandbookRolePatch = {
@@ -74,6 +79,16 @@ export function useRoleHandbook(): RoleHandbookData {
     [mutate],
   );
   const remove = useCallback((id: string) => mutate(() => commands.roleHandbookRemove(id)), [mutate]);
+  const addFromPaths = useCallback(
+    (paths: string[], replace: boolean) =>
+      enqueue(async () => {
+        // Returns ids, not the list, so there's nothing to adopt: just list again.
+        const outcome = await call(() => commands.roleHandbookAddFromPaths(paths, replace));
+        await fetchList();
+        return outcome;
+      }),
+    [enqueue, fetchList],
+  );
 
-  return { roles, loadError, reload, add, update, remove };
+  return { roles, loadError, reload, add, update, remove, addFromPaths };
 }

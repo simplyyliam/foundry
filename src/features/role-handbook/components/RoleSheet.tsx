@@ -1,4 +1,4 @@
-import { Trash2 } from "lucide-react";
+import { Trash2, TriangleAlert } from "lucide-react";
 import { useId, useState, type ReactNode } from "react";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import type { HandbookRole, NewHandbookRole } from "@/lib/bindings";
@@ -8,6 +8,9 @@ import { PatternList } from "./PatternList";
 import { RoleField } from "./RoleField";
 import { useSaveState } from "../hooks/useSaveState";
 import { SaveStatus } from "./SaveStatus";
+
+/** Over this many words, the skill gets a warning: every agent in the role reads it each session. */
+const LONG_SKILL_WORDS = 1500;
 
 export type RoleSheetTarget = { mode: "new" } | { mode: "edit"; id: string } | null;
 
@@ -170,7 +173,14 @@ function RoleForm({ title, status, hint, footer, fields }: RoleFormProps) {
           <RoleField id={`${id}-description`} multiline placeholder="One or two lines the Product Lead reads when picking roles" className="min-h-16" {...fields.description} />
         </Field>
         <Field label="Skill" htmlFor={`${id}-skill`} note="Who this role is and what it provides. Merged into the role file of every agent made from it.">
-          <RoleField id={`${id}-skill`} multiline describedBy={`${id}-skill-note`} className="min-h-56 font-mono text-[12.5px] md:text-[12.5px]" {...fields.skill} />
+          <RoleField
+            id={`${id}-skill`}
+            multiline
+            describedBy={`${id}-skill-note`}
+            className="min-h-56 font-mono text-[12.5px] md:text-[12.5px]"
+            below={(text) => wordCount(text) > LONG_SKILL_WORDS && <LongSkillWarning />}
+            {...fields.skill}
+          />
         </Field>
         <Field label="Write patterns" note="Files this role typically writes.">
           <PatternList label="Write patterns" placeholder="src/components/**" {...fields.write} />
@@ -182,6 +192,20 @@ function RoleForm({ title, status, hint, footer, fields }: RoleFormProps) {
         {footer}
       </div>
     </>
+  );
+}
+
+function wordCount(text: string): number {
+  const trimmed = text.trim();
+  return trimmed === "" ? 0 : trimmed.split(/\s+/).length;
+}
+
+function LongSkillWarning() {
+  return (
+    <p className="flex items-start gap-1.5 text-[12px] leading-snug text-muted-foreground">
+      <TriangleAlert aria-hidden className="mt-px size-3.5 shrink-0" />
+      Every agent in this role reads this at the start of each session. Long skills use more of your Claude usage.
+    </p>
   );
 }
 
