@@ -1,12 +1,11 @@
 import { LoaderCircle, TriangleAlert } from "lucide-react";
 import { useRef, useState, type ReactNode } from "react";
 import type { GenerateAgentsResult } from "@/lib/bindings";
-import { PressButton } from "@/shared";
+import { PressButton, SetupSection } from "@/shared";
 import { useAgentsSetup } from "../hooks/useAgentsSetup";
 import { DesignFamilyBlock } from "./DesignFamilyBlock";
 import { GenerateAgentsBlock } from "./GenerateAgentsBlock";
 import { PlaceholderRow } from "./PlaceholderRow";
-import { SetupSection } from "./SetupSection";
 
 /**
  * The AGENTS.md section: confirm every template placeholder and the design family, then

@@ -35,3 +35,4 @@ export { SettingsDialogProvider, useSettingsDialog } from "./lib/settings-dialog
 export { useFileDrop } from "./hook/useFileDrop";
 export { DropOverlay } from "./components/DropOverlay";
 export { TagEditor } from "./components/TagEditor";
+export { SetupSection } from "./components/SetupSection";
