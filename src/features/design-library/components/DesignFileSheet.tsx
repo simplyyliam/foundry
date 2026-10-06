@@ -4,11 +4,10 @@ import { Input } from "@/components/ui/input";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Textarea } from "@/components/ui/textarea";
 import type { DesignFile, DesignFilePatch, DesignLibrary } from "@/lib/bindings";
-import { PressButton } from "@/shared";
+import { PressButton, TagEditor } from "@/shared";
 import type { Outcome } from "../hooks/call";
 import { useSaveState } from "../hooks/useSaveState";
 import { SaveStatus } from "./SaveStatus";
-import { TagEditor } from "./TagEditor";
 
 interface DesignFileSheetProps {
   library: DesignLibrary;

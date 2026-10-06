@@ -34,3 +34,4 @@ export { PressButton, type PressButtonProps } from "./components/PressButton";
 export { SettingsDialogProvider, useSettingsDialog } from "./lib/settings-dialog";
 export { useFileDrop } from "./hook/useFileDrop";
 export { DropOverlay } from "./components/DropOverlay";
+export { TagEditor } from "./components/TagEditor";
