@@ -207,17 +207,18 @@ pub trait SessionEvents: Send + Sync + 'static {
 
 /// Every variable a session may set. Inherited ones of these names are always dropped, even
 /// when this session doesn't set it (no stale `FOUNDRY_SLICE_ID` from a parent).
-const SESSION_VARS: [&str; 6] = [
+const SESSION_VARS: [&str; 7] = [
     "FOUNDRY_AGENT_ID",
     "FOUNDRY_PROJECT_ID",
     "FOUNDRY_HOOK_PORT",
     "FOUNDRY_HOOK_TOKEN",
     "FOUNDRY_SLICE_ID",
     "TERM",
+    "COLORTERM",
 ];
 
-/// What every session adds on top of [`subscription_env`]: four `FOUNDRY_*` variables and
-/// `TERM`, plus `FOUNDRY_SLICE_ID` when the session is for a slice.
+/// What every session adds on top of [`subscription_env`]: four `FOUNDRY_*` variables,
+/// `TERM` and `COLORTERM` (truecolor, so Claude Code keeps its exact UI colours), plus `FOUNDRY_SLICE_ID` when the session is for a slice.
 fn session_vars(spec: &LaunchSpec) -> Vec<(&'static str, String)> {
     let mut vars = vec![
         ("FOUNDRY_AGENT_ID", spec.agent_id.clone()),
@@ -225,6 +226,7 @@ fn session_vars(spec: &LaunchSpec) -> Vec<(&'static str, String)> {
         ("FOUNDRY_HOOK_PORT", spec.hook.port.to_string()),
         ("FOUNDRY_HOOK_TOKEN", spec.hook.token.clone()),
         ("TERM", "xterm-256color".to_string()),
+        ("COLORTERM", "truecolor".to_string()),
     ];
     if let Some(slice_id) = &spec.slice_id {
         vars.push(("FOUNDRY_SLICE_ID", slice_id.clone()));

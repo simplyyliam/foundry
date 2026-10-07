@@ -229,6 +229,7 @@ fn spawned_env_has_no_api_or_provider_variables_and_has_foundrys() {
     std::env::set_var("ANTHROPIC_BASE_URL", "https://example.invalid");
     std::env::set_var("CLAUDE_CODE_USE_BEDROCK", "1");
     std::env::set_var("FOUNDRY_HOOK_TOKEN", "stale-token");
+    std::env::set_var("COLORTERM", "stale-colorterm");
     let env = Env::new(3);
     let mut spec = env.spec("builder", &["--print-env", "--print-cwd"]);
     spec.cols = 2000; // no wrapping of long values such as PATH
@@ -242,6 +243,7 @@ fn spawned_env_has_no_api_or_provider_variables_and_has_foundrys() {
         "FOUNDRY_HOOK_PORT=4567",
         "FOUNDRY_HOOK_TOKEN=tok-123",
         "TERM=xterm-256color",
+        "COLORTERM=truecolor",
     ] {
         assert!(text.contains(wanted), "missing {wanted} in:\n{text}");
     }
@@ -250,6 +252,7 @@ fn spawned_env_has_no_api_or_provider_variables_and_has_foundrys() {
         "CLAUDE_CODE_USE_",
         "sk-should-not-leak",
         "stale-token",
+        "stale-colorterm",
     ] {
         assert!(!text.contains(unwanted), "{unwanted} leaked into:\n{text}");
     }

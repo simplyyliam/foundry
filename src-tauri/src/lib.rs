@@ -1064,6 +1064,7 @@ opus-test"
                         "FOUNDRY_HOOK_TOKEN",
                         "FOUNDRY_SLICE_ID",
                         "TERM",
+                        "COLORTERM",
                     ]
                     .iter()
                     .any(|ours| k.eq_ignore_ascii_case(ours))
@@ -1088,6 +1089,7 @@ opus-test"
                 ("FOUNDRY_HOOK_PORT", "4567".into()),
                 ("FOUNDRY_HOOK_TOKEN", "tok-launch".into()),
                 ("TERM", "xterm-256color".into()),
+                ("COLORTERM", "truecolor".into()),
             ];
             if let Some(slice) = slice {
                 ours.push(("FOUNDRY_SLICE_ID", slice.into()));
