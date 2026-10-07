@@ -1,0 +1,31 @@
+/*
+ * An agent's card colours. `tintStyle` (lib/avatarTint.ts) sets `--avatar-*` from the avatar's
+ * accent, for both themes; until it has (or if the image can't be read) the neutral tokens
+ * apply. Children use `--tint-name`, `--tint-title` and `--tint-surface` (the card's current
+ * background, e.g. for the panel over an exited terminal).
+ */
+.agent-tint {
+  --tint-bg: var(--avatar-bg-light, var(--agent-card));
+  --tint-bg-hover: var(--avatar-bg-hover-light, var(--agent-card-hover));
+  --tint-bg-selected: var(--avatar-bg-selected-light, var(--agent-card-selected));
+  --tint-name: var(--avatar-name-light, var(--foreground));
+  --tint-title: var(--avatar-title-light, var(--muted-foreground));
+  --tint-surface: var(--tint-bg);
+  background-color: var(--tint-surface);
+}
+
+.dark .agent-tint {
+  --tint-bg: var(--avatar-bg-dark, var(--agent-card));
+  --tint-bg-hover: var(--avatar-bg-hover-dark, var(--agent-card-hover));
+  --tint-bg-selected: var(--avatar-bg-selected-dark, var(--agent-card-selected));
+  --tint-name: var(--avatar-name-dark, var(--foreground));
+  --tint-title: var(--avatar-title-dark, var(--muted-foreground));
+}
+
+.agent-tint[data-hoverable]:hover {
+  --tint-surface: var(--tint-bg-hover);
+}
+
+.agent-tint[data-selected] {
+  --tint-surface: var(--tint-bg-selected);
+}

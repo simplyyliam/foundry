@@ -1,0 +1,4 @@
+/* xterm.css paints the viewport black; the card tint shows through instead (theme bg is transparent). */
+.teams-terminal-host .xterm-viewport {
+  background-color: transparent;
+}
