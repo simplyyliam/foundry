@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import { Outlet, useLocation } from "react-router-dom";
 import { getRouteCrumbs, tabs } from "@/routing";
 import {
+  AddAgentDialogProvider,
   Apptitlebar,
   PageHeaderProvider,
   SettingsDialogProvider,
@@ -10,7 +11,7 @@ import {
   WindowFrame,
 } from "@/shared";
 import { useRoadmapProgressListener } from "@/features/roadmap";
-import { AppSidebar, InsetHeader } from "@/widgets";
+import { AddAgentDialog, AppSidebar, InsetHeader } from "@/widgets";
 import { ContextualPanelFrame } from "./contextual-panel/ContextualPanelFrame";
 import { SettingsFrame } from "./settings/SettingsFrame";
 
@@ -24,21 +25,25 @@ export default function AppLayout() {
     <WindowFrame titlebar={<Apptitlebar />}>
       {/* Lets the sidebar's gear open the Settings dialog (widgets can't import each other). */}
       <SettingsDialogProvider>
-        <PageHeaderProvider>
-          <SidebarProvider storageKey="foundry:sidebar-open">
-            <AppSidebar tabs={tabs} />
-            {/* Nested provider: the contextual panel has its own open state and shortcut. */}
-            <SidebarProvider keyboardShortcut="mod+alt+b" storageKey="foundry:contextual-panel-open">
-              <SidebarInset>
-                <InsetHeader fallback={fallbackCrumbs} />
-                <div className="min-h-0 flex-1 overflow-auto">
-                  <Outlet />
-                </div>
-              </SidebarInset>
-              <ContextualPanelFrame />
+        {/* Setup and Agent Chats both open the one Add agent dialog (features can't import each other). */}
+        <AddAgentDialogProvider>
+          <PageHeaderProvider>
+            <SidebarProvider storageKey="foundry:sidebar-open">
+              <AppSidebar tabs={tabs} />
+              {/* Nested provider: the contextual panel has its own open state and shortcut. */}
+              <SidebarProvider keyboardShortcut="mod+alt+b" storageKey="foundry:contextual-panel-open">
+                <SidebarInset>
+                  <InsetHeader fallback={fallbackCrumbs} />
+                  <div className="min-h-0 flex-1 overflow-auto">
+                    <Outlet />
+                  </div>
+                </SidebarInset>
+                <ContextualPanelFrame />
+              </SidebarProvider>
             </SidebarProvider>
-          </SidebarProvider>
-        </PageHeaderProvider>
+          </PageHeaderProvider>
+          <AddAgentDialog />
+        </AddAgentDialogProvider>
         <SettingsFrame />
       </SettingsDialogProvider>
     </WindowFrame>

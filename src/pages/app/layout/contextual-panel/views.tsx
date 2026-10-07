@@ -1,5 +1,5 @@
 import type { ComponentType, ReactNode } from "react";
-import { ContextualPanel, ReferencesPanel, RoadmapPanel } from "@/widgets";
+import { AgentChatsPanel, ReferencesPanel, RoadmapPanel } from "@/widgets";
 
 export interface PanelViewProps {
   /** The route's `:projectId`, or null. Never null for `needsProject` views. */
@@ -34,9 +34,10 @@ export const PANEL_VIEWS = {
   "agent-chats": {
     id: "agent-chats",
     title: "Agent Chats",
-    // The project comes from `/teams/:projectId`; plain `/teams` only redirects, so no panel.
-    needsProject: true,
-    component: ({ projectId }) => (projectId ? <ContextualPanel projectId={projectId} /> : null),
+    // The project comes from `/teams/:projectId`. Plain `/teams` (no project to redirect to)
+    // gets the view too, which then asks for a project instead of showing anything.
+    needsProject: false,
+    component: ({ projectId }) => <AgentChatsPanel projectId={projectId} />,
   },
   // Reserved: the ticket system's panel goes here.
   tickets: {
@@ -61,5 +62,6 @@ export const ROUTE_VIEWS: readonly { path: string; view: PanelViewId }[] = [
   { path: "/projects/:projectId/setup", view: "roadmap" },
   { path: "/projects/:projectId/prompts", view: "roadmap" },
   { path: "/teams/:projectId", view: "agent-chats" },
+  { path: "/teams", view: "agent-chats" },
   { path: "/tickets/*", view: "tickets" },
 ];

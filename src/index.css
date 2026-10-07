@@ -31,6 +31,8 @@
     --color-slice-foreground: var(--slice-foreground);
     --color-pill: var(--pill);
     --color-pill-hover: var(--pill-hover);
+    --color-pill-active: var(--pill-active);
+    --color-warning: var(--warning);
     --color-status-running: var(--status-running);
     --color-status-starting: var(--status-starting);
     --color-chart-5: var(--chart-5);
@@ -109,6 +111,10 @@
     /* Header pills, e.g. Teams' project switcher. */
     --pill: #f1f1f1;
     --pill-hover: #e8e8e8;
+    /* The selected pill, e.g. Agent Chats' tabs. */
+    --pill-active: #dcdcdc;
+    /* Warnings that aren't errors (amber), e.g. an agent waiting for permission. */
+    --warning: oklch(0.74 0.16 70);
     --status-running: oklch(0.62 0.15 150);
     --status-starting: oklch(0.72 0.15 75);
 }
@@ -153,6 +159,8 @@
     --agent-card-selected: oklch(0.27 0.004 286);
     --pill: oklch(0.25 0 0);
     --pill-hover: oklch(0.29 0 0);
+    --pill-active: oklch(0.34 0 0);
+    --warning: oklch(0.8 0.15 78);
     --status-running: oklch(0.72 0.15 150);
     --status-starting: oklch(0.8 0.14 80);
 }

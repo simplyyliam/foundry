@@ -8,6 +8,7 @@ import {
   type TeamProposal,
   type TeamWritten,
 } from "@/lib/bindings";
+import { useTeamChanged } from "@/shared";
 import { call, type Outcome } from "./call";
 
 export type TeamLoad =
@@ -23,8 +24,6 @@ export interface TeamController {
   compose: () => Promise<Outcome<TeamProposal>>;
   /** Writes the roster, then reads the team again. */
   confirm: (roster: RosterAgent[]) => Promise<Outcome<TeamWritten>>;
-  /** Adds one agent to the confirmed team; adopts the team it returns. */
-  addAgent: (agent: RosterAgent) => Promise<Outcome<TeamWritten>>;
   /** Adopts the agent it returns. */
   setAvatar: (agentId: string, choice: AvatarChoice) => Promise<Outcome<TeamAgent>>;
 }
@@ -63,6 +62,9 @@ export function useTeam(projectId: string): TeamController {
     };
   }, [fetchTeam]);
 
+  // An agent added through the app-wide Add agent dialog (no backend event for it).
+  useTeamChanged(projectId, () => void fetchTeam());
+
   const reload = useCallback(async () => {
     setLoad((previous) => (previous.status === "error" ? { status: "loading" } : previous));
     await fetchTeam();
@@ -92,19 +94,6 @@ export function useTeam(projectId: string): TeamController {
     [projectId, enqueue, watch, fetchTeam],
   );
 
-  const addAgent = useCallback(
-    (agent: RosterAgent) =>
-      enqueue(async () => {
-        const outcome = await call(() => commands.addAgentManually(projectId, agent));
-        if (outcome.ok && mounted.current) {
-          latestFetch.current++; // An older read in flight mustn't drop the new agent.
-          setLoad({ status: "ready", agents: outcome.data.team.agents });
-        }
-        return outcome;
-      }),
-    [projectId, enqueue],
-  );
-
   const setAvatar = useCallback(
     (agentId: string, choice: AvatarChoice) =>
       enqueue(async () => {
@@ -122,5 +111,5 @@ export function useTeam(projectId: string): TeamController {
     [projectId, enqueue],
   );
 
-  return { load, reload, compose, confirm, addAgent, setAvatar };
+  return { load, reload, compose, confirm, setAvatar };
 }

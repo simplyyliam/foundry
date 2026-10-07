@@ -1,14 +1,14 @@
 import { LoaderCircle, UserPlus } from "lucide-react";
-import { useId, useState, type KeyboardEvent } from "react";
+import { useEffect, useId, useState, type KeyboardEvent } from "react";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import type { CustomRole, HandbookRole, TeamWritten } from "@/lib/bindings";
-import { PressButton, usePressScale } from "@/shared";
-import type { HandbookRoles } from "../hooks/useHandbookRoles";
-import type { Outcome } from "../hooks/call";
-import type { TeamController } from "../hooks/useTeam";
+import { PressButton, useAddAgentDialog, usePressScale, type AddAgentRequest } from "@/shared";
+import { useAddAgent, type AddAgentOutcome } from "../hooks/useAddAgent";
+import { useHandbookRoles, type HandbookRoles } from "../hooks/useHandbookRoles";
 import { cleanCustomRole, EMPTY_CUSTOM_ROLE, rosterAgent } from "../lib/draft";
 import { CustomRoleFields } from "./CustomRoleFields";
 import { ErrorLine } from "./ErrorLine";
@@ -16,51 +16,54 @@ import { HandbookRoleList } from "./HandbookRoleList";
 
 type Source = "handbook" | "custom";
 
-/**
- * "Add agent" on a confirmed team: a handbook role or a custom one, plus a display name, sent
- * through `addAgentManually`. The card appears once that succeeds.
- */
-export function AddAgentButton({
-  handbook,
-  addAgent,
-  onAdded,
-}: {
-  handbook: HandbookRoles;
-  addAgent: TeamController["addAgent"];
-  onAdded: (written: TeamWritten) => void;
-}) {
-  const [open, setOpen] = useState(false);
+/** Setup's "Add agent" on a confirmed team: opens the app-wide Add agent dialog. */
+export function AddAgentButton({ projectId, onAdded }: { projectId: string; onAdded: (written: TeamWritten) => void }) {
+  const { openAddAgent } = useAddAgentDialog();
   return (
-    <>
-      <PressButton
-        size="sm"
-        variant="outline"
-        className="w-fit rounded-md"
-        onClick={() => {
-          handbook.reload();
-          setOpen(true);
-        }}
-      >
-        <UserPlus data-icon="inline-start" />
-        Add agent
-      </PressButton>
-      <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="sm:max-w-lg">
+    <PressButton size="sm" variant="outline" className="w-fit rounded-md" onClick={() => openAddAgent(projectId, { onAdded })}>
+      <UserPlus data-icon="inline-start" />
+      Add agent
+    </PressButton>
+  );
+}
+
+/**
+ * The one "Add agent" dialog, mounted in the app layout and opened through
+ * `useAddAgentDialog` (Setup's button, Agent Chats' "+"): a handbook role or a custom one,
+ * plus a display name, sent through `addAgentManually`. Every team view refreshes itself.
+ */
+export function AddAgentDialog() {
+  const { request, close } = useAddAgentDialog();
+  const handbook = useHandbookRoles();
+  const addAgent = useAddAgent();
+  // Keeps the body's project while the close animation runs.
+  const [shown, setShown] = useState<AddAgentRequest | null>(request);
+  if (request && request !== shown) setShown(request);
+
+  const { reload } = handbook;
+  useEffect(() => {
+    if (request) reload();
+  }, [request, reload]);
+
+  return (
+    <Dialog open={request !== null} onOpenChange={(open) => !open && close()}>
+      <DialogContent className="sm:max-w-lg">
+        {shown && (
           <AddAgentBody
             handbook={handbook}
-            onClose={() => setOpen(false)}
-            onSubmit={async (agent) => {
-              const outcome = await addAgent(agent);
+            onClose={close}
+            onSubmit={async (agent, saveRole) => {
+              const outcome = await addAgent(shown.projectId, agent, saveRole);
               if (outcome.ok) {
-                setOpen(false);
-                onAdded(outcome.data);
+                shown.onAdded?.(outcome.written);
+                if (!outcome.handbookError) close();
               }
               return outcome;
             }}
           />
-        </DialogContent>
-      </Dialog>
-    </>
+        )}
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -71,7 +74,7 @@ function AddAgentBody({
 }: {
   handbook: HandbookRoles;
   onClose: () => void;
-  onSubmit: (agent: ReturnType<typeof rosterAgent>) => Promise<Outcome<TeamWritten>>;
+  onSubmit: (agent: ReturnType<typeof rosterAgent>, saveRole: CustomRole | null) => Promise<AddAgentOutcome>;
 }) {
   const id = useId();
   const [source, setSource] = useState<Source>("handbook");
@@ -81,11 +84,15 @@ function AddAgentBody({
   const [typedName, setTypedName] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** Custom roles only: also add the role to the Role Handbook once the agent exists. */
+  const [saveToHandbook, setSaveToHandbook] = useState(false);
+  /** Set when the agent was added but saving its role to the handbook failed. */
+  const [handbookError, setHandbookError] = useState<string | null>(null);
 
   const cleanedCustom = cleanCustomRole(custom);
   const defaultName = source === "handbook" ? (role?.title ?? "") : custom.title;
   const name = typedName ?? defaultName;
-  const ready = !busy && name.trim() !== "" && (source === "handbook" ? role !== null : cleanedCustom !== null);
+  const ready = !busy && handbookError === null && name.trim() !== "" && (source === "handbook" ? role !== null : cleanedCustom !== null);
 
   const submit = async () => {
     if (!ready) return;
@@ -97,9 +104,11 @@ function AddAgentBody({
           ? { handbookRoleId: role!.id, customRole: null, displayName: name, title: role!.title, relatedSliceIds: [] }
           : { handbookRoleId: null, customRole: cleanedCustom, displayName: name, title: cleanedCustom!.title, relatedSliceIds: [] },
       ),
+      source === "custom" && saveToHandbook ? cleanedCustom : null,
     );
     setBusy(false);
-    if (!outcome.ok) setError(outcome.error.message);
+    if (!outcome.ok) setError(outcome.error);
+    else setHandbookError(outcome.handbookError);
   };
 
   const onKeyDown = (event: KeyboardEvent) => {
@@ -135,7 +144,13 @@ function AddAgentBody({
         {source === "handbook" ? (
           <HandbookRoleList handbook={handbook} selectedId={role?.id ?? null} onPick={setRole} autoFocus />
         ) : (
-          <CustomRoleFields value={custom} onChange={setCustom} autoFocus />
+          <>
+            <CustomRoleFields value={custom} onChange={setCustom} autoFocus />
+            <label className="-mt-1 flex w-fit items-center gap-2 text-[12.5px]">
+              <Checkbox checked={saveToHandbook} onCheckedChange={(checked) => setSaveToHandbook(checked === true)} />
+              Also save to the Role Handbook
+            </label>
+          </>
         )}
 
         <div className="flex flex-col gap-1.5">
@@ -158,16 +173,32 @@ function AddAgentBody({
         </div>
 
         {error && <ErrorLine message={error} />}
+        {handbookError && (
+          <div className="flex flex-col gap-1.5">
+            <p className="text-[12.5px] leading-snug">
+              {name.trim()} was added to the team, but the role wasn't saved to the Role Handbook:
+            </p>
+            <ErrorLine message={handbookError} />
+          </div>
+        )}
       </div>
 
       <DialogFooter>
-        <PressButton type="button" variant="ghost" onClick={onClose}>
-          Cancel
-        </PressButton>
-        <PressButton type="button" disabled={!ready} onClick={() => void submit()}>
-          {busy && <LoaderCircle data-icon="inline-start" className="animate-spin" />}
-          Add agent
-        </PressButton>
+        {handbookError ? (
+          <PressButton type="button" onClick={onClose}>
+            Close
+          </PressButton>
+        ) : (
+          <>
+            <PressButton type="button" variant="ghost" onClick={onClose}>
+              Cancel
+            </PressButton>
+            <PressButton type="button" disabled={!ready} onClick={() => void submit()}>
+              {busy && <LoaderCircle data-icon="inline-start" className="animate-spin" />}
+              Add agent
+            </PressButton>
+          </>
+        )}
       </DialogFooter>
     </div>
   );

@@ -33,6 +33,8 @@ export type {
 export { shortcut } from "./utils/keys";
 export { PressButton, type PressButtonProps } from "./components/PressButton";
 export { SettingsDialogProvider, useSettingsDialog } from "./lib/settings-dialog";
+export { AddAgentDialogProvider, useAddAgentDialog, type AddAgentRequest } from "./lib/add-agent-dialog";
+export { notifyTeamChanged, useTeamChanged } from "./lib/team-changes";
 export { useFileDrop } from "./hook/useFileDrop";
 export { DropOverlay } from "./components/DropOverlay";
 export { TagEditor } from "./components/TagEditor";

@@ -44,7 +44,7 @@ export function ConfirmedRoster({ projectId, agents, team, handbook, onAdded }: 
           The team has no agents yet.
         </p>
       )}
-      <AddAgentButton handbook={handbook} addAgent={team.addAgent} onAdded={onAdded} />
+      <AddAgentButton projectId={projectId} onAdded={onAdded} />
     </div>
   );
 }
