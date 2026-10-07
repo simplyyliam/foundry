@@ -269,8 +269,11 @@ export const commands = {
 	 *  then unconfirmed.
 	 */
 	setTestCommands: (projectId: string, commands: string[]) => typedError<TestCommands, AppError>(__TAURI_INVOKE("set_test_commands", { projectId, commands })),
-	/**  Records the current `testCommands` as confirmed (kept in app data, never in the repo). */
-	confirmTestCommands: (projectId: string) => typedError<TestCommands, AppError>(__TAURI_INVOKE("confirm_test_commands", { projectId })),
+	/**
+	 *  Confirms `commands`, the list the human was shown (kept in app data, never in the repo).
+	 *  `test_commands_changed`, confirming nothing, if `testCommands` no longer equals it.
+	 */
+	confirmTestCommands: (projectId: string, commands: string[]) => typedError<TestCommands, AppError>(__TAURI_INVOKE("confirm_test_commands", { projectId, commands })),
 	/**  `.foundry/reports/<sliceId>.json`, or null if the agent hasn't written it. */
 	getReport: (projectId: string, sliceId: string) => typedError<{
 	sliceId: string,
@@ -691,7 +694,9 @@ export type ErrorCode =
  */
 "not_verified" | 
 /**  A verification is already running for this project. */
-"verification_running";
+"verification_running" | 
+/**  `testCommands` changed while the human was reviewing them: nothing was confirmed. */
+"test_commands_changed";
 
 export type EventKind = "session_started" | "edit" | "command" | "tests_ran" | "blocked" | "needs_attention" | "turn_complete" | "session_ended" | "stuck" | "quiet" | "danger" | "report_ready";
 
@@ -1300,7 +1305,10 @@ export type TeamWritten = {
 export type TestCommands = {
 	/**  `testCommands` from `.foundry/project.json`. */
 	commands: string[],
-	/**  They equal, exactly, the list last confirmed with `confirm_test_commands`. */
+	/**
+	 *  They equal, exactly, the list last confirmed with `confirm_test_commands`, or there
+	 *  are none (an empty list needs no confirmation).
+	 */
 	confirmed: boolean,
 };
 

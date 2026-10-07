@@ -37,8 +37,10 @@ pub const PROTECTED_FLOOR: &[&str] = &[
     ".foundry/plan.json",
     // Holds `testCommands`, which Verify runs with the human's rights.
     ".foundry/project.json",
-    // Verification results: the plan trusts them to mark a slice done.
-    ".foundry/reviews/**",
+    // What Foundry writes there and the plan trusts to mark a slice done. The rest of
+    // `.foundry/reviews/` stays writable (e.g. a Manager role's review notes).
+    ".foundry/reviews/*.json",
+    ".foundry/reviews/digest.md",
     ".claude/**",
 ];
 

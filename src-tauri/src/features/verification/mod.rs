@@ -41,6 +41,11 @@ pub use digest::{
 /// Each test command gets this long before its process tree is killed.
 pub const TEST_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
+/// Left out of the boundary check: `project.json`, because changing the test commands
+/// through Foundry rewrites it after a slice's start commit, and an agent's edit of them can't
+/// run anyway (the confirmation gate).
+const IGNORED_FILES: &[&str] = &[".foundry/project.json"];
+
 /// Foundry's own folders, left out of the boundary check.
 const IGNORED_DIRS: &[&str] = &[
     ".foundry/reports/",
@@ -163,7 +168,8 @@ pub struct Verification {
 pub struct TestCommands {
     /// `testCommands` from `.foundry/project.json`.
     pub commands: Vec<String>,
-    /// They equal, exactly, the list last confirmed with `confirm_test_commands`.
+    /// They equal, exactly, the list last confirmed with `confirm_test_commands`, or there
+    /// are none (an empty list needs no confirmation).
     pub confirmed: bool,
 }
 
@@ -322,7 +328,9 @@ impl VerificationStore {
         repo: &Path,
     ) -> Result<TestCommands, AppError> {
         let commands = disk::test_commands(repo)?;
-        let confirmed = disk::read_confirmed(&self.data_dir)?.get(project_id) == Some(&commands);
+        // An empty list runs nothing, so it needs no confirmation.
+        let confirmed = commands.is_empty()
+            || disk::read_confirmed(&self.data_dir)?.get(project_id) == Some(&commands);
         Ok(TestCommands {
             commands,
             confirmed,
@@ -362,11 +370,23 @@ impl VerificationStore {
         self.test_commands_locked(project_id, &repo)
     }
 
-    /// Records the current `testCommands`, verbatim, as the list the human confirmed.
-    pub fn confirm_test_commands(&self, project_id: &str) -> Result<TestCommands, AppError> {
+    /// Confirms `shown`, the list the human reviewed, verbatim. If `testCommands` on disk no
+    /// longer equals it exactly, refuses with `test_commands_changed` and confirms nothing.
+    pub fn confirm_test_commands(
+        &self,
+        project_id: &str,
+        shown: Vec<String>,
+    ) -> Result<TestCommands, AppError> {
         let repo = self.repos.repo(project_id)?;
         let _guard = lock(&self.commands_lock);
         let commands = disk::test_commands(&repo)?;
+        if commands != shown {
+            tracing::warn!(project_id, "test commands changed while being reviewed");
+            return Err(AppError::new(
+                ErrorCode::TestCommandsChanged,
+                "The test commands changed while you were reviewing them. Review them again.",
+            ));
+        }
         let mut confirmed = disk::read_confirmed(&self.data_dir)?;
         confirmed.insert(project_id.to_string(), commands);
         disk::write_confirmed(&self.data_dir, &confirmed)?;
@@ -428,7 +448,8 @@ impl VerificationStore {
 
     /// Verifies the slice's report and saves the result to `.foundry/reviews/<sliceId>.json`.
     ///
-    /// Refused before anything runs: `test_commands_unconfirmed`, `not_found` (no report, or
+    /// Refused before anything runs: `test_commands_unconfirmed` (unless there are no test
+    /// commands, which need no confirmation), `not_found` (no report, or
     /// no such slice in the plan), `invalid_json` (a report that isn't one),
     /// `verification_running`.
     pub fn verify(&self, project_id: &str, slice_id: &str) -> Result<Verification, AppError> {
@@ -758,6 +779,7 @@ impl VerificationStore {
         for path in changed
             .iter()
             .filter(|p| !IGNORED_DIRS.iter().any(|dir| p.starts_with(dir)))
+            .filter(|p| !IGNORED_FILES.contains(&p.as_str()))
         {
             let protected = hook_policy::PROTECTED_FLOOR
                 .iter()

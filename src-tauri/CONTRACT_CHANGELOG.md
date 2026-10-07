@@ -418,3 +418,15 @@ Everything is additive except `set_slice_status`, whose new `done` gate was requ
 `passed` = no danger finding and no `unreported_requirement`. A cancel saves nothing.
 
 **Protected floor** (not a Tauri contract change; logged because it changes what agents may write): `core::hook_policy::PROTECTED_FLOOR` and `team::PROTECTED_FLOOR` gain `.foundry/project.json` (its `testCommands` run with the human's rights) and `.foundry/reviews/**` (the plan trusts reviews to mark slices done). The `foundry-hook` helper enforces its built-in floor whatever `roles.json` says, so existing teams are covered without rewriting their `roles.json`. New and re-confirmed agents get both in their `protectedGlobs`.
+
+## P9 revisions before merge (decided by the human)
+
+| Kind | Name | Before → After | Why |
+| --- | --- | --- | --- |
+| type | `ErrorCode` | adds `"test_commands_changed"` | `confirm_test_commands` refuses when the list on disk isn't the one the human was shown. |
+| command | `confirm_test_commands` | `confirmTestCommands(projectId): TestCommands` → `confirmTestCommands(projectId, commands: string[]): TestCommands` | Confirms the list the human reviewed, not whatever is on disk at click time. If `testCommands` in `.foundry/project.json` no longer equals `commands` exactly (verbatim, same order), it's refused with `test_commands_changed`, message `The test commands changed while you were reviewing them. Review them again.`, and nothing is confirmed. |
+| type | `TestCommands` | unchanged shape; `confirmed` is now also `true` when `commands` is empty | An empty list runs nothing, so it needs no confirmation. |
+| command | `verify_slice` | an empty `testCommands` list → `test_commands_unconfirmed` until the empty list was confirmed → no confirmation check for an empty list | It runs the other checks and gives the `no_test_command` warning. A non-empty list still needs to equal the confirmed list exactly. |
+| command | `verify_slice` (boundary check) | a change to `.foundry/project.json` since `startCommit` → `protected_file_changed` (danger) → ignored | Setting the test commands through Foundry rewrites it after a slice's start commit. The confirmation gate already stops an agent's edit of the commands from running. |
+
+**Protected floor** (not a Tauri contract change): `.foundry/reviews/**` → `.foundry/reviews/*.json` and `.foundry/reviews/digest.md`, in both `core::hook_policy::PROTECTED_FLOOR` and `team::PROTECTED_FLOOR`. These are the files Foundry writes and the plan trusts. Other files in `.foundry/reviews/` (e.g. a Manager role's `<slice>-notes.md`) are writable for a role whose `writeGlobs` allow them. `.foundry/project.json` stays protected. `*` matches within one path segment, so only direct children ending in `.json` are protected.

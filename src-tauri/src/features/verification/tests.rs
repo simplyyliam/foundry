@@ -163,8 +163,13 @@ impl Env {
     /// Sets and confirms the test commands, commits `project.json`, and restarts the slice
     /// from that commit (so the change isn't in the slice's diff).
     fn commands(&self, commands: &[String]) {
-        self.store.set_test_commands(P, commands.to_vec()).unwrap();
-        assert!(self.store.confirm_test_commands(P).unwrap().confirmed);
+        let shown = self.store.set_test_commands(P, commands.to_vec()).unwrap();
+        assert!(
+            self.store
+                .confirm_test_commands(P, shown.commands)
+                .unwrap()
+                .confirmed
+        );
         self.repo.git(&["add", ".foundry/project.json"]);
         self.repo
             .git(&["commit", "--quiet", "--allow-empty", "-m", "test commands"]);
@@ -507,15 +512,6 @@ fn verify_is_refused_until_the_commands_are_confirmed_and_again_after_they_chang
             ErrorCode::TestCommandsUnconfirmed
         );
     };
-    // Never confirmed, even an empty list.
-    assert_eq!(
-        env.store.get_test_commands(P).unwrap(),
-        TestCommands {
-            commands: vec![],
-            confirmed: false
-        }
-    );
-    unconfirmed(&env);
 
     let ok = fake("--exit 0");
     let set = env
@@ -534,13 +530,20 @@ fn verify_is_refused_until_the_commands_are_confirmed_and_again_after_they_chang
     assert_eq!(file["name"], json!("Orbit"), "other fields kept");
     unconfirmed(&env);
 
-    assert!(env.store.confirm_test_commands(P).unwrap().confirmed);
+    assert!(
+        env.store
+            .confirm_test_commands(P, vec![ok.clone()])
+            .unwrap()
+            .confirmed
+    );
     env.verify().unwrap();
 
     // Setting them again, even to the same list, needs a new confirmation.
     env.store.set_test_commands(P, vec![ok.clone()]).unwrap();
     unconfirmed(&env);
-    env.store.confirm_test_commands(P).unwrap();
+    env.store
+        .confirm_test_commands(P, vec![ok.clone()])
+        .unwrap();
     env.verify().unwrap();
 
     // Someone edits project.json behind Foundry's back: refused, and nothing ran.
@@ -628,23 +631,118 @@ fn a_diff_touching_a_protected_file_gives_danger() {
 }
 
 #[test]
-fn project_json_changed_during_the_slice_is_a_protected_change() {
+fn setting_test_commands_after_the_start_commit_gives_no_boundary_finding() {
     let env = Env::new();
-    // Rewrites project.json after the slice's start commit.
-    env.store.set_test_commands(P, vec![]).unwrap();
-    env.store.confirm_test_commands(P).unwrap();
+    // Rewrites project.json after the slice's start commit, as the UI would mid-slice.
+    let shown = env
+        .store
+        .set_test_commands(P, vec![fake("--exit 0")])
+        .unwrap();
+    env.store.confirm_test_commands(P, shown.commands).unwrap();
+    assert_ne!(
+        env.repo
+            .git(&["status", "--porcelain", "--", ".foundry/project.json"]),
+        "",
+        "project.json differs from the start commit"
+    );
     env.write_report(&report(json!([met("r-1", "test a"), met("r-2", "test b")])));
     let v = env.verify().unwrap();
-    let f = v
-        .review
-        .findings
-        .iter()
-        .find(|f| f.path.as_deref() == Some(".foundry/project.json"))
+    assert!(
+        v.review
+            .findings
+            .iter()
+            .all(|f| f.path.as_deref() != Some(".foundry/project.json")),
+        "{:?}",
+        v.review.findings
+    );
+    assert!(v.review.passed, "{:?}", v.review.findings);
+}
+
+#[test]
+fn confirming_a_list_that_changed_while_shown_is_refused_and_confirms_nothing() {
+    let env = Env::new();
+    let ok = fake("--exit 0");
+    let shown = env
+        .store
+        .set_test_commands(P, vec![ok.clone()])
+        .unwrap()
+        .commands;
+    // Something rewrites the list while the human reviews it.
+    let mut file: Value = serde_json::from_str(&env.repo.read(".foundry/project.json")).unwrap();
+    file["testCommands"] = json!([ok, "echo pwned"]);
+    env.repo.write(".foundry/project.json", &file.to_string());
+    let confirmed_file = env
+        .data
+        .path()
+        .join("verification/confirmed-test-commands.json");
+    let before = fs::read(&confirmed_file).ok();
+
+    let err = env.store.confirm_test_commands(P, shown).unwrap_err();
+    assert_eq!(err.code, ErrorCode::TestCommandsChanged);
+    assert_eq!(
+        err.message,
+        "The test commands changed while you were reviewing them. Review them again."
+    );
+    assert_eq!(fs::read(&confirmed_file).ok(), before, "nothing confirmed");
+    assert!(!env.store.get_test_commands(P).unwrap().confirmed);
+    env.write_report(&report(json!([met("r-1", "test a"), met("r-2", "test b")])));
+    assert_eq!(
+        env.verify().unwrap_err().code,
+        ErrorCode::TestCommandsUnconfirmed
+    );
+    // A reordering, a subset or an empty list is a change too.
+    let on_disk = env.store.get_test_commands(P).unwrap().commands;
+    for wrong in [
+        vec![on_disk[1].clone(), on_disk[0].clone()],
+        vec![on_disk[0].clone()],
+        vec![],
+    ] {
+        assert_eq!(
+            env.store.confirm_test_commands(P, wrong).unwrap_err().code,
+            ErrorCode::TestCommandsChanged
+        );
+    }
+    // Confirming what's really there works.
+    assert!(
+        env.store
+            .confirm_test_commands(P, on_disk)
+            .unwrap()
+            .confirmed
+    );
+}
+
+#[test]
+fn an_empty_command_list_needs_no_confirmation() {
+    let env = Env::new();
+    // Never set, never confirmed.
+    assert_eq!(
+        env.store.get_test_commands(P).unwrap(),
+        TestCommands {
+            commands: vec![],
+            confirmed: true
+        }
+    );
+    // The other checks still run.
+    env.write_report(&report(json!([met("r-1", "test a")])));
+    let v = env.verify().unwrap();
+    assert_eq!(
+        finding(&v, code::NO_TEST_COMMAND).severity,
+        FindingSeverity::Warn
+    );
+    assert!(codes(&v).contains(&code::UNREPORTED_REQUIREMENT));
+    assert!(v.review.test_runs.is_empty());
+
+    // Cleared through Foundry after a non-empty list: still nothing to confirm.
+    env.store
+        .set_test_commands(P, vec![fake("--exit 0")])
         .unwrap();
     assert_eq!(
-        (f.code.as_str(), f.severity),
-        (code::PROTECTED_FILE_CHANGED, FindingSeverity::Danger)
+        env.verify().unwrap_err().code,
+        ErrorCode::TestCommandsUnconfirmed
     );
+    assert!(env.store.set_test_commands(P, vec![]).unwrap().confirmed);
+    let v = env.verify().unwrap();
+    assert!(codes(&v).contains(&code::NO_TEST_COMMAND));
 }
 
 #[test]

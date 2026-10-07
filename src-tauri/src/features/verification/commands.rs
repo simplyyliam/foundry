@@ -41,14 +41,19 @@ pub async fn set_test_commands(
     blocking(&store, move |s| s.set_test_commands(&project_id, commands)).await
 }
 
-/// Records the current `testCommands` as confirmed (kept in app data, never in the repo).
+/// Confirms `commands`, the list the human was shown (kept in app data, never in the repo).
+/// `test_commands_changed`, confirming nothing, if `testCommands` no longer equals it.
 #[tauri::command]
 #[specta::specta]
 pub async fn confirm_test_commands(
     store: Store<'_>,
     project_id: String,
+    commands: Vec<String>,
 ) -> Result<TestCommands, AppError> {
-    blocking(&store, move |s| s.confirm_test_commands(&project_id)).await
+    blocking(&store, move |s| {
+        s.confirm_test_commands(&project_id, commands)
+    })
+    .await
 }
 
 /// `.foundry/reports/<sliceId>.json`, or null if the agent hasn't written it.

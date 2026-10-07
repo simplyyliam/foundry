@@ -1840,6 +1840,15 @@ opus-test"
     #[test]
     fn the_helpers_protected_floor_matches_the_teams() {
         assert_eq!(core::hook_policy::PROTECTED_FLOOR, team::PROTECTED_FLOOR);
+        // P9: Foundry's own review files are protected, not the whole folder.
+        for glob in [
+            ".foundry/project.json",
+            ".foundry/reviews/*.json",
+            ".foundry/reviews/digest.md",
+        ] {
+            assert!(team::PROTECTED_FLOOR.contains(&glob), "{glob} missing");
+        }
+        assert!(!team::PROTECTED_FLOOR.contains(&".foundry/reviews/**"));
     }
 
     /// Regenerates the real bindings file, then checks the contract is in it.
@@ -1948,6 +1957,7 @@ opus-test"
             "\"test_commands_unconfirmed\"",
             "\"not_verified\"",
             "\"verification_running\"",
+            "\"test_commands_changed\"",
         ] {
             assert!(ts.contains(name), "{name} missing from bindings");
         }

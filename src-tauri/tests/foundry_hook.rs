@@ -251,25 +251,40 @@ fn a_protected_file_edit_is_blocked_for_every_role() {
     );
 }
 
-/// P9: `.foundry/project.json` (its `testCommands` run on Verify) and `.foundry/reviews/` (the
-/// plan trusts them) are on the helper's built-in floor, so a team whose `roles.json` predates
-/// them, with neither in its `protectedGlobs` and `**` as a write glob, is still blocked.
+/// P9: `.foundry/project.json` (its `testCommands` run on Verify) and the review files Foundry
+/// writes (`.foundry/reviews/*.json`, `digest.md`; the plan trusts them) are on the helper's
+/// built-in floor, so a team whose `roles.json` predates them is still blocked, even a role
+/// with `**` or `.foundry/reviews/**` as a write glob. Other files there, like a Manager's
+/// review notes, stay writable for a role whose `writeGlobs` allow them.
 #[test]
 fn project_json_and_reviews_are_blocked_for_every_role_without_editing_roles_json() {
     let repo = TestRepo::new();
-    standard_roles(&repo);
+    roles(
+        &repo,
+        json!([
+            { "id": "builder", "writeGlobs": ["src/**"], "protectedGlobs": [] },
+            { "id": "anything", "writeGlobs": ["**"], "protectedGlobs": [] },
+            { "id": "manager", "writeGlobs": [".foundry/reviews/**"], "protectedGlobs": [] }
+        ]),
+    );
     repo.write(".foundry/project.json", "{}");
     let roles = repo.read("agents/roles.json");
-    assert!(!roles.contains("project.json") && !roles.contains("reviews"));
-    for agent in ["builder", "designer", "anything"] {
+    for floor in ["project.json", "reviews/*.json", "digest.md"] {
+        assert!(!roles.contains(floor), "roles.json already lists {floor}");
+    }
+    let file = |rel: &str| repo.path().join(rel).to_string_lossy().into_owned();
+    for agent in ["builder", "anything", "manager"] {
         for rel in [
             ".foundry/project.json",
             ".foundry/reviews/s-1.json",
             ".foundry/reviews/digest.md",
         ] {
             for tool in ["Write", "Edit", "MultiEdit"] {
-                let file = repo.path().join(rel).to_string_lossy().into_owned();
-                let out = run_as(repo.path(), agent, &write_payload(repo.path(), tool, &file));
+                let out = run_as(
+                    repo.path(),
+                    agent,
+                    &write_payload(repo.path(), tool, &file(rel)),
+                );
                 blocked(&out, "protected_path");
                 assert!(
                     stderr(&out).contains(rel),
@@ -279,16 +294,30 @@ fn project_json_and_reviews_are_blocked_for_every_role_without_editing_roles_jso
             }
         }
     }
+    // Review notes: allowed where the write globs allow them, and only there.
+    let notes = ".foundry/reviews/s-1-notes.md";
+    for agent in ["manager", "anything"] {
+        for tool in ["Write", "Edit"] {
+            allowed(&run_as(
+                repo.path(),
+                agent,
+                &write_payload(repo.path(), tool, &file(notes)),
+            ));
+        }
+    }
+    blocked(
+        &run_as(
+            repo.path(),
+            "builder",
+            &write_payload(repo.path(), "Write", &file(notes)),
+        ),
+        "outside_write_globs",
+    );
     // The report carve-out next to them still works.
-    let report = repo
-        .path()
-        .join(".foundry/reports/s-1.json")
-        .to_string_lossy()
-        .into_owned();
     allowed(&run_as(
         repo.path(),
         "builder",
-        &write_payload(repo.path(), "Write", &report),
+        &write_payload(repo.path(), "Write", &file(".foundry/reports/s-1.json")),
     ));
 }
 

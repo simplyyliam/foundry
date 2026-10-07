@@ -102,6 +102,8 @@ pub enum ErrorCode {
     NotVerified,
     /// A verification is already running for this project.
     VerificationRunning,
+    /// `testCommands` changed while the human was reviewing them: nothing was confirmed.
+    TestCommandsChanged,
 }
 
 impl ErrorCode {
@@ -151,6 +153,7 @@ impl ErrorCode {
             Self::TestCommandsUnconfirmed => "test_commands_unconfirmed",
             Self::NotVerified => "not_verified",
             Self::VerificationRunning => "verification_running",
+            Self::TestCommandsChanged => "test_commands_changed",
         }
     }
 }
@@ -271,6 +274,7 @@ mod tests {
             ErrorCode::TestCommandsUnconfirmed,
             ErrorCode::NotVerified,
             ErrorCode::VerificationRunning,
+            ErrorCode::TestCommandsChanged,
         ] {
             assert_eq!(serde_json::to_value(code).unwrap(), json!(code.as_str()));
         }
