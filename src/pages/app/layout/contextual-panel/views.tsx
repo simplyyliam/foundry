@@ -58,6 +58,7 @@ export const ROUTE_VIEWS: readonly { path: string; view: PanelViewId }[] = [
   { path: "/projects/:projectId/blueprints", view: "roadmap" },
   { path: "/projects/:projectId/requirements", view: "roadmap" },
   { path: "/projects/:projectId/setup", view: "roadmap" },
+  { path: "/projects/:projectId/prompts", view: "roadmap" },
   { path: "/teams/*", view: "agent-chats" },
   { path: "/tickets/*", view: "tickets" },
 ];

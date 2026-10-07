@@ -18,6 +18,7 @@ export const PROJECT_SECTIONS: readonly ProjectSection[] = [
   { id: "blueprint", label: "Blueprint", segment: "blueprints", dotClassName: "bg-[#6b9bd8]" },
   { id: "requirements", label: "Requirements", segment: "requirements", dotClassName: "bg-[#e0895a]" },
   { id: "setup", label: "Setup", segment: "setup", dotClassName: "bg-[#8fb87a]" },
+  { id: "prompts", label: "Prompts", segment: "prompts", dotClassName: "bg-[#a98bd4]" },
 ];
 
 export const projectPath = (id: string) => `/projects/${encodeURIComponent(id)}`;
