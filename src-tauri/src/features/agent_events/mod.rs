@@ -353,7 +353,7 @@ impl AgentEventsStore {
             })
             .filter(|e| query.min_severity.map_or(true, |min| e.severity >= min))
             .collect();
-        events.sort_by(|a, b| b.id.cmp(&a.id));
+        events.sort_by_key(|e| std::cmp::Reverse(e.id));
         events.dedup_by_key(|e| e.id);
         events.truncate(limit as usize);
         Ok(events)
