@@ -120,8 +120,10 @@ pub struct LaunchRequest {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentStartOptions {
-    /// Repo-relative, an existing file directly in `.foundry/prompts/`.
-    pub prompt_file: String,
+    /// Repo-relative, an existing file directly in `.foundry/prompts/`. Without one the agent
+    /// reads its role file, then waits for the human's instructions.
+    #[serde(default)]
+    pub prompt_file: Option<String>,
     /// Passed to the hook helper as `FOUNDRY_SLICE_ID`.
     #[serde(default)]
     pub slice_id: Option<String>,
@@ -336,6 +338,10 @@ pub struct SessionManager {
     events: Arc<dyn SessionEvents>,
     /// Running sessions, and exited ones until the agent starts again (for snapshots).
     live: Mutex<HashMap<SessionKey, Arc<Live>>>,
+    /// Each agent's last finished session, until it starts again or the app exits. Apart
+    /// from the registry, so it never counts toward the cap or blocks archiving. Lock order:
+    /// this, then the registry.
+    finished: Arc<Mutex<HashMap<SessionKey, SessionInfo>>>,
     launcher: Option<Launcher>,
     /// Tests only: hold the exit thread just after it marks the exit, widening the window
     /// in which a closed writer matters.
@@ -355,6 +361,7 @@ impl SessionManager {
             max_sessions: Box::new(max_sessions),
             events,
             live: Mutex::new(HashMap::new()),
+            finished: Arc::default(),
             launcher: None,
             #[cfg(test)]
             exit_pause: Duration::ZERO,
@@ -384,12 +391,13 @@ impl SessionManager {
             .ok_or_else(|| AppError::internal("agent launching isn't configured"))
     }
 
-    /// `agent_start`: launches the agent's Claude Code session on a prompt file.
+    /// `agent_start`: launches the agent's Claude Code session, on a prompt file or, without
+    /// one, waiting for the human to type.
     ///
     /// In order: the repo (`not_found`, `folder_missing`); a confirmed team
     /// (`team_not_confirmed`) with this agent in `agents/roles.json` (`not_found`); the
-    /// prompt file, an existing file directly in `.foundry/prompts/` (`invalid_input`); the
-    /// slice id, one line (`invalid_input`); the launch message, built here
+    /// prompt file when given, an existing file directly in `.foundry/prompts/`
+    /// (`invalid_input`); the slice id, one line (`invalid_input`); the launch message, built here
     /// (`core::launch_message`, `invalid_input`); the hook server's endpoint (`internal` when
     /// it isn't running); then [`launch`](Self::launch), with its preflight, shim refusal,
     /// archived check and cap. Slice dependencies aren't checked again: prompt generation
@@ -403,7 +411,11 @@ impl SessionManager {
         let launcher = self.launcher()?;
         let repo = launcher.repos.repo(project_id)?;
         let agent = launch_message::find_agent(&repo, agent_id)?;
-        let prompt = launch_message::prompt_file(&repo, &options.prompt_file)?;
+        let prompt = options
+            .prompt_file
+            .as_deref()
+            .map(|file| launch_message::prompt_file(&repo, file))
+            .transpose()?;
         if let Some(slice_id) = &options.slice_id {
             let one_line = !slice_id.trim().is_empty()
                 && !slice_id.chars().any(char::is_control)
@@ -414,14 +426,15 @@ impl SessionManager {
                 )));
             }
         }
-        let message = launch_message::build(&agent, &prompt)?;
+        let message = launch_message::build(&agent, prompt.as_ref())?;
         let endpoint = launcher.endpoint.get().ok_or_else(|| {
             AppError::internal(
                 "the hook server isn't running, so the agent's actions couldn't be recorded; \
                  restart Foundry",
             )
         })?;
-        tracing::info!(project_id, agent_id, prompt_file = %prompt.rel, slice_id = ?options.slice_id, "starting agent");
+        let prompt_file = prompt.as_ref().map(|p| p.rel.as_str());
+        tracing::info!(project_id, agent_id, ?prompt_file, slice_id = ?options.slice_id, "starting agent");
         self.launch(LaunchRequest {
             project_id: project_id.to_string(),
             agent_id: agent.id,
@@ -492,9 +505,21 @@ impl SessionManager {
             .ok_or_else(|| Live::not_running(key))
     }
 
-    /// One project's live sessions, ordered by agent id.
+    /// One project's sessions, ordered by agent id: the live ones, and each other agent's
+    /// last finished one (`exited`).
     pub fn list(&self, project_id: &str) -> Vec<SessionInfo> {
-        self.registry.list_project(project_id)
+        // Held while the registry is read: an exit moves a session from one to the other
+        // under this lock, so it's listed exactly once.
+        let finished = lock(&self.finished);
+        let mut all = self.registry.list_project(project_id);
+        all.extend(
+            finished
+                .iter()
+                .filter(|(key, _)| key.project_id == project_id)
+                .map(|(_, info)| info.clone()),
+        );
+        all.sort_by(|a, b| a.agent_id.cmp(&b.agent_id));
+        all
     }
 
     /// Spawns the session. `session_running` if this agent already runs, `too_many_sessions`
@@ -527,8 +552,14 @@ impl SessionManager {
             ));
         }
         let key = spec.key();
-        self.registry
-            .reserve_if(&key, (self.max_sessions)(), allowed)?;
+        {
+            let mut finished = lock(&self.finished);
+            self.registry
+                .reserve_if(&key, (self.max_sessions)(), allowed)?;
+            // Starting again clears the agent's last finished session and its output.
+            finished.remove(&key);
+            lock(&self.live).remove(&key);
+        }
         self.events
             .status(AgentStatus::new(&key, SessionStatus::Starting, None, None));
         match self.spawn(&spec, &key) {
@@ -624,8 +655,9 @@ impl SessionManager {
             });
         })?;
 
-        let (registry, events, exit_key) = (
+        let (registry, finished, events, exit_key) = (
             Arc::clone(&self.registry),
+            Arc::clone(&self.finished),
             Arc::clone(&self.events),
             key.clone(),
         );
@@ -633,8 +665,25 @@ impl SessionManager {
         let exit_pause = self.exit_pause;
         spawn_named(format!("pty-wait-{agent}"), move || {
             let code = child.wait().ok().map(|status| status.exit_code());
-            // First, so `is_project_active` turns false the instant the process is gone.
-            registry.release(&exit_key);
+            // First, so `is_project_active` turns false the instant the process is gone. It
+            // becomes the agent's finished session in the same step, so `list` never misses
+            // it or shows it twice. (Its last output may land in the ring a moment later:
+            // `exited` below is sent once it has.)
+            {
+                let mut finished = lock(&finished);
+                registry.release(&exit_key);
+                finished.insert(
+                    exit_key.clone(),
+                    SessionInfo {
+                        agent_id: exit_key.agent_id.clone(),
+                        project_id: exit_key.project_id.clone(),
+                        status: SessionStatus::Exited,
+                        pid: None,
+                        exit_code: code,
+                        since: now_ms(),
+                    },
+                );
+            }
             // Before marking the exit, so a write after `stop` returns is always refused.
             lock(&live.writer).take();
             live.exit.set(code);
@@ -679,6 +728,9 @@ impl SessionManager {
         }
         let key = SessionKey::new(project_id, agent_id);
         let live = self.live(&key)?;
+        if live.exit.done() {
+            return Err(Live::not_running(&key));
+        }
         let master = lock(&live.master);
         let master = master.as_ref().ok_or_else(|| Live::not_running(&key))?;
         master
@@ -704,12 +756,13 @@ impl SessionManager {
     }
 
     /// Stops the session: Ctrl+C, then after [`STOP_GRACE`] (or at once with `force`) kills
-    /// the whole process tree. Returns once the process is gone. Stopping an agent that
-    /// already exited is fine.
+    /// the whole process tree. Returns once the process is gone. A finished session, or one
+    /// that never ran, → `not_found`.
     pub fn stop(&self, project_id: &str, agent_id: &str, force: bool) -> Result<(), AppError> {
-        let live = self.live(&SessionKey::new(project_id, agent_id))?;
+        let key = SessionKey::new(project_id, agent_id);
+        let live = self.live(&key)?;
         if live.exit.done() {
-            return Ok(());
+            return Err(Live::not_running(&key));
         }
         if !force {
             if let Err(err) = self.write(project_id, agent_id, INTERRUPT) {

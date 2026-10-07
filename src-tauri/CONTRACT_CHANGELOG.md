@@ -365,3 +365,16 @@ Unchanged: `SessionInfo` already carried `projectId`. The cap (`maxConcurrentAge
 Slice dependencies aren't re-checked: `generate_task_prompt` gates them. The terminal opens at 120×30; the view sends its size with `agent_resize`. The environment is unchanged except that `FOUNDRY_SLICE_ID=<sliceId>` is added only when a slice is given; an inherited `FOUNDRY_SLICE_ID` is always dropped.
 
 Internal: the launch-message builder and its checks moved from the prompts feature to `core::launch_message` (`roster`, `find_agent`, `prompt_file`, `build`). `launch_message` calls it, with the same output and errors. `core::sessions::SessionRegistry` is keyed by `SessionKey { projectId, agentId }` and gains `list_project`. `SessionManager::with_launcher` takes the `Arc<HookEndpointCell>`. fake-claude's interactive mode acts on `FAKE:ENV` / `FAKE:ARGS` anywhere in the message.
+
+## Agent sessions: optional prompt file, finished sessions kept (decided by the human)
+
+| Kind | Name | Before → After | Why |
+| --- | --- | --- | --- |
+| type | `AgentStartOptions` | `{ promptFile: string, sliceId?: string \| null }` → `{ promptFile?: string \| null, sliceId?: string \| null }` | Open an agent and type to it yourself. With a `promptFile`, nothing changes. Without one the launch message is `You are {displayName}, {title}. Read agents/roles/{agentId}.md, then wait for my instructions.`, with the same checks (one line, no control characters, ≤ 500 characters → `invalid_input`). `sliceId` works with or without a prompt file. `launch_message` (P6) still requires a prompt file. |
+| type | `SessionInfo` | `{ agentId, projectId, status, pid, since }` → adds `exitCode: number \| null` | `null` while the session runs, and when the process was killed without a code. `pid` is `null` once exited. |
+| command | `agent_list` | live sessions only → live sessions plus each agent's last finished session (`status: "exited"`, with `exitCode`) | Kept until that agent is started again in the project, or the app exits. Ordered by agent id; an agent appears once. |
+| command | `agent_snapshot` | unchanged signature | Still returns a finished session's final output, until the agent starts again. Starting again clears it. |
+| command | `agent_stop` | stopping an agent that already exited → `null` (fine) → `not_found` | A finished session can't be stopped. `agent_write` and `agent_resize` on one return `not_found` too, as before. |
+| command | `agent_start` | unchanged signature | Starting an agent clears its finished session and output, once its slot is reserved. |
+
+Finished sessions live in the agent-sessions feature, apart from `core::sessions::SessionRegistry`, which still holds only live sessions. So a finished session never counts toward `maxConcurrentAgents`, never blocks `archive_project`, and never blocks starting the same agent again. Each `(projectId, agentId)` keeps its own. The session moves from live to finished in one step under one lock, so `agent_list` never shows it twice or misses it. Its last output reaches the snapshot just before `agent:status` reports `exited`. Internal: `core::launch_message::build` takes `Option<&PromptPath>`.

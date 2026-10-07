@@ -29,7 +29,8 @@ async fn blocking<T: Send + 'static>(
         .map_err(|err| AppError::internal(format!("agent task failed: {err}")))?
 }
 
-/// The project's live agent sessions, ordered by agent id.
+/// The project's agent sessions, ordered by agent id: live ones, and each other agent's last
+/// finished one (`exited`, with its `exitCode`) until it starts again or the app exits.
 #[tauri::command]
 #[specta::specta]
 pub async fn agent_list(
@@ -39,8 +40,9 @@ pub async fn agent_list(
     blocking(&manager, move |m| Ok(m.list(&project_id))).await
 }
 
-/// Starts the agent's Claude Code session on a prompt file under `.foundry/prompts/`. The
-/// launch message is built by the backend from `agents/roles.json` and the prompt file.
+/// Starts the agent's Claude Code session, on a prompt file under `.foundry/prompts/` or,
+/// without one, waiting for your instructions. The launch message is built by the backend
+/// from `agents/roles.json` (and the prompt file). Clears the agent's finished session.
 #[tauri::command]
 #[specta::specta]
 pub async fn agent_start(
@@ -87,7 +89,7 @@ pub async fn agent_resize(
 }
 
 /// Stops a session: Ctrl+C, then after 5 s (at once with `force`) kills its whole process
-/// tree. Resolves once the process is gone.
+/// tree. Resolves once the process is gone. `not_found` for a finished session.
 #[tauri::command]
 #[specta::specta]
 pub async fn agent_stop(

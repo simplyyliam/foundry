@@ -23,14 +23,20 @@ pub enum SessionStatus {
     Exited,
 }
 
-/// A live session, as `agent_list` reports it.
+/// A session as `agent_list` reports it: a live one (`starting` or `running`, held here), or
+/// an agent's last finished one (`exited`, held by the agent-sessions feature until the agent
+/// starts again or the app exits). This registry only ever holds live sessions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionInfo {
     pub agent_id: String,
     pub project_id: String,
     pub status: SessionStatus,
+    /// The process id while it runs; `null` once it has exited.
     pub pid: Option<u32>,
+    /// Set once `exited`, when the process reported a code; `null` while it runs, and when it
+    /// was killed without one.
+    pub exit_code: Option<u32>,
     /// Epoch ms when `status` last changed.
     // u32 stands in for the exported type only (TS `number`), as with EventMeta.ts.
     #[specta(type = u32)]
@@ -124,6 +130,7 @@ impl SessionRegistry {
                 project_id: key.project_id.clone(),
                 status: SessionStatus::Starting,
                 pid: None,
+                exit_code: None,
                 since: now_ms(),
             },
         );

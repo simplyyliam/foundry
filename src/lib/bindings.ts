@@ -84,11 +84,15 @@ export const commands = {
 	bakeryMove: (projectId: string, id: string, x: Coord, y: Coord, w: number | null, h: number | null, z: number | null) => typedError<BakeryState, AppError>(__TAURI_INVOKE("bakery_move", { projectId, id, x, y, w, h, z })),
 	/**  Removes the card and deletes its image file (only ever inside `docs/bakery/`). */
 	bakeryRemove: (projectId: string, id: string) => typedError<BakeryState, AppError>(__TAURI_INVOKE("bakery_remove", { projectId, id })),
-	/**  The project's live agent sessions, ordered by agent id. */
+	/**
+	 *  The project's agent sessions, ordered by agent id: live ones, and each other agent's last
+	 *  finished one (`exited`, with its `exitCode`) until it starts again or the app exits.
+	 */
 	agentList: (projectId: string) => typedError<SessionInfo[], AppError>(__TAURI_INVOKE("agent_list", { projectId })),
 	/**
-	 *  Starts the agent's Claude Code session on a prompt file under `.foundry/prompts/`. The
-	 *  launch message is built by the backend from `agents/roles.json` and the prompt file.
+	 *  Starts the agent's Claude Code session, on a prompt file under `.foundry/prompts/` or,
+	 *  without one, waiting for your instructions. The launch message is built by the backend
+	 *  from `agents/roles.json` (and the prompt file). Clears the agent's finished session.
 	 */
 	agentStart: (projectId: string, agentId: string, options: AgentStartOptions) => typedError<SessionInfo, AppError>(__TAURI_INVOKE("agent_start", { projectId, agentId, options })),
 	/**  Sends keystrokes or pasted text to a running session. */
@@ -97,7 +101,7 @@ export const commands = {
 	agentResize: (projectId: string, agentId: string, cols: number, rows: number) => typedError<null, AppError>(__TAURI_INVOKE("agent_resize", { projectId, agentId, cols, rows })),
 	/**
 	 *  Stops a session: Ctrl+C, then after 5 s (at once with `force`) kills its whole process
-	 *  tree. Resolves once the process is gone.
+	 *  tree. Resolves once the process is gone. `not_found` for a finished session.
 	 */
 	agentStop: (projectId: string, agentId: string, options: AgentStopOptions) => typedError<null, AppError>(__TAURI_INVOKE("agent_stop", { projectId, agentId, options })),
 	/**
@@ -318,8 +322,11 @@ export type AgentOutput = {
  *  frontend reaches the process arguments.
  */
 export type AgentStartOptions = {
-	/**  Repo-relative, an existing file directly in `.foundry/prompts/`. */
-	promptFile: string,
+	/**
+	 *  Repo-relative, an existing file directly in `.foundry/prompts/`. Without one the agent
+	 *  reads its role file, then waits for the human's instructions.
+	 */
+	promptFile?: string | null,
 	/**  Passed to the hook helper as `FOUNDRY_SLICE_ID`. */
 	sliceId?: string | null,
 };
@@ -1000,12 +1007,22 @@ export type RosterAgent = {
 	protectedGlobs: string[] | null,
 };
 
-/**  A live session, as `agent_list` reports it. */
+/**
+ *  A session as `agent_list` reports it: a live one (`starting` or `running`, held here), or
+ *  an agent's last finished one (`exited`, held by the agent-sessions feature until the agent
+ *  starts again or the app exits). This registry only ever holds live sessions.
+ */
 export type SessionInfo = {
 	agentId: string,
 	projectId: string,
 	status: SessionStatus,
+	/**  The process id while it runs; `null` once it has exited. */
 	pid: number | null,
+	/**
+	 *  Set once `exited`, when the process reported a code; `null` while it runs, and when it
+	 *  was killed without one.
+	 */
+	exitCode: number | null,
 	/**  Epoch ms when `status` last changed. */
 	since: number,
 };

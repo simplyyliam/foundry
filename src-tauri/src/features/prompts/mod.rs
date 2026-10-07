@@ -383,7 +383,7 @@ impl PromptsStore {
                 display_name: agent.display_name,
                 title: agent.title,
             },
-            &prompt,
+            Some(&prompt),
         )
     }
 

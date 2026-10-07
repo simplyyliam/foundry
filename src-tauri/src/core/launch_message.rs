@@ -103,10 +103,13 @@ pub fn prompt_file(repo: &Path, prompt_file: &str) -> Result<PromptPath, AppErro
     })
 }
 
+/// With a prompt file:
 /// `You are {displayName}, {title}. Read agents/roles/{id}.md, then {prompt} and follow it.`
-/// One line with no control characters, at most [`MAX_LAUNCH_CHARS`]; otherwise
+/// Without one (the human types to the agent):
+/// `You are {displayName}, {title}. Read agents/roles/{id}.md, then wait for my instructions.`
+/// Either way one line with no control characters, at most [`MAX_LAUNCH_CHARS`]; otherwise
 /// `invalid_input`.
-pub fn build(agent: &RosterAgent, prompt: &PromptPath) -> Result<String, AppError> {
+pub fn build(agent: &RosterAgent, prompt: Option<&PromptPath>) -> Result<String, AppError> {
     for (what, text) in [
         ("display name", &agent.display_name),
         ("title", &agent.title),
@@ -127,9 +130,13 @@ pub fn build(agent: &RosterAgent, prompt: &PromptPath) -> Result<String, AppErro
             agent.id
         )));
     }
+    let then = match prompt {
+        Some(prompt) => format!("{} and follow it", prompt.rel),
+        None => "wait for my instructions".to_string(),
+    };
     let message = format!(
-        "You are {}, {}. Read agents/roles/{}.md, then {} and follow it.",
-        agent.display_name, agent.title, agent.id, prompt.rel
+        "You are {}, {}. Read agents/roles/{}.md, then {then}.",
+        agent.display_name, agent.title, agent.id
     );
     if message.chars().any(char::is_control) || message.chars().count() > MAX_LAUNCH_CHARS {
         return Err(AppError::invalid_input(format!(
@@ -159,9 +166,14 @@ mod tests {
         let prompt = prompt_file(repo.path(), r"./.foundry\prompts\handoff.md").unwrap();
         assert_eq!(prompt.rel, ".foundry/prompts/handoff.md");
         assert_eq!(
-            build(&ada(), &prompt).unwrap(),
+            build(&ada(), Some(&prompt)).unwrap(),
             "You are Ada, Backend engineer. Read agents/roles/ada.md, then \
              .foundry/prompts/handoff.md and follow it."
+        );
+        assert_eq!(
+            build(&ada(), None).unwrap(),
+            "You are Ada, Backend engineer. Read agents/roles/ada.md, then wait for my \
+             instructions."
         );
 
         for bad in [
@@ -178,10 +190,13 @@ mod tests {
                 ..ada()
             },
         ] {
-            assert_eq!(
-                build(&bad, &prompt).unwrap_err().code,
-                ErrorCode::InvalidInput
-            );
+            for prompt in [Some(&prompt), None] {
+                assert_eq!(
+                    build(&bad, prompt).unwrap_err().code,
+                    ErrorCode::InvalidInput,
+                    "{bad:?} {prompt:?}"
+                );
+            }
         }
         for bad in [
             ".foundry/prompts/missing.md",

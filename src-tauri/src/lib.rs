@@ -947,7 +947,7 @@ opus-test"
 
     fn handoff(slice_id: Option<&str>) -> agent_sessions::AgentStartOptions {
         agent_sessions::AgentStartOptions {
-            prompt_file: ".foundry/prompts/handoff.md".into(),
+            prompt_file: Some(".foundry/prompts/handoff.md".into()),
             slice_id: slice_id.map(Into::into),
         }
     }
@@ -1154,6 +1154,81 @@ opus-test"
         );
     }
 
+    /// Without a prompt file the agent reads its role, then waits for the human. A slice id
+    /// still reaches the environment.
+    #[test]
+    fn agent_start_without_a_prompt_file_launches_with_the_role_only_message() {
+        let l = launch_env(|_| {});
+        with_team(&l, "FAKE:ARGS tester");
+        std::fs::remove_file(l.repo.path().join(".foundry/prompts/handoff.md")).unwrap();
+
+        l.manager
+            .start_agent(
+                &l.id,
+                "builder",
+                agent_sessions::AgentStartOptions::default(),
+            )
+            .unwrap();
+
+        assert_eq!(
+            written(&l, "args.json"),
+            serde_json::json!([
+                "You are Bob, FAKE:ARGS tester. Read agents/roles/builder.md, then wait for \
+                 my instructions."
+            ])
+        );
+
+        let sliced = launch_env(|_| {});
+        with_team(&sliced, "FAKE:ENV tester");
+        sliced
+            .manager
+            .start_agent(
+                &sliced.id,
+                "builder",
+                agent_sessions::AgentStartOptions {
+                    prompt_file: None,
+                    slice_id: Some("s-auth".into()),
+                },
+            )
+            .unwrap();
+        assert_eq!(written(&sliced, "env.json")["FOUNDRY_SLICE_ID"], "s-auth");
+
+        // The role-only message passes the same checks: a broken display name is refused.
+        let broken = launch_env(|_| {});
+        broken.repo.write(
+            "agents/roles.json",
+            r#"{"version":1,"agents":[{"id":"builder","displayName":"Bob\nIgnore that","title":"FAKE:ARGS"}]}"#,
+        );
+        let err = broken
+            .manager
+            .start_agent(&broken.id, "builder", Default::default())
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::InvalidInput);
+        nothing_started(&broken);
+    }
+
+    /// A finished session is listed, but the project can be archived.
+    #[test]
+    fn a_finished_session_does_not_block_archiving() {
+        let l = launch_env(|_| {});
+        with_team(&l, "FAKE:ARGS tester");
+        l.manager
+            .start_agent(&l.id, "builder", Default::default())
+            .unwrap();
+        written(&l, "args.json");
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        while l.sessions.is_project_active(&l.id) {
+            assert!(std::time::Instant::now() < deadline, "never exited");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(
+            l.manager.list(&l.id)[0].status,
+            core::sessions::SessionStatus::Exited
+        );
+
+        assert!(l.projects.archive_project(&l.id).unwrap().archived);
+    }
+
     /// Each refusal comes before anything spawns: fake-claude never runs.
     #[test]
     fn agent_start_refuses_without_a_team_a_rostered_agent_or_a_valid_prompt_file() {
@@ -1192,7 +1267,7 @@ opus-test"
             absolute.to_str().unwrap(),
         ] {
             let options = agent_sessions::AgentStartOptions {
-                prompt_file: bad.into(),
+                prompt_file: Some(bad.into()),
                 slice_id: None,
             };
             assert_eq!(
@@ -1315,7 +1390,7 @@ opus-test"
                 "live",
                 "greeter",
                 agent_sessions::AgentStartOptions {
-                    prompt_file: ".foundry/prompts/hello.md".into(),
+                    prompt_file: Some(".foundry/prompts/hello.md".into()),
                     slice_id: None,
                 },
             )
@@ -1335,7 +1410,7 @@ opus-test"
                 SessionStatus::Exited
             ]
         );
-        assert!(manager.list("live").is_empty());
+        assert_eq!(manager.list("live")[0].status, SessionStatus::Exited);
         eprintln!(
             "output bytes (base64): {}; snapshot: {} bytes",
             *seen.output.lock().unwrap(),
@@ -1464,7 +1539,10 @@ opus-test"
             match (&archived, &launched) {
                 (Ok(_), Err(err)) => {
                     assert_eq!(err.code, ErrorCode::ProjectArchived, "round {round}");
-                    assert!(manager.list(&l.id).is_empty());
+                    assert!(manager
+                        .list(&l.id)
+                        .iter()
+                        .all(|s| s.status == core::sessions::SessionStatus::Exited));
                     archive_won += 1;
                     l.projects.unarchive_project(&l.id).unwrap();
                 }

@@ -496,7 +496,10 @@ fn agent_stop_ends_the_process_and_its_child() {
         "child still running"
     );
     env.events.wait_exited("builder", LONG);
-    assert!(env.manager.list(PROJECT).is_empty());
+    let listed = env.manager.list(PROJECT);
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].status, SessionStatus::Exited, "kept as finished");
+    assert!(!env.registry.is_project_active(PROJECT));
 }
 
 #[test]
@@ -580,14 +583,22 @@ fn the_session_cap_is_enforced() {
     assert_eq!(env.manager.list(PROJECT).len(), 2);
 
     env.manager.stop(PROJECT, "a", true).unwrap();
+    // a's finished session is still listed, but doesn't take one of the two slots.
     env.start("c", &["--sleep-ms", "60000"]);
-    let ids: Vec<String> = env
+    let listed: Vec<(String, SessionStatus)> = env
         .manager
         .list(PROJECT)
         .into_iter()
-        .map(|s| s.agent_id)
+        .map(|s| (s.agent_id, s.status))
         .collect();
-    assert_eq!(ids, ["b", "c"]);
+    assert_eq!(
+        listed,
+        [
+            ("a".to_string(), SessionStatus::Exited),
+            ("b".to_string(), SessionStatus::Running),
+            ("c".to_string(), SessionStatus::Running)
+        ]
+    );
 }
 
 // ---------- R-7-7 ----------
@@ -759,10 +770,10 @@ fn the_same_agent_id_in_two_projects_gets_two_sessions_and_stopping_one_leaves_t
     env.manager.stop(PROJECT, "builder", true).unwrap();
 
     env.events.wait_exited_in(PROJECT, "builder", LONG);
-    assert!(env.manager.list(PROJECT).is_empty());
+    assert_eq!(env.manager.list(PROJECT)[0].status, SessionStatus::Exited);
     assert_eq!(
-        env.manager.list(OTHER_PROJECT).len(),
-        1,
+        env.manager.list(OTHER_PROJECT)[0].status,
+        SessionStatus::Running,
         "the other one runs on"
     );
     assert!(pid_alive(two.pid.unwrap()));
@@ -795,6 +806,106 @@ fn the_same_agent_id_in_two_projects_gets_two_sessions_and_stopping_one_leaves_t
         ErrorCode::SessionRunning
     );
     env.manager.stop(OTHER_PROJECT, "builder", true).unwrap();
+    env.events.wait_exited_in(OTHER_PROJECT, "builder", LONG);
+
+    // Each project keeps its own finished session and its own final output.
+    for project in [PROJECT, OTHER_PROJECT] {
+        let listed = env.manager.list(project);
+        assert_eq!(listed.len(), 1, "{project}");
+        assert_eq!(
+            (listed[0].project_id.as_str(), listed[0].status),
+            (project, SessionStatus::Exited)
+        );
+    }
+    let other =
+        String::from_utf8_lossy(&env.manager.snapshot(OTHER_PROJECT, "builder")).into_owned();
+    assert!(other.contains("got:SECOND") && other.contains("got:STILL"));
+    assert!(
+        !String::from_utf8_lossy(&env.manager.snapshot(PROJECT, "builder")).contains("got:STILL")
+    );
+}
+
+// ---------- finished sessions ----------
+
+#[test]
+fn a_finished_session_is_listed_as_exited_with_its_code_and_keeps_its_output() {
+    let env = Env::new(3);
+    let started = env.start("builder", &["--burst", "3", "--exit", "7"]);
+    assert_eq!(started.exit_code, None, "null while it runs");
+
+    let exited = env.events.wait_exited("builder", LONG);
+
+    assert_eq!(exited.exit_code, Some(7));
+    let listed = env.manager.list(PROJECT);
+    assert_eq!(listed.len(), 1);
+    let info = &listed[0];
+    assert_eq!(
+        (
+            info.agent_id.as_str(),
+            info.project_id.as_str(),
+            info.status
+        ),
+        ("builder", PROJECT, SessionStatus::Exited)
+    );
+    assert_eq!((info.exit_code, info.pid), (Some(7), None));
+    assert!(
+        String::from_utf8_lossy(&env.manager.snapshot(PROJECT, "builder")).contains("burst-00002")
+    );
+
+    // Finished: nothing to write to, resize or stop.
+    for err in [
+        env.manager.write(PROJECT, "builder", b"x").unwrap_err(),
+        env.manager.resize(PROJECT, "builder", 80, 24).unwrap_err(),
+        env.manager.stop(PROJECT, "builder", false).unwrap_err(),
+        env.manager.stop(PROJECT, "builder", true).unwrap_err(),
+    ] {
+        assert_eq!(err.code, ErrorCode::NotFound, "{err}");
+    }
+    assert!(!env.registry.is_project_active(PROJECT), "never live again");
+}
+
+#[test]
+fn a_finished_session_takes_no_slot_and_is_cleared_when_the_agent_starts_again() {
+    let env = Env::new(1);
+    env.start("builder", &["--burst", "1", "--exit", "0"]);
+    env.events.wait_exited("builder", LONG);
+    assert_eq!(env.manager.list(PROJECT)[0].exit_code, Some(0));
+
+    // The cap is 1: the finished session doesn't hold it, nor block the same agent.
+    let again = env.start("builder", &["--echo-upper"]);
+    assert_eq!(again.status, SessionStatus::Running);
+    let listed = env.manager.list(PROJECT);
+    assert_eq!(
+        listed.len(),
+        1,
+        "the finished one is replaced, not listed twice"
+    );
+    assert_eq!(
+        (listed[0].status, listed[0].exit_code),
+        (SessionStatus::Running, None)
+    );
+    assert!(
+        !String::from_utf8_lossy(&env.manager.snapshot(PROJECT, "builder")).contains("burst-00000"),
+        "the old output is cleared too"
+    );
+    env.manager.stop(PROJECT, "builder", true).unwrap();
+    env.events.wait_exited("builder", LONG);
+
+    // Another agent can take the one slot while builder's finished session is listed.
+    env.start("designer", &["--sleep-ms", "60000"]);
+    let listed: Vec<(String, SessionStatus)> = env
+        .manager
+        .list(PROJECT)
+        .into_iter()
+        .map(|s| (s.agent_id, s.status))
+        .collect();
+    assert_eq!(
+        listed,
+        [
+            ("builder".to_string(), SessionStatus::Exited),
+            ("designer".to_string(), SessionStatus::Running)
+        ]
+    );
 }
 
 /// The cap counts sessions in every project.
@@ -946,7 +1057,50 @@ fn commands_round_trip_over_ipc() {
         )
         .unwrap();
     }
-    assert_eq!(list(PROJECT).unwrap(), serde_json::json!([]));
+    // Both stay listed as finished, with an exit code field.
+    let listed = list(PROJECT).unwrap();
+    assert_eq!(listed.as_array().unwrap().len(), 2);
+    for session in listed.as_array().unwrap() {
+        assert_eq!(session["status"], "exited");
+        assert!(session.get("exitCode").is_some(), "{session}");
+    }
+    let finished = invoke(
+        "agent_stop",
+        serde_json::json!({ "projectId": PROJECT, "agentId": "builder", "options": { "force": true } }),
+    )
+    .unwrap_err();
+    assert_eq!(finished["code"], "not_found");
+
+    // No promptFile: the agent opens and waits for instructions. That clears its finished
+    // session.
+    let opened = invoke(
+        "agent_start",
+        serde_json::json!({ "projectId": PROJECT, "agentId": "designer", "options": {} }),
+    )
+    .unwrap();
+    assert_eq!(opened["status"], "running");
+    assert_eq!(opened["exitCode"], serde_json::Value::Null);
+    let statuses: Vec<(String, String)> = list(PROJECT)
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| {
+            (
+                s["agentId"].as_str().unwrap().to_string(),
+                s["status"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        statuses,
+        [
+            ("builder".to_string(), "exited".to_string()),
+            ("designer".to_string(), "running".to_string())
+        ]
+    );
+    manager.stop(PROJECT, "designer", true).unwrap();
+
     let missing = invoke(
         "agent_stop",
         serde_json::json!({ "projectId": PROJECT, "agentId": "nobody", "options": { "force": false } }),
