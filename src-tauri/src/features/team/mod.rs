@@ -35,6 +35,10 @@ pub const PROTECTED_FLOOR: &[&str] = &[
     "agents/**",
     "docs/design/**",
     ".foundry/plan.json",
+    // Holds `testCommands`, which Verify runs with the human's rights.
+    ".foundry/project.json",
+    // Verification results: the plan trusts them to mark a slice done.
+    ".foundry/reviews/**",
     ".claude/**",
 ];
 

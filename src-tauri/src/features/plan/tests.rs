@@ -102,6 +102,27 @@ impl Env {
     fn plan_json(&self) -> PlanFile {
         serde_json::from_str(&self.repo.read(".foundry/plan.json")).unwrap()
     }
+
+    /// Writes the slice's report and a review of it, as the verification feature would.
+    fn review(&self, slice_id: &str, passed: bool) -> Value {
+        let report = json!({
+            "sliceId": slice_id, "agent": "ada", "requirements": [],
+            "testsRun": [], "blockers": [], "notes": ""
+        });
+        self.repo.write(
+            &format!(".foundry/reports/{slice_id}.json"),
+            &serde_json::to_string_pretty(&report).unwrap(),
+        );
+        self.repo.write(
+            &format!(".foundry/reviews/{slice_id}.json"),
+            &json!({
+                "sliceId": slice_id, "passed": passed, "findings": [], "testRuns": [],
+                "report": report, "verifiedAt": 1
+            })
+            .to_string(),
+        );
+        report
+    }
 }
 
 /// The JSON object inside `const VSM_DATA = …;`.
@@ -425,11 +446,105 @@ fn the_status_gate_honours_dependencies_and_overrides_need_a_reason() {
             None,
         )
         .unwrap();
+    env.review(&a, true);
     env.store
         .set_slice_status(P, &a, SliceStatus::Done, StatusOptions::default(), None)
         .unwrap();
     start(&c, StatusOptions::default()).unwrap();
     assert!(env.slice_view(&c).slice.decisions.is_empty());
+}
+
+// ---------- P9: done needs a passed, current verification ----------
+
+#[test]
+fn done_needs_a_passed_current_verification_or_an_override_with_a_reason() {
+    let env = Env::new();
+    let a = env.slice("A", &[]);
+    let done = |options: StatusOptions| {
+        env.store
+            .set_slice_status(P, &a, SliceStatus::Done, options, None)
+    };
+    let refused = |why: &str| {
+        let err = done(StatusOptions::default()).unwrap_err();
+        assert_eq!(err.code, ErrorCode::NotVerified, "{why}");
+        assert!(err.message.contains(why), "{}", err.message);
+        assert_eq!(env.slice_view(&a).slice.status, SliceStatus::Queued);
+    };
+
+    refused("has no verification");
+    env.review(&a, false);
+    refused("failed its last verification");
+    let report = env.review(&a, true);
+    let mut edited = report.clone();
+    edited["notes"] = json!("changed after verifying");
+    env.repo
+        .write(&format!(".foundry/reports/{a}.json"), &edited.to_string());
+    refused("stale");
+    // A review that doesn't parse counts as none.
+    env.repo
+        .write(&format!(".foundry/reviews/{a}.json"), "{ nope");
+    refused("has no verification");
+
+    // An override needs a reason; a blank one is no reason.
+    for reason in [None, Some("   ".to_string())] {
+        let err = done(StatusOptions {
+            override_gate: true,
+            reason,
+        })
+        .unwrap_err();
+        assert_eq!(err.code, ErrorCode::InvalidInput);
+    }
+    // A reason without the override flag doesn't override.
+    let err = done(StatusOptions {
+        override_gate: false,
+        reason: Some("ship it".into()),
+    })
+    .unwrap_err();
+    assert_eq!(err.code, ErrorCode::NotVerified);
+
+    done(StatusOptions {
+        override_gate: true,
+        reason: Some("verified by hand".into()),
+    })
+    .unwrap();
+    let slice = env.slice_view(&a).slice;
+    assert_eq!(slice.status, SliceStatus::Done);
+    assert_eq!(
+        slice.decisions,
+        ["Marked done without a passed verification (override; it has no verification): verified by hand"]
+    );
+
+    // A passed, current verification needs no override, and records nothing.
+    let b = env.slice("B", &[]);
+    env.review(&b, true);
+    env.store
+        .set_slice_status(P, &b, SliceStatus::Done, StatusOptions::default(), None)
+        .unwrap();
+    let slice = env.slice_view(&b).slice;
+    assert_eq!(slice.status, SliceStatus::Done);
+    assert!(slice.decisions.is_empty());
+    // Reformatting the report keeps it current (compared as JSON values).
+    let c = env.slice("C", &[]);
+    let report = env.review(&c, true);
+    env.repo
+        .write(&format!(".foundry/reports/{c}.json"), &report.to_string());
+    env.store
+        .set_slice_status(P, &c, SliceStatus::Done, StatusOptions::default(), None)
+        .unwrap();
+
+    // Other moves aren't gated.
+    env.store
+        .set_slice_status(
+            P,
+            &a,
+            SliceStatus::InProgress,
+            StatusOptions::default(),
+            None,
+        )
+        .unwrap();
+    env.store
+        .set_slice_status(P, &a, SliceStatus::Queued, StatusOptions::default(), None)
+        .unwrap();
 }
 
 // ---------- R-2-7 ----------

@@ -262,6 +262,43 @@ export const commands = {
 	hooksUninstall: (projectId: string) => typedError<HooksChange, AppError>(__TAURI_INVOKE("hooks_uninstall", { projectId })),
 	/**  Whether Foundry's hooks are installed, and whether they can be. */
 	hooksStatus: (projectId: string) => typedError<HooksStatus, AppError>(__TAURI_INVOKE("hooks_status", { projectId })),
+	/**  `testCommands` from `.foundry/project.json`, and whether they're the confirmed list. */
+	getTestCommands: (projectId: string) => typedError<TestCommands, AppError>(__TAURI_INVOKE("get_test_commands", { projectId })),
+	/**
+	 *  Replaces `testCommands` (each trimmed; blank or multi-line → `invalid_input`). They're
+	 *  then unconfirmed.
+	 */
+	setTestCommands: (projectId: string, commands: string[]) => typedError<TestCommands, AppError>(__TAURI_INVOKE("set_test_commands", { projectId, commands })),
+	/**  Records the current `testCommands` as confirmed (kept in app data, never in the repo). */
+	confirmTestCommands: (projectId: string) => typedError<TestCommands, AppError>(__TAURI_INVOKE("confirm_test_commands", { projectId })),
+	/**  `.foundry/reports/<sliceId>.json`, or null if the agent hasn't written it. */
+	getReport: (projectId: string, sliceId: string) => typedError<{
+	sliceId: string,
+	/**  The agent id that did the work. */
+	agent: string,
+	requirements: RequirementReport[],
+	testsRun: TestRun[],
+	blockers: string[],
+	notes: string,
+} | null, AppError>(__TAURI_INVOKE("get_report", { projectId, sliceId })),
+	/**
+	 *  Verifies the slice's report and saves `.foundry/reviews/<sliceId>.json`. Progress arrives
+	 *  as `verify:progress`.
+	 */
+	verifySlice: (projectId: string, sliceId: string) => typedError<Verification, AppError>(__TAURI_INVOKE("verify_slice", { projectId, sliceId })),
+	/**  The slice's last verification with `stale` worked out now, or null. */
+	getVerification: (projectId: string, sliceId: string) => typedError<({
+	/**  The report on disk no longer equals the one verified (or is gone). */
+	stale: boolean,
+}) & (Review) | null, AppError>(__TAURI_INVOKE("get_verification", { projectId, sliceId })),
+	/**
+	 *  Stops the project's running verification (it fails with `cancelled`, nothing saved).
+	 *  Returns whether one was running.
+	 */
+	cancelVerification: (projectId: string) => typedError<boolean, AppError>(__TAURI_INVOKE("cancel_verification", { projectId })),
+	managerDigest: (projectId: string) => typedError<ManagerDigest, AppError>(__TAURI_INVOKE("manager_digest", { projectId })),
+	/**  Writes the digest to `.foundry/reviews/digest.md` and returns it. */
+	writeDigestFile: (projectId: string) => typedError<ManagerDigest, AppError>(__TAURI_INVOKE("write_digest_file", { projectId })),
 };
 
 /** Events */
@@ -272,9 +309,20 @@ export const events = {
 	appReady: makeEvent<AppReady>("app:ready"),
 	planChanged: makeEvent<PlanChanged>("plan:changed"),
 	roadmapProgress: makeEvent<RoadmapProgress>("roadmap:progress"),
+	verifyProgress: makeEvent<VerifyProgress>("verify:progress"),
 };
 
 /* Types */
+export type AgentDigest = {
+	agentId: string,
+	/**  It has a starting or running session. */
+	running: boolean,
+	/**  Epoch ms of its newest event; `null` if it has none. */
+	lastEventAt: number | null,
+	unread: number,
+	unreadDanger: number,
+};
+
 /**  One thing an agent did, as stored (one JSONL line) and as emitted on `agent:event`. */
 export type AgentEvent = {
 	/**  1, 2, 3, … per project and agent; never reused, also across rotation. */
@@ -369,6 +417,23 @@ export type AppReady = {
 	version: string,
 } & EventMeta;
 
+export type AttentionItem = {
+	/**  `warn` or `danger`. */
+	severity: FindingSeverity,
+	kind: AttentionKind,
+	agentId: string | null,
+	sliceId: string | null,
+	message: string,
+	/**  The event's id, for `unread_event`. */
+	eventId: number | null,
+};
+
+export type AttentionKind = 
+/**  An unread `warn` or `danger` agent event. */
+"unread_event" | "failed_verification" | 
+/**  A report that was never verified. */
+"unverified_report" | "stale_verification";
+
 export type AvatarChoice = {
 	/**  Exactly one of `builtinId` and `bytes`. */
 	builtinId: string | null,
@@ -438,6 +503,17 @@ export type ClaudeStatus = {
 	 *  `wrong_auth_mode`, …); null when it's ready.
 	 */
 	problem: AppError | null,
+};
+
+/**  One confirmed test command, as run by `verify_slice`. */
+export type CommandRun = {
+	command: string,
+	/**  `null` when it was killed at the time limit or couldn't start. */
+	exitCode: number | null,
+	durationMs: number,
+	/**  The last 8 KB of its output (stdout and stderr together). */
+	tail: string,
+	timedOut: boolean,
 };
 
 /**
@@ -603,7 +679,19 @@ export type ErrorCode =
  *  The installed Claude Code is too old for what was asked (or its version can't be read);
  *  the message names the version found and the minimum.
  */
-"claude_version_unsupported";
+"claude_version_unsupported" | 
+/**
+ *  The project's `testCommands` differ from the list the human last confirmed (or none
+ *  was confirmed): confirm them before verifying.
+ */
+"test_commands_unconfirmed" | 
+/**
+ *  A slice can't be marked done without a passed, current verification (unless
+ *  overridden with a reason).
+ */
+"not_verified" | 
+/**  A verification is already running for this project. */
+"verification_running";
 
 export type EventKind = "session_started" | "edit" | "command" | "tests_ran" | "blocked" | "needs_attention" | "turn_complete" | "session_ended" | "stuck" | "quiet" | "danger" | "report_ready";
 
@@ -621,6 +709,19 @@ export type Feature = {
 	features: string[],
 	relatesTo: string[],
 };
+
+export type Finding = {
+	severity: FindingSeverity,
+	/**  One of the stable codes, e.g. `unreported_requirement` (see CONTRACT_CHANGELOG.md). */
+	code: string,
+	message: string,
+	requirementId: string | null,
+	/**  The repo-relative file a boundary finding is about. */
+	path: string | null,
+};
+
+/**  Ordered: `info < warn < danger`. */
+export type FindingSeverity = "info" | "warn" | "danger";
 
 /**  Protected globs that had to be put back on an agent. */
 export type FloorRestored = {
@@ -750,6 +851,18 @@ export type LinkRepositoryResult = {
 export type LoadRoadmapOptions = {
 	/**  Replace the plan even though some requirements are confirmed. */
 	discardConfirmed: boolean,
+};
+
+export type ManagerDigest = {
+	projectId: string,
+	/**  Epoch ms. */
+	generatedAt: number,
+	/**  The team's agents in `roles.json` order, then any others with events, by id. */
+	agents: AgentDigest[],
+	/**  In plan order. */
+	slices: SliceDigest[],
+	/**  Most severe first; equal severities keep slices before events. */
+	attention: AttentionItem[],
 };
 
 export type NewDeferred = {
@@ -935,7 +1048,31 @@ export type RequirementPatch = {
 	verifiedBy: string | null,
 };
 
+/**  One requirement from the task prompt, as the agent reports it. */
+export type RequirementReport = {
+	/**  The requirement id from the task prompt. */
+	id: string,
+	status: RequirementStatus,
+	/**  What proves it: a test name, a command and its output, a file. */
+	evidence: string,
+};
+
 export type RequirementState = "proposed" | "confirmed";
+
+export type RequirementStatus = "met" | "partly" | "not_met";
+
+/**  `.foundry/reviews/<sliceId>.json`. */
+export type Review = {
+	sliceId: string,
+	/**  No `danger` finding and no unreported requirement. */
+	passed: boolean,
+	findings: Finding[],
+	testRuns: CommandRun[],
+	/**  The exact report that was verified, as it was on disk. */
+	report: SliceReport,
+	/**  Epoch ms. */
+	verifiedAt: number,
+};
 
 /**  What the model produced, after validation. */
 export type Roadmap = {
@@ -1063,9 +1200,29 @@ export type Slice = {
 	dependsOn: string[],
 };
 
+export type SliceDigest = {
+	sliceId: string,
+	name: string,
+	/**  The plan's status: `queued`, `in_progress` or `done`. */
+	status: string,
+	reportPresent: boolean,
+	verification: VerificationState,
+};
+
 export type SlicePatch = {
 	name: string | null,
 	delivers: string[] | null,
+};
+
+/**  `.foundry/reports/<sliceId>.json`. */
+export type SliceReport = {
+	sliceId: string,
+	/**  The agent id that did the work. */
+	agent: string,
+	requirements: RequirementReport[],
+	testsRun: TestRun[],
+	blockers: string[],
+	notes: string,
 };
 
 export type SliceStatus = "queued" | "in_progress" | "done";
@@ -1083,7 +1240,10 @@ export type SliceView = {
 export type Stage = "preflight" | "running" | "validating" | "retrying" | "done" | "failed";
 
 export type StatusOptions = {
-	/**  Start before the dependencies are done. Needs a `reason`, recorded as a decision. */
+	/**
+	 *  Start before the dependencies are done, or mark done without a passed, current
+	 *  verification. Needs a `reason`, recorded as a decision.
+	 */
 	override: boolean,
 	reason: string | null,
 };
@@ -1137,11 +1297,55 @@ export type TeamWritten = {
 	floorRestored: FloorRestored[],
 };
 
+export type TestCommands = {
+	/**  `testCommands` from `.foundry/project.json`. */
+	commands: string[],
+	/**  They equal, exactly, the list last confirmed with `confirm_test_commands`. */
+	confirmed: boolean,
+};
+
+export type TestRun = {
+	command: string,
+	/**  What happened, e.g. "12 passed" or the failure. */
+	result: string,
+};
+
 /**  The app's color theme. `system` follows the OS. */
 export type Theme = "light" | "dark" | "system";
 
+/**  What `verify_slice` and `get_verification` return. */
+export type Verification = {
+	/**  The report on disk no longer equals the one verified (or is gone). */
+	stale: boolean,
+} & Review;
+
+export type VerificationState = "passed" | "failed" | 
+/**  Never verified. */
+"none" | 
+/**  The report changed (or is gone) since it was verified. */
+"stale";
+
 /**  How a finished slice is verified by default. */
 export type VerifyMode = "auto" | "manual";
+
+/**  `verify:progress`. */
+export type VerifyProgress = {
+	projectId: string,
+	sliceId: string,
+	stage: VerifyStage,
+	/**  The test command starting, with `running_tests`. */
+	command: string | null,
+	/**  Since `verify_slice` started. */
+	elapsedMs: number,
+} & EventMeta;
+
+export type VerifyStage = "starting" | "checking" | "running_tests" | 
+/**  Finished and saved; `passed` is in the result. */
+"done" | 
+/**  Stopped by an error; nothing saved. */
+"failed" | 
+/**  Stopped by `cancel_verification`; nothing saved. */
+"cancelled";
 
 /* Tauri Specta runtime */
 async function typedError<T, E>(result: Promise<T>): Promise<{ status: "ok"; data: T } | { status: "error"; error: E }> {

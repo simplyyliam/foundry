@@ -12,3 +12,4 @@ pub mod projects;
 pub mod prompts;
 pub mod roadmap;
 pub mod team;
+pub mod verification;

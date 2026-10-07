@@ -22,7 +22,7 @@ use crate::core::AppError;
 use crate::core::ErrorCode;
 use crate::features::{
     agent_events, agent_sessions, app, bakery, design, folders, hooks, plan, projects, prompts,
-    roadmap, team,
+    roadmap, team, verification,
 };
 
 /// Where the generated TypeScript bindings live. Never hand-edit that file.
@@ -118,6 +118,15 @@ pub fn specta_builder<R: Runtime>() -> tauri_specta::Builder<R> {
             hooks::commands::hooks_install,
             hooks::commands::hooks_uninstall,
             hooks::commands::hooks_status,
+            verification::commands::get_test_commands,
+            verification::commands::set_test_commands,
+            verification::commands::confirm_test_commands,
+            verification::commands::get_report,
+            verification::commands::verify_slice,
+            verification::commands::get_verification,
+            verification::commands::cancel_verification,
+            verification::commands::manager_digest,
+            verification::commands::write_digest_file,
         ])
         .events(collect_events![
             app::AppReady,
@@ -125,7 +134,8 @@ pub fn specta_builder<R: Runtime>() -> tauri_specta::Builder<R> {
             agent_sessions::AgentStatus,
             roadmap::RoadmapProgress,
             plan::PlanChanged,
-            agent_events::AgentEvent
+            agent_events::AgentEvent,
+            verification::VerifyProgress
         ])
 }
 
@@ -330,6 +340,12 @@ pub fn hooks_store(
     })
 }
 
+impl<R: Runtime> verification::VerifyEvents for TauriSessionEvents<R> {
+    fn progress(&self, event: verification::VerifyProgress) {
+        let _ = events::emit(&self.app, &event);
+    }
+}
+
 impl<R: Runtime> roadmap::ProgressSink for TauriSessionEvents<R> {
     fn progress(&self, event: roadmap::RoadmapProgress) {
         let _ = events::emit(&self.app, &event);
@@ -417,6 +433,15 @@ pub fn app_builder<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> 
             let data_dir = app.path().app_data_dir()?;
             let repos = Arc::new(RepoIndex::default());
             let sessions = Arc::new(SessionRegistry::default());
+            app.manage(Arc::new(verification::VerificationStore::new(
+                Arc::clone(&repos),
+                Arc::clone(&sessions),
+                Git::system(),
+                data_dir.clone(),
+                Arc::new(TauriSessionEvents {
+                    app: app.handle().clone(),
+                }),
+            )));
             let projects = Arc::new(projects_store(
                 app.handle(),
                 data_dir.clone(),
@@ -1907,6 +1932,22 @@ opus-test"
             "export type HooksChange",
             "\"invalid_json\"",
             "\"claude_version_unsupported\"",
+            "getTestCommands",
+            "setTestCommands",
+            "confirmTestCommands",
+            "getReport",
+            "verifySlice",
+            "getVerification",
+            "cancelVerification",
+            "managerDigest",
+            "writeDigestFile",
+            "\"verify:progress\"",
+            "export type Verification",
+            "export type SliceReport",
+            "export type ManagerDigest",
+            "\"test_commands_unconfirmed\"",
+            "\"not_verified\"",
+            "\"verification_running\"",
         ] {
             assert!(ts.contains(name), "{name} missing from bindings");
         }

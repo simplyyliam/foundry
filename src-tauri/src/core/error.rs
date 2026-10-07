@@ -94,6 +94,14 @@ pub enum ErrorCode {
     /// The installed Claude Code is too old for what was asked (or its version can't be read);
     /// the message names the version found and the minimum.
     ClaudeVersionUnsupported,
+    /// The project's `testCommands` differ from the list the human last confirmed (or none
+    /// was confirmed): confirm them before verifying.
+    TestCommandsUnconfirmed,
+    /// A slice can't be marked done without a passed, current verification (unless
+    /// overridden with a reason).
+    NotVerified,
+    /// A verification is already running for this project.
+    VerificationRunning,
 }
 
 impl ErrorCode {
@@ -140,6 +148,9 @@ impl ErrorCode {
             Self::AgentsMdNotReady => "agents_md_not_ready",
             Self::InvalidJson => "invalid_json",
             Self::ClaudeVersionUnsupported => "claude_version_unsupported",
+            Self::TestCommandsUnconfirmed => "test_commands_unconfirmed",
+            Self::NotVerified => "not_verified",
+            Self::VerificationRunning => "verification_running",
         }
     }
 }
@@ -257,6 +268,9 @@ mod tests {
             ErrorCode::AgentsMdNotReady,
             ErrorCode::InvalidJson,
             ErrorCode::ClaudeVersionUnsupported,
+            ErrorCode::TestCommandsUnconfirmed,
+            ErrorCode::NotVerified,
+            ErrorCode::VerificationRunning,
         ] {
             assert_eq!(serde_json::to_value(code).unwrap(), json!(code.as_str()));
         }

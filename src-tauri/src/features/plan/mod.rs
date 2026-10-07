@@ -30,6 +30,9 @@ const PROJECT_FILE: &str = ".foundry/project.json";
 const BRAIN_DUMP: &str = "docs/brain-dump.md";
 /// Written by roadmap generation (P3); read here, never written.
 const ROADMAP_FILE: &str = ".foundry/roadmap.json";
+/// Written by verification (P9) and by agents; read here, never written.
+const REVIEWS_DIR: &str = ".foundry/reviews";
+const REPORTS_DIR: &str = ".foundry/reports";
 const PLAN_VERSION: u32 = 1;
 const MAX_NAME_CHARS: usize = 200;
 
@@ -255,7 +258,8 @@ pub struct RequirementPatch {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct StatusOptions {
-    /// Start before the dependencies are done. Needs a `reason`, recorded as a decision.
+    /// Start before the dependencies are done, or mark done without a passed, current
+    /// verification. Needs a `reason`, recorded as a decision.
     #[serde(rename = "override")]
     pub override_gate: bool,
     pub reason: Option<String>,
@@ -677,7 +681,8 @@ impl PlanStore {
         Ok(plan)
     }
 
-    /// `queued → in_progress` needs every dependency `done`, unless `override` is set with a
+    /// `queued → in_progress` needs every dependency `done`, and moving to `done` needs a
+    /// passed, non-stale verification (`not_verified`), unless `override` is set with a
     /// non-empty reason (recorded as a decision). Moving to `in_progress` records HEAD.
     pub fn set_slice_status(
         &self,
@@ -724,6 +729,19 @@ impl PlanStore {
                         "Started before {} {} done (override): {reason}",
                         pending.join(", "),
                         if pending.len() == 1 { "was" } else { "were" }
+                    ));
+                }
+            }
+            if status == SliceStatus::Done && current != SliceStatus::Done {
+                if let Err(why) = verified(repo, slice_id)? {
+                    let Some(reason) = reason.as_deref().filter(|_| options.override_gate) else {
+                        return Err(AppError::new(
+                            ErrorCode::NotVerified,
+                            format!("\"{}\" {why}", plan.slices[index].name),
+                        ));
+                    };
+                    plan.slices[index].decisions.push(format!(
+                        "Marked done without a passed verification (override; it {why}): {reason}"
                     ));
                 }
             }
@@ -1082,6 +1100,40 @@ impl PlanStore {
 
 /// `meta.title` / `meta.subtitle` for the mirror: the project's name and tagline from
 /// `.foundry/project.json` (a file on disk; this feature doesn't import projects).
+/// The fields of `.foundry/reviews/<sliceId>.json` the done gate needs. The verification
+/// feature owns that file; the plan reads it from disk instead of importing the feature.
+#[derive(Deserialize)]
+struct StoredReview {
+    passed: bool,
+    /// The exact report that was verified.
+    report: serde_json::Value,
+}
+
+/// `Ok(())` when the slice has a passed verification whose report still equals the one on
+/// disk (compared as JSON values); otherwise why not, e.g. "has no verification".
+fn verified(repo: &Path, slice_id: &str) -> Result<Result<(), &'static str>, AppError> {
+    let read = |dir: &str| -> Result<Option<serde_json::Value>, AppError> {
+        Ok(
+            repo_write::read_to_string(repo, &format!("{dir}/{slice_id}.json"))?
+                .and_then(|text| serde_json::from_str(text.trim_start_matches('\u{feff}')).ok()),
+        )
+    };
+    let Some(review) =
+        read(REVIEWS_DIR)?.and_then(|value| serde_json::from_value::<StoredReview>(value).ok())
+    else {
+        return Ok(Err("has no verification"));
+    };
+    if !review.passed {
+        return Ok(Err("failed its last verification"));
+    }
+    if read(REPORTS_DIR)?.as_ref() != Some(&review.report) {
+        return Ok(Err(
+            "has a stale verification (its report changed after it was verified)",
+        ));
+    }
+    Ok(Ok(()))
+}
+
 fn project_meta(repo: &Path) -> (String, String) {
     let file: serde_json::Value = repo_write::read_to_string(repo, PROJECT_FILE)
         .ok()
