@@ -249,6 +249,16 @@ export const commands = {
 	agentEventCounts: (projectId: string) => typedError<AgentEventCounts[], AppError>(__TAURI_INVOKE("agent_event_counts", { projectId })),
 	/**  Marks the agent's events up to `upToId` read (never backwards, never past the newest). */
 	agentMarkRead: (projectId: string, agentId: string, upToId: number) => typedError<null, AppError>(__TAURI_INVOKE("agent_mark_read", { projectId, agentId, upToId })),
+	/**
+	 *  Merges Foundry's hooks into `.claude/settings.local.json`. Refused with nothing written:
+	 *  `claude_not_found`, `claude_version_unsupported` (older than 2.1.139, or unreadable),
+	 *  `not_found` (no helper), `invalid_json` (the file doesn't parse).
+	 */
+	hooksInstall: (projectId: string) => typedError<HooksChange, AppError>(__TAURI_INVOKE("hooks_install", { projectId })),
+	/**  Removes Foundry's hooks only. `invalid_json` when the file doesn't parse. */
+	hooksUninstall: (projectId: string) => typedError<HooksChange, AppError>(__TAURI_INVOKE("hooks_uninstall", { projectId })),
+	/**  Whether Foundry's hooks are installed, and whether they can be. */
+	hooksStatus: (projectId: string) => typedError<HooksStatus, AppError>(__TAURI_INVOKE("hooks_status", { projectId })),
 };
 
 /** Events */
@@ -571,7 +581,17 @@ export type ErrorCode =
  */
 "plan_not_confirmed" | 
 /**  AGENTS.md is missing from the repo or still has a `[[ FILL IN` marker (`generate_agents`). */
-"agents_md_not_ready";
+"agents_md_not_ready" | 
+/**
+ *  A file Foundry must merge into isn't valid JSON (or not a JSON object). It was left
+ *  untouched: fix it by hand first.
+ */
+"invalid_json" | 
+/**
+ *  The installed Claude Code is too old for what was asked (or its version can't be read);
+ *  the message names the version found and the minimum.
+ */
+"claude_version_unsupported";
 
 export type EventKind = "session_started" | "edit" | "command" | "tests_ran" | "blocked" | "needs_attention" | "turn_complete" | "session_ended" | "stuck" | "quiet" | "danger" | "report_ready";
 
@@ -664,6 +684,44 @@ export type HandoffResult = {
 	path: string,
 	/**  Not refusals, e.g. unlabeled Bakery images. */
 	warnings: string[],
+};
+
+export type HooksChange = {
+	status: HooksStatus,
+	/**  Whether the settings file changed (false: already as asked). */
+	changed: boolean,
+	/**  The previous settings file's copy under `.foundry/backups/`, when it was replaced. */
+	backup: string | null,
+};
+
+export type HooksStatus = {
+	/**  Every Foundry hook is in place, exactly once, running `helperPath`. */
+	installed: boolean,
+	/**
+	 *  Foundry entries exist but differ from what `hooks_install` writes (another helper path,
+	 *  a missing event): installing again fixes them.
+	 */
+	outdated: boolean,
+	/**  Hook events that have a Foundry entry. */
+	events: string[],
+	/**  The helper `hooks_install` points the hooks at. */
+	helperPath: string,
+	helperExists: boolean,
+	/**
+	 *  `false` when `.claude/settings.local.json` isn't valid JSON: install and uninstall refuse
+	 *  to touch it until it's fixed by hand.
+	 */
+	settingsValid: boolean,
+	/**
+	 *  Whether git ignores `.claude/settings.local.json` (it holds this machine's helper path).
+	 *  `null` when the folder isn't a git repo or git can't be run.
+	 */
+	gitIgnored: boolean | null,
+	/**  What `claude --version` printed (first line), or `null` when Claude Code isn't found. */
+	claudeVersion: string | null,
+	/**  The version is at least `minClaudeVersion`. */
+	claudeVersionSupported: boolean,
+	minClaudeVersion: string,
 };
 
 export type LinkRepositoryInput = {

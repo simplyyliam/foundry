@@ -2,3 +2,6 @@
 # will have compiled files and executables
 /target/
 /gen/schemas
+
+# The staged foundry-hook sidecar (scripts/stage-foundry-hook.mjs)
+/binaries/

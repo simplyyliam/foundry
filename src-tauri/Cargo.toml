@@ -40,6 +40,8 @@ tokio = { version = "1", features = ["net", "time", "rt"] }
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
+# Agent events (P8b): desktop notifications (approved).
+tauri-plugin-notification = "2"
 
 [dev-dependencies]
 tauri = { version = "2.11.0", features = ["specta", "protocol-asset", "test"] }
@@ -53,6 +55,13 @@ test = false
 [[bin]]
 name = "fake-claude"
 path = "src/bin/fake-claude.rs"
+test = false
+
+# The Claude Code hook helper, shipped as a sidecar (see tauri.bundle.conf.json). Uses only
+# std, serde and serde_json.
+[[bin]]
+name = "foundry-hook"
+path = "src/bin/foundry-hook.rs"
 test = false
 
 [target.'cfg(windows)'.dependencies]

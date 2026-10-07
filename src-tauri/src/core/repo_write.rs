@@ -21,8 +21,11 @@ const ALLOWED_FILES: &[&str] = &[
     "vsm_viewer.html",
 ];
 
-/// Allowed only as a JSON merge, never a plain overwrite (no merge writer exists yet).
+/// Allowed only as a JSON merge through [`merge_json`], never a plain overwrite.
 const MERGE_ONLY: &[&str] = &[".claude/settings.local.json"];
+
+/// Where [`merge_json`] keeps the previous version of a file it changes.
+pub const BACKUP_DIR: &str = ".foundry/backups";
 
 /// Whether a repo-relative path is on the allowlist for plain writes.
 /// Matching is exact and case-sensitive, on normalized components.
@@ -129,6 +132,113 @@ pub fn rename_new(repo: &Path, from: &str, to: &str) -> Result<bool, AppError> {
             Ok(true)
         }
     }
+}
+
+/// What [`merge_json`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Merged {
+    /// Whether the file changed. An idempotent merge leaves it (and makes no backup).
+    pub changed: bool,
+    /// The previous file's copy under [`BACKUP_DIR`] (repo-relative), when one was replaced.
+    pub backup: Option<String>,
+}
+
+const BOM: &str = "\u{feff}";
+
+/// Merges into a merge-only file (`.claude/settings.local.json`): reads it (a missing file
+/// reads as `{}`), lets `merge` change the parsed object, and only if that changed anything,
+/// backs the old file up under [`BACKUP_DIR`] and writes the result atomically. A file that
+/// isn't valid JSON, or isn't an object, is refused (`invalid_json`) and never touched. An
+/// error from `merge` writes nothing. A UTF-8 BOM is kept.
+pub fn merge_json(
+    repo: &Path,
+    rel: &str,
+    merge: impl FnOnce(&mut serde_json::Value) -> Result<(), AppError>,
+) -> Result<Merged, AppError> {
+    let rel_path = paths::check(Path::new(rel), PathKind::Relative)?;
+    if !MERGE_ONLY.iter().any(|file| rel_path == Path::new(file)) {
+        return Err(AppError::new(
+            ErrorCode::WriteNotAllowed,
+            format!("{rel} isn't a file Foundry merges into"),
+        ));
+    }
+    let target = paths::resolve(repo, &rel_path)?;
+    let original = match fs::read(&target) {
+        Ok(bytes) => Some(bytes),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+        Err(err) => return Err(err.into()),
+    };
+    let invalid = |why: String| AppError::new(ErrorCode::InvalidJson, why);
+    let (current, bom) = match &original {
+        None => (serde_json::Value::Object(Default::default()), false),
+        Some(bytes) => {
+            let text = std::str::from_utf8(bytes)
+                .map_err(|_| invalid(format!("{rel} isn't UTF-8 text; it was left untouched")))?;
+            let value: serde_json::Value = serde_json::from_str(text.trim_start_matches(BOM))
+                .map_err(|err| {
+                    invalid(format!(
+                        "{rel} isn't valid JSON ({err}); it was left untouched. Fix it by hand first"
+                    ))
+                })?;
+            if !value.is_object() {
+                return Err(invalid(format!(
+                    "{rel} must hold a JSON object; it was left untouched"
+                )));
+            }
+            (value, text.starts_with(BOM))
+        }
+    };
+    let mut next = current.clone();
+    merge(&mut next)?;
+    let nothing_new = original.is_none() && next.as_object().is_some_and(|m| m.is_empty());
+    if next == current || nothing_new {
+        return Ok(Merged {
+            changed: false,
+            backup: None,
+        });
+    }
+    let backup = match &original {
+        Some(bytes) => Some(back_up(repo, &rel_path, bytes)?),
+        None => None,
+    };
+    let mut text = serde_json::to_string_pretty(&next)
+        .map_err(|err| AppError::internal(format!("serialize {rel}: {err}")))?;
+    text.push('\n');
+    if bom {
+        text.insert_str(0, BOM);
+    }
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fsx::write_atomic(&target, text)?;
+    Ok(Merged {
+        changed: true,
+        backup,
+    })
+}
+
+/// `.foundry/backups/<name>.<ms>.json` (`-2`, `-3`, … if taken), never replacing a backup.
+fn back_up(repo: &Path, rel: &Path, bytes: &[u8]) -> Result<String, AppError> {
+    let stem = rel
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "file".into());
+    let ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    for n in 1..100 {
+        let suffix = if n == 1 {
+            String::new()
+        } else {
+            format!("-{n}")
+        };
+        let backup = format!("{BACKUP_DIR}/{stem}.{ms}{suffix}.json");
+        if write_if_missing(repo, &backup, bytes)? {
+            return Ok(backup);
+        }
+    }
+    Err(AppError::internal("could not pick a backup file name"))
 }
 
 /// Reads an allowlisted file through the same path checks as writes.
@@ -245,9 +355,87 @@ mod tests {
     #[test]
     fn settings_local_is_merge_only() {
         let repo = TestRepo::new();
-        repo.write(".claude/settings.local.json", "{\"keep\":true}");
-        assert_not_allowed(write(repo.path(), ".claude/settings.local.json", "{}"));
-        assert_eq!(repo.read(".claude/settings.local.json"), "{\"keep\":true}");
+        let rel = ".claude/settings.local.json";
+        repo.write(rel, "{\"keep\":true}");
+        assert_not_allowed(write(repo.path(), rel, "{}"));
+        assert_not_allowed(append(repo.path(), rel, "x"));
+        assert_eq!(repo.read(rel), "{\"keep\":true}");
+
+        // The merge writer is the only way in, and it keeps what's there.
+        let merged = merge_json(repo.path(), rel, |v| {
+            v["added"] = serde_json::json!(1);
+            Ok(())
+        })
+        .unwrap();
+        assert!(merged.changed);
+        let after: serde_json::Value = serde_json::from_str(&repo.read(rel)).unwrap();
+        assert_eq!(after, serde_json::json!({ "keep": true, "added": 1 }));
+        let backup = merged.backup.unwrap();
+        assert!(
+            backup.starts_with(".foundry/backups/settings.local."),
+            "{backup}"
+        );
+        assert_eq!(repo.read(&backup), "{\"keep\":true}");
+
+        // Only merge-only files can be merged.
+        for other in ["AGENTS.md", ".claude/settings.json", "src/x.json"] {
+            assert_not_allowed(merge_json(repo.path(), other, |_| Ok(())).map(|_| ()));
+        }
+    }
+
+    #[test]
+    fn merge_json_is_idempotent_and_refuses_invalid_json_untouched() {
+        let repo = TestRepo::new();
+        let rel = ".claude/settings.local.json";
+        let set = |v: &mut serde_json::Value| {
+            v["a"] = serde_json::json!(1);
+            Ok(())
+        };
+        assert!(merge_json(repo.path(), rel, set).unwrap().changed);
+        let first = repo.read(rel);
+        let again = merge_json(repo.path(), rel, set).unwrap();
+        assert_eq!((again.changed, again.backup), (false, None));
+        assert_eq!(repo.read(rel), first);
+        assert!(
+            !repo.path().join(BACKUP_DIR).exists(),
+            "no backup of a file that didn't exist"
+        );
+
+        // A missing file and a no-op merge create nothing.
+        let empty = TestRepo::new();
+        assert!(!merge_json(empty.path(), rel, |_| Ok(())).unwrap().changed);
+        assert!(!empty.path().join(".claude").exists());
+
+        for bad in ["{ not json", "[1, 2]", "\"text\""] {
+            repo.write(rel, bad);
+            let err = merge_json(repo.path(), rel, set).unwrap_err();
+            assert_eq!(err.code, ErrorCode::InvalidJson, "{bad}");
+            assert_eq!(repo.read(rel), bad, "left untouched");
+        }
+        // A failing merge writes nothing either.
+        repo.write(rel, "{}");
+        let err = merge_json(repo.path(), rel, |_| Err(AppError::invalid_input("no"))).unwrap_err();
+        assert_eq!(err.code, ErrorCode::InvalidInput);
+        assert_eq!(repo.read(rel), "{}");
+
+        // A BOM survives.
+        repo.write(rel, "\u{feff}{\"b\":2}");
+        assert!(merge_json(repo.path(), rel, set).unwrap().changed);
+        assert!(repo.read(rel).starts_with('\u{feff}'));
+    }
+
+    #[test]
+    fn merge_json_cannot_escape_through_a_linked_claude_folder() {
+        let repo = TestRepo::new();
+        let outside = tempfile::tempdir().unwrap();
+        crate::testing::link_dir(outside.path(), &repo.path().join(".claude"));
+        let err = merge_json(repo.path(), ".claude/settings.local.json", |v| {
+            v["a"] = serde_json::json!(1);
+            Ok(())
+        })
+        .unwrap_err();
+        assert_eq!(err.code, ErrorCode::PathEscape);
+        assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0);
     }
 
     #[test]

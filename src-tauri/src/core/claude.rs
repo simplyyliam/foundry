@@ -218,6 +218,29 @@ pub fn version(program: &Path) -> Option<String> {
     (out.status.success() && !text.is_empty()).then_some(text)
 }
 
+/// A `major.minor.patch` version, as `claude --version` starts its output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Version(pub u32, pub u32, pub u32);
+
+impl std::fmt::Display for Version {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}.{}.{}", self.0, self.1, self.2)
+    }
+}
+
+/// The first Claude Code with exec-form hooks (`args`, no shell), per its CHANGELOG:
+/// "2.1.139 — Added hook `args: string[]` field (exec form)".
+pub const HOOK_ARGS_MIN_VERSION: Version = Version(2, 1, 139);
+
+/// `2.1.292 (Claude Code)` → `2.1.292`. `None` for anything else.
+pub fn parse_version(text: &str) -> Option<Version> {
+    let first = text.split_whitespace().next()?;
+    let mut parts = first.split('.');
+    let mut number = || parts.next()?.parse::<u32>().ok();
+    let version = Version(number()?, number()?, number()?);
+    parts.next().is_none().then_some(version)
+}
+
 /// Parses `claude auth status --json` (it exits non-zero when signed out, but still prints).
 pub fn auth_status(program: &Path) -> Result<AuthStatus, AppError> {
     let out = quick(program, &["auth", "status", "--json"])?;
@@ -293,6 +316,34 @@ pub fn status_with(claude_path: Option<&str>, path_var: Option<&OsStr>) -> Claud
         Err(err) => status.problem = Some(err),
     }
     status
+}
+
+#[cfg(test)]
+mod version_tests {
+    use super::*;
+
+    #[test]
+    fn parses_versions_and_rejects_garbage() {
+        assert_eq!(
+            parse_version("2.1.292 (Claude Code)"),
+            Some(Version(2, 1, 292))
+        );
+        assert_eq!(parse_version("  2.1.139\n"), Some(Version(2, 1, 139)));
+        for bad in [
+            "",
+            "garbage",
+            "v2.1.0",
+            "2.1",
+            "2.1.x",
+            "2.1.3.4",
+            "Claude Code 2.1.0",
+        ] {
+            assert_eq!(parse_version(bad), None, "{bad}");
+        }
+        assert!(Version(2, 1, 138) < HOOK_ARGS_MIN_VERSION);
+        assert!(Version(2, 2, 0) > HOOK_ARGS_MIN_VERSION);
+        assert_eq!(HOOK_ARGS_MIN_VERSION.to_string(), "2.1.139");
+    }
 }
 
 #[cfg(test)]

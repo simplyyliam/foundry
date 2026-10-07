@@ -90,6 +90,12 @@ pub enum ErrorCode {
     PlanNotConfirmed,
     /// AGENTS.md is missing from the repo or still has a `[[ FILL IN` marker (`generate_agents`).
     AgentsMdNotReady,
+    /// A file Foundry must merge into isn't valid JSON (or not a JSON object). It was left
+    /// untouched: fix it by hand first.
+    InvalidJson,
+    /// The installed Claude Code is too old for what was asked (or its version can't be read);
+    /// the message names the version found and the minimum.
+    ClaudeVersionUnsupported,
 }
 
 impl ErrorCode {
@@ -135,6 +141,8 @@ impl ErrorCode {
             Self::RoleExists => "role_exists",
             Self::PlanNotConfirmed => "plan_not_confirmed",
             Self::AgentsMdNotReady => "agents_md_not_ready",
+            Self::InvalidJson => "invalid_json",
+            Self::ClaudeVersionUnsupported => "claude_version_unsupported",
         }
     }
 }
@@ -251,6 +259,8 @@ mod tests {
             ErrorCode::RoleExists,
             ErrorCode::PlanNotConfirmed,
             ErrorCode::AgentsMdNotReady,
+            ErrorCode::InvalidJson,
+            ErrorCode::ClaudeVersionUnsupported,
         ] {
             assert_eq!(serde_json::to_value(code).unwrap(), json!(code.as_str()));
         }

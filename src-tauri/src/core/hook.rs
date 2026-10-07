@@ -14,6 +14,18 @@ pub struct HookEndpoint {
     pub token: String,
 }
 
+/// The helper's file name: `foundry-hook`, `foundry-hook.exe` on Windows.
+pub fn helper_file_name() -> String {
+    format!("foundry-hook{}", std::env::consts::EXE_SUFFIX)
+}
+
+/// Where the helper is: next to the app's executable. Tauri puts the bundled sidecar there
+/// (without its target-triple suffix), and in dev Cargo builds it into the same target folder.
+pub fn helper_path() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    Some(exe.with_file_name(helper_file_name()))
+}
+
 /// The header that carries [`HookEndpoint::token`].
 pub const TOKEN_HEADER: &str = "x-foundry-token";
 

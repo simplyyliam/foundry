@@ -9,7 +9,7 @@
 
 pub mod classify;
 pub mod commands;
-mod glob;
+pub mod notify;
 pub mod payload;
 pub mod server;
 mod store;
@@ -29,6 +29,8 @@ use crate::core::repos::RepoIndex;
 use crate::core::sessions::{SessionRegistry, SessionStatus};
 use crate::core::{repo_write, AppError};
 use classify::{Classified, Context, Draft, Streak};
+use notify::Notifications;
+pub use notify::{NotifyPolicy, OsNotifier};
 pub use payload::{HookDecision, HookPost};
 pub use store::{READ_FILE, ROTATE_AT};
 
@@ -177,6 +179,7 @@ pub struct AgentEventsStore {
     quiet_after_ms: u64,
     /// One lock for every agent: appends, id assignment and markers stay in order.
     state: Mutex<HashMap<Key, AgentState>>,
+    notifications: Option<Notifications>,
 }
 
 impl AgentEventsStore {
@@ -193,6 +196,23 @@ impl AgentEventsStore {
             rotate_at: ROTATE_AT,
             quiet_after_ms: QUIET_AFTER.as_millis() as u64,
             state: Mutex::new(HashMap::new()),
+            notifications: None,
+        }
+    }
+
+    /// Shows OS notifications for stored events, per `policy` (read on every event).
+    pub fn with_notifications(
+        mut self,
+        policy: impl Fn() -> NotifyPolicy + Send + Sync + 'static,
+        os: Arc<dyn OsNotifier>,
+    ) -> Self {
+        self.notifications = Some(Notifications::new(policy, os));
+        self
+    }
+
+    fn notify(&self, events: &[AgentEvent]) {
+        if let Some(notifications) = &self.notifications {
+            notifications.offer(events, self.clock.now_ms());
         }
     }
 
@@ -275,6 +295,7 @@ impl AgentEventsStore {
         for event in &events {
             self.sink.event(event.clone());
         }
+        self.notify(&events);
         Ok(events)
     }
 
@@ -436,6 +457,7 @@ impl AgentEventsStore {
             match result {
                 Ok(Some(event)) => {
                     self.sink.event(event.clone());
+                    self.notify(std::slice::from_ref(&event));
                     emitted.push(event);
                 }
                 Ok(None) => {}

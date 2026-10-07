@@ -494,12 +494,21 @@ fn rule_test_commands_are_tests_ran_with_pass_or_fail() {
         ),
         (failed("pnpm test"), "Tests failed"),
         (
+            // The real shape: PostToolUse has no exit code (it only fires on success).
             bash(
                 "PostToolUse",
                 "npx vitest run",
                 json!({ "stdout": "", "interrupted": false }),
             ),
-            "Tests ran",
+            "Tests passed",
+        ),
+        (
+            bash(
+                "PostToolUse",
+                "cargo test",
+                json!({ "stdout": "", "interrupted": true }),
+            ),
+            "Tests interrupted",
         ),
         (
             bash(
@@ -1332,4 +1341,314 @@ fn agent_event_serializes_with_every_field() {
         })
     );
     assert!(Severity::Info < Severity::Warn && Severity::Warn < Severity::Danger);
+}
+
+// ---------- P8b: real payloads captured from Claude Code 2.1.292 ----------
+
+/// A captured payload from `fixtures/`, with `{{ROOT}}` pointing at `root`.
+fn fixture(name: &str, root: &Path) -> Value {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src/features/agent_events/fixtures")
+        .join(format!("{name}.json"));
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{name}: {e}"));
+    // Substituted inside JSON strings, so the root's backslashes must be escaped.
+    let root = serde_json::to_string(&root.to_string_lossy()).unwrap();
+    let root = &root[1..root.len() - 1];
+    serde_json::from_str(&text.replace("{{ROOT}}", root)).unwrap()
+}
+
+fn from_fixture(name: &str, root: &Path) -> HookPost {
+    let payload = fixture(name, root);
+    let event = payload["hook_event_name"].as_str().unwrap().to_string();
+    post(&event, payload)
+}
+
+#[test]
+fn every_captured_payload_classifies_as_expected() {
+    let repo = TestRepo::new();
+    let root = repo.path();
+    let cases: &[(&str, Option<(EventKind, &str)>)] = &[
+        (
+            "session_start",
+            Some((EventKind::SessionStarted, "Session started")),
+        ),
+        ("pre_tool_use_bash", None),
+        ("pre_tool_use_write", None),
+        ("pre_tool_use_edit", None),
+        (
+            "post_tool_use_bash",
+            Some((EventKind::Command, "Ran a command")),
+        ),
+        (
+            "post_tool_use_failure_bash",
+            Some((EventKind::Command, "Command failed")),
+        ),
+        (
+            "post_tool_use_write",
+            Some((EventKind::Edit, "Edited a.txt")),
+        ),
+        (
+            "post_tool_use_edit",
+            Some((EventKind::Edit, "Edited a.txt")),
+        ),
+        ("stop", Some((EventKind::TurnComplete, "Turn complete"))),
+        (
+            "session_end",
+            Some((EventKind::SessionEnded, "Session ended")),
+        ),
+    ];
+    for (name, expected) in cases {
+        let all = drafts(&from_fixture(name, root), root, &floor());
+        match expected {
+            None => assert!(all.is_empty(), "{name}: {all:?}"),
+            Some((kind, title)) => {
+                assert_eq!(all.len(), 1, "{name}: {all:?}");
+                assert_eq!(
+                    (all[0].kind, all[0].title.as_str()),
+                    (*kind, *title),
+                    "{name}"
+                );
+            }
+        }
+    }
+    let detail = |name: &str| one(&from_fixture(name, root), root, &[]).detail;
+    assert_eq!(detail("session_start").as_deref(), Some("startup"));
+    assert_eq!(detail("session_end").as_deref(), Some("other"));
+    assert_eq!(detail("stop").as_deref(), Some("done"));
+    assert_eq!(
+        detail("post_tool_use_failure_bash").as_deref(),
+        Some("Exit code 3")
+    );
+    let edit = one(&from_fixture("post_tool_use_edit", root), root, &[]);
+    assert_eq!(edit.path.as_deref(), Some("a.txt"), "made repo-relative");
+    assert_eq!(
+        one(&from_fixture("post_tool_use_bash", root), root, &[])
+            .command
+            .as_deref(),
+        Some("echo hi")
+    );
+}
+
+#[test]
+fn captured_shapes_give_test_results_and_stuck() {
+    let repo = TestRepo::new();
+    let root = repo.path();
+    let with_command = |name: &str, command: &str| {
+        let mut p = from_fixture(name, root);
+        p.payload["tool_input"]["command"] = json!(command);
+        p
+    };
+    let passed = one(&with_command("post_tool_use_bash", "cargo test"), root, &[]);
+    assert_eq!(
+        (passed.kind, passed.title.as_str()),
+        (EventKind::TestsRan, "Tests passed")
+    );
+    let failed_tests = one(
+        &with_command("post_tool_use_failure_bash", "pnpm test"),
+        root,
+        &[],
+    );
+    assert_eq!(failed_tests.title, "Tests failed");
+
+    // Three real failures of the same command: stuck on the third.
+    let mut streak = Streak::default();
+    let mut kinds = Vec::new();
+    for _ in 0..3 {
+        let out = classify::classify(
+            &from_fixture("post_tool_use_failure_bash", root),
+            &Context {
+                repo_root: Some(root),
+                protected_globs: &[],
+                streak: Some(&streak),
+            },
+        );
+        streak = out.streak;
+        kinds = out.drafts.into_iter().map(|d| d.kind).collect();
+    }
+    assert_eq!(kinds, [EventKind::Command, EventKind::Stuck]);
+
+    // An interrupted call (is_interrupt) isn't a failure and breaks the run.
+    let mut interrupted = from_fixture("post_tool_use_failure_bash", root);
+    interrupted.payload["is_interrupt"] = json!(true);
+    let out = classify::classify(
+        &interrupted,
+        &Context {
+            repo_root: Some(root),
+            protected_globs: &[],
+            streak: Some(&streak),
+        },
+    );
+    assert_eq!(out.drafts[0].title, "Command interrupted");
+    assert_eq!(out.drafts[0].detail, None);
+    assert_eq!(out.streak, Streak::default());
+}
+
+#[test]
+fn a_warning_from_the_helper_is_a_warn_event() {
+    let repo = TestRepo::new();
+    let mut push = from_fixture("pre_tool_use_bash", repo.path());
+    push.payload["tool_input"]["command"] = json!("git push origin main");
+    push.decision = Some(HookDecision {
+        blocked: false,
+        rule: Some("git_push".into()),
+    });
+    let d = one(&push, repo.path(), &[]);
+    assert_eq!((d.kind, d.severity), (EventKind::Command, Severity::Warn));
+    assert_eq!(d.detail.as_deref(), Some("git_push"));
+    assert_eq!(d.command.as_deref(), Some("git push origin main"));
+    // An allowed call with no rule is still nothing until it finishes.
+    let mut plain = from_fixture("pre_tool_use_bash", repo.path());
+    plain.decision = Some(HookDecision::default());
+    assert!(drafts(&plain, repo.path(), &[]).is_empty());
+}
+
+// ---------- P8b: desktop notifications ----------
+
+#[derive(Default)]
+struct Shown(Mutex<Vec<AgentEvent>>);
+
+impl OsNotifier for Shown {
+    fn show(&self, event: &AgentEvent) {
+        self.0.lock().unwrap().push(event.clone());
+    }
+}
+
+impl Shown {
+    fn kinds(&self) -> Vec<EventKind> {
+        self.0.lock().unwrap().iter().map(|e| e.kind).collect()
+    }
+    fn count(&self) -> usize {
+        self.0.lock().unwrap().len()
+    }
+}
+
+struct Notifying {
+    env: Env,
+    shown: Arc<Shown>,
+    policy: Arc<Mutex<NotifyPolicy>>,
+}
+
+fn notifying(enabled: bool, min_severity: Severity) -> Notifying {
+    let shown = Arc::new(Shown::default());
+    let policy = Arc::new(Mutex::new(NotifyPolicy {
+        enabled,
+        min_severity,
+    }));
+    let (for_store, for_policy) = (Arc::clone(&shown), Arc::clone(&policy));
+    let env = Env::with(move |store| {
+        store.with_notifications(move || *for_policy.lock().unwrap(), for_store)
+    });
+    Notifying { env, shown, policy }
+}
+
+fn blocked_rm() -> HookPost {
+    let mut p = bash("PreToolUse", "rm -rf /", Value::Null);
+    p.decision = Some(HookDecision {
+        blocked: true,
+        rule: Some("rm_rf_outside".into()),
+    });
+    p
+}
+
+fn needs_attention() -> HookPost {
+    post(
+        "Notification",
+        json!({ "notification_type": "permission_prompt" }),
+    )
+}
+
+#[test]
+fn notifications_fire_only_at_or_above_the_threshold() {
+    let n = notifying(true, Severity::Danger);
+    let step = DEBOUNCE_MS + 1;
+    let at = |n: &Notifying, k: u64| n.env.clock.set(1_700_000_000_000 + k * step);
+    n.env
+        .store
+        .ingest(&bash("PostToolUse", "ls", json!({})))
+        .unwrap();
+    at(&n, 1);
+    n.env.store.ingest(&needs_attention()).unwrap();
+    assert_eq!(n.shown.count(), 0, "info and warn are below danger");
+    at(&n, 2);
+    n.env.store.ingest(&blocked_rm()).unwrap();
+    assert_eq!(n.shown.kinds(), [EventKind::Blocked]);
+
+    let warn = notifying(true, Severity::Warn);
+    warn.env
+        .store
+        .ingest(&bash("PostToolUse", "ls", json!({})))
+        .unwrap();
+    assert_eq!(warn.shown.count(), 0);
+    warn.env.store.ingest(&needs_attention()).unwrap();
+    assert_eq!(
+        warn.shown.kinds(),
+        [EventKind::NeedsAttention],
+        "warn meets warn"
+    );
+
+    let all = notifying(true, Severity::Info);
+    all.env.store.ingest(&post("Stop", json!({}))).unwrap();
+    assert_eq!(all.shown.kinds(), [EventKind::TurnComplete]);
+}
+
+#[test]
+fn notifications_never_fire_when_disabled() {
+    let n = notifying(false, Severity::Info);
+    for (k, p) in [blocked_rm(), needs_attention(), post("Stop", json!({}))]
+        .iter()
+        .enumerate()
+    {
+        n.env.clock.set(1_700_000_000_000 + k as u64 * 60_000);
+        n.env.store.ingest(p).unwrap();
+    }
+    let since = running(&n.env, P1);
+    n.env.clock.set(since + QUIET_AFTER.as_millis() as u64);
+    assert_eq!(n.env.store.check_quiet().len(), 1);
+    assert_eq!(n.shown.count(), 0);
+    assert_eq!(
+        n.env.sink.all().len(),
+        4,
+        "events are still stored and emitted"
+    );
+
+    // The policy is read on every event: enabling it applies at once.
+    n.policy.lock().unwrap().enabled = true;
+    n.env.clock.set(n.env.clock.now_ms() + 60_000);
+    n.env.store.ingest(&blocked_rm()).unwrap();
+    assert_eq!(n.shown.count(), 1);
+}
+
+const DEBOUNCE_MS: u64 = notify::DEBOUNCE.as_millis() as u64;
+
+#[test]
+fn a_burst_from_one_agent_gives_one_notification() {
+    let n = notifying(true, Severity::Warn);
+    let start = n.env.clock.now_ms();
+    for k in 0..6 {
+        n.env.clock.set(start + k * 500);
+        n.env.store.ingest(&blocked_rm()).unwrap();
+    }
+    assert_eq!(n.env.sink.all().len(), 6, "every event is still emitted");
+    assert_eq!(n.shown.count(), 1, "one per burst");
+
+    // One hook call that makes two qualifying events (a failure and stuck) shows the worst.
+    let other = notifying(true, Severity::Info);
+    other.env.store.ingest(&failed("make")).unwrap();
+    other.env.clock.set(other.env.clock.now_ms() + DEBOUNCE_MS);
+    other.env.store.ingest(&failed("make")).unwrap();
+    other.env.clock.set(other.env.clock.now_ms() + DEBOUNCE_MS);
+    other.env.store.ingest(&failed("make")).unwrap();
+    assert_eq!(other.shown.kinds().last(), Some(&EventKind::Stuck));
+
+    // Another agent, or the same agent in another project, isn't held back.
+    let mut designer = blocked_rm();
+    designer.agent_id = "designer".into();
+    n.env.store.ingest(&designer).unwrap();
+    n.env.store.ingest(&in_project(blocked_rm(), P2)).unwrap();
+    assert_eq!(n.shown.count(), 3);
+
+    // After the window, the same agent notifies again.
+    n.env.clock.set(start + 5 * 500 + DEBOUNCE_MS);
+    n.env.store.ingest(&blocked_rm()).unwrap();
+    assert_eq!(n.shown.count(), 4);
 }

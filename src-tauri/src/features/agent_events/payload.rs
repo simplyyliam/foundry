@@ -4,8 +4,13 @@
 //! `transcript_path`, `cwd`, `hook_event_name`; `tool_name`, `tool_input`, `tool_response`
 //! for tool events; `message`, `notification_type` for Notification; `last_assistant_message`
 //! for Stop; `source` for SessionStart; `reason` for SessionEnd). Every field is optional
-//! here: a missing or oddly typed field degrades to `None`, never to an error. When P8b
-//! captures real payloads, fix differences here and nowhere else.
+//! here: a missing or oddly typed field degrades to `None`, never to an error.
+//!
+//! Checked against real payloads captured from Claude Code 2.1.292 (P8b, in `fixtures/`):
+//! Bash's `tool_response` has no exit code (`stdout`, `stderr`, `interrupted`, `isImage`,
+//! `noOutputExpected`); a non-zero exit fires `PostToolUseFailure` instead, with `error`
+//! (`"Exit code 3"`) and `is_interrupt`, not the documented `tool_error`. Fix differences here
+//! and nowhere else.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -43,22 +48,24 @@ pub struct ToolCall {
     pub tool: Option<String>,
     pub command: Option<String>,
     pub file_path: Option<String>,
+    /// Why it failed (`PostToolUseFailure`), e.g. `Exit code 3`.
+    pub error: Option<String>,
 }
 
-/// How a finished command went, as far as the payload says.
+/// How a finished tool call went.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
     Passed,
     Failed,
-    /// The payload doesn't say (no exit code, not a failure event).
-    Unknown,
+    /// The user (or Claude Code) interrupted it: not a failure of the command.
+    Interrupted,
 }
 
 /// One hook call, read tolerantly.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Hook {
     PreToolUse(ToolCall),
-    /// `PostToolUse`, or `PostToolUseFailure` (always [`Outcome::Failed`]).
+    /// `PostToolUse` (it only fires after success), or `PostToolUseFailure`.
     PostToolUse(ToolCall, Outcome),
     Notification {
         kind: Option<String>,
@@ -119,6 +126,7 @@ fn tool_call(payload: &Value) -> ToolCall {
         command: text(input, "command"),
         file_path: first_text(input, &["file_path", "notebook_path", "path"])
             .or_else(|| first_text(response, &["filePath", "file_path", "path"])),
+        error: first_text(payload, &["error", "tool_error"]),
     }
 }
 
@@ -128,16 +136,26 @@ fn exit_code(response: &Value) -> Option<i64> {
         .find_map(|key| response.get(key).and_then(Value::as_i64))
 }
 
+fn flag(value: &Value, key: &str) -> bool {
+    value.get(key).and_then(Value::as_bool).unwrap_or(false)
+}
+
 fn outcome(payload: &Value, failure_event: bool) -> Outcome {
-    if failure_event {
-        return Outcome::Failed;
-    }
     let response = payload.get("tool_response").unwrap_or(&Value::Null);
+    if failure_event {
+        return if flag(payload, "is_interrupt") {
+            Outcome::Interrupted
+        } else {
+            Outcome::Failed
+        };
+    }
     match exit_code(response) {
         Some(0) => Outcome::Passed,
         Some(_) => Outcome::Failed,
+        None if flag(response, "interrupted") => Outcome::Interrupted,
         None if payload.get("tool_error").is_some_and(|e| !e.is_null()) => Outcome::Failed,
-        None => Outcome::Unknown,
+        // PostToolUse only fires after the tool succeeded (a non-zero exit is a failure event).
+        None => Outcome::Passed,
     }
 }
 

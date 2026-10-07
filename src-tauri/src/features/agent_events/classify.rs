@@ -4,9 +4,9 @@
 
 use std::path::Path;
 
-use super::glob;
 use super::payload::{self, Hook, HookPost, Outcome, ToolCall};
 use super::{EventKind, Severity};
+use crate::core::glob;
 
 /// Longest `command` kept on an event (characters).
 pub const COMMAND_CAP: usize = 2000;
@@ -180,13 +180,16 @@ pub fn classify(post: &HookPost, ctx: &Context<'_>) -> Classified {
             } else if let (true, Some(command)) = (is_tool(call, COMMAND_TOOLS), &call.command) {
                 let base = Draft {
                     command: Some(cut(command, COMMAND_CAP)),
+                    detail: (*outcome == Outcome::Failed)
+                        .then(|| call.error.as_deref().map(|e| cut(e, DETAIL_CAP)))
+                        .flatten(),
                     ..draft(EventKind::Command, Severity::Info, String::new())
                 };
                 drafts.push(if is_test_command(command) {
                     let title = match outcome {
                         Outcome::Passed => "Tests passed",
                         Outcome::Failed => "Tests failed",
-                        Outcome::Unknown => "Tests ran",
+                        Outcome::Interrupted => "Tests interrupted",
                     };
                     Draft {
                         kind: EventKind::TestsRan,
@@ -195,8 +198,9 @@ pub fn classify(post: &HookPost, ctx: &Context<'_>) -> Classified {
                     }
                 } else {
                     let title = match outcome {
+                        Outcome::Passed => "Ran a command",
                         Outcome::Failed => "Command failed",
-                        _ => "Ran a command",
+                        Outcome::Interrupted => "Command interrupted",
                     };
                     Draft {
                         title: title.into(),
@@ -214,8 +218,33 @@ pub fn classify(post: &HookPost, ctx: &Context<'_>) -> Classified {
                 }
             }
         }
-        // A tool about to run means nothing until it finishes (or is blocked, above).
-        Hook::PreToolUse(_) | Hook::Other(_) => {}
+        // The helper allowed it with a warning (`git push`, a dependency install).
+        Hook::PreToolUse(call) => {
+            if let Some(rule) = post.decision.as_ref().and_then(|d| d.rule.as_deref()) {
+                let path = call
+                    .file_path
+                    .as_deref()
+                    .map(|p| repo_relative(ctx.repo_root, p));
+                let command = call.command.as_deref().map(|c| cut(c, COMMAND_CAP));
+                let kind = if command.is_some() {
+                    EventKind::Command
+                } else {
+                    EventKind::Edit
+                };
+                drafts.push(Draft {
+                    detail: Some(cut(rule, DETAIL_CAP)),
+                    path,
+                    command,
+                    ..draft(
+                        kind,
+                        Severity::Warn,
+                        format!("Allowed with a warning: {}", cut(rule, 80)),
+                    )
+                });
+            }
+            // Otherwise a tool about to run means nothing until it finishes.
+        }
+        Hook::Other(_) => {}
     }
     Classified { drafts, streak }
 }

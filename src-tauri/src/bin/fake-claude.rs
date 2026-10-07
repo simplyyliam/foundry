@@ -1,7 +1,8 @@
 //! Stand-in for the `claude` CLI in process tests. Tests copy it to their own folder as
 //! `claude(.exe)`, so files next to it configure it without touching the environment.
 //!
-//!   --version                 print `9.9.9 (Fake Claude)`
+//!   --version                 print `version.txt` from this exe's folder, else
+//!                             `9.9.9 (Fake Claude)`
 //!   auth status [--json]      print `auth.json` from this exe's folder (default: signed in
 //!                             with a subscription); exit 1 when it says `loggedIn: false`
 //!   -p <flags…>               read the prompt from stdin, reply like `--output-format json`.
@@ -48,7 +49,11 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("--version") => {
-            println!("9.9.9 (Fake Claude)");
+            // `version.txt` next to the exe (a test's own copy) overrides the version line.
+            match std::fs::read_to_string(here().join("version.txt")) {
+                Ok(text) => print!("{text}"),
+                Err(_) => println!("9.9.9 (Fake Claude)"),
+            }
             ExitCode::SUCCESS
         }
         Some("auth") => {

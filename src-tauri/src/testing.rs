@@ -102,6 +102,14 @@ pub fn fake_agent_path() -> PathBuf {
     built_bin("fake-agent")
 }
 
+/// Path to the built `foundry-hook` helper.
+pub fn foundry_hook_path() -> PathBuf {
+    if let Some(path) = option_env!("CARGO_BIN_EXE_foundry-hook") {
+        return PathBuf::from(path);
+    }
+    built_bin("foundry-hook")
+}
+
 /// Path to the built `fake-claude` binary (copy it before use; see that file).
 pub fn fake_claude_path() -> PathBuf {
     if let Some(path) = option_env!("CARGO_BIN_EXE_fake-claude") {

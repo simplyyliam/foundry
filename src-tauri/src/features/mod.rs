@@ -6,6 +6,7 @@ pub mod app;
 pub mod bakery;
 pub mod design;
 pub mod folders;
+pub mod hooks;
 pub mod plan;
 pub mod projects;
 pub mod prompts;

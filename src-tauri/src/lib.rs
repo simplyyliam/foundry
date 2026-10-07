@@ -21,8 +21,8 @@ use crate::core::AppError;
 #[cfg(test)]
 use crate::core::ErrorCode;
 use crate::features::{
-    agent_events, agent_sessions, app, bakery, design, folders, plan, projects, prompts, roadmap,
-    team,
+    agent_events, agent_sessions, app, bakery, design, folders, hooks, plan, projects, prompts,
+    roadmap, team,
 };
 
 /// Where the generated TypeScript bindings live. Never hand-edit that file.
@@ -115,6 +115,9 @@ pub fn specta_builder<R: Runtime>() -> tauri_specta::Builder<R> {
             agent_events::commands::agent_events,
             agent_events::commands::agent_event_counts,
             agent_events::commands::agent_mark_read,
+            hooks::commands::hooks_install,
+            hooks::commands::hooks_uninstall,
+            hooks::commands::hooks_status,
         ])
         .events(collect_events![
             app::AppReady,
@@ -225,30 +228,104 @@ impl<R: Runtime> agent_events::AgentEventSink for TauriSessionEvents<R> {
     }
 }
 
-/// The agent-events store emitting `agent:event`, its quiet timer, and the hook server on
-/// 127.0.0.1, whose port and token are published to `endpoint` for agent sessions to read.
-/// A server that can't bind is logged, not fatal: the app runs without hook events, and
-/// `endpoint` stays empty.
+/// `osNotificationsEnabled` and `osNotificationSeverity` as the events store reads them.
+pub fn notify_policy(settings: &projects::Settings) -> agent_events::NotifyPolicy {
+    use agent_events::Severity;
+    use projects::NotificationSeverity;
+    agent_events::NotifyPolicy {
+        enabled: settings.os_notifications_enabled,
+        min_severity: match settings.os_notification_severity {
+            NotificationSeverity::All => Severity::Info,
+            NotificationSeverity::WarnAndDanger => Severity::Warn,
+            // A value that isn't allowed never reaches settings; be strict if it does.
+            NotificationSeverity::Danger | NotificationSeverity::Invalid(_) => Severity::Danger,
+        },
+    }
+}
+
+/// Desktop notifications through the notification plugin, titled with the agent and project.
+/// Without the plugin (tests on the mock runtime) nothing is shown.
+struct TauriNotifier<R: Runtime> {
+    app: tauri::AppHandle<R>,
+    projects: Arc<projects::ProjectsStore>,
+}
+
+impl<R: Runtime> agent_events::OsNotifier for TauriNotifier<R> {
+    fn show(&self, event: &agent_events::AgentEvent) {
+        let Some(plugin) = self
+            .app
+            .try_state::<tauri_plugin_notification::Notification<R>>()
+        else {
+            return;
+        };
+        let project = self
+            .projects
+            .list()
+            .ok()
+            .and_then(|all| all.into_iter().find(|p| p.id == event.project_id))
+            .map(|p| p.name)
+            .unwrap_or_else(|| event.project_id.clone());
+        let shown = plugin
+            .builder()
+            .title(format!("{} \u{b7} {project}", event.agent_id))
+            .body(&event.title)
+            .show();
+        if let Err(err) = shown {
+            tracing::warn!(error = %err, "desktop notification failed");
+        }
+    }
+}
+
+/// The agent-events store emitting `agent:event` and desktop notifications (per settings,
+/// read on every event), its quiet timer, and the hook server on 127.0.0.1, whose port and
+/// token are published to `endpoint` for agent sessions to read. A server that can't bind is
+/// logged, not fatal: the app runs without hook events, and `endpoint` stays empty.
 pub fn agent_events_store<R: Runtime>(
     app: &tauri::AppHandle<R>,
     repos: Arc<RepoIndex>,
     sessions: Arc<SessionRegistry>,
+    projects: Arc<projects::ProjectsStore>,
     endpoint: Arc<HookEndpointCell>,
 ) -> (
     Arc<agent_events::AgentEventsStore>,
     Option<agent_events::server::HookServer>,
 ) {
-    let store = Arc::new(agent_events::AgentEventsStore::new(
-        repos,
-        sessions,
-        Arc::new(TauriSessionEvents { app: app.clone() }),
-    ));
+    let for_policy = Arc::clone(&projects);
+    let store = Arc::new(
+        agent_events::AgentEventsStore::new(
+            repos,
+            sessions,
+            Arc::new(TauriSessionEvents { app: app.clone() }),
+        )
+        .with_notifications(
+            move || notify_policy(&for_policy.get_settings().unwrap_or_default()),
+            Arc::new(TauriNotifier {
+                app: app.clone(),
+                projects,
+            }),
+        ),
+    );
     // Runs for the app's lifetime.
     let _timer = store.spawn_quiet_timer(agent_events::QUIET_CHECK_EVERY);
     let server = agent_events::server::start(Arc::clone(&store), endpoint)
         .map_err(|err| tracing::error!(error = %err, "hook server failed to start"))
         .ok();
     (store, server)
+}
+
+/// The hooks installer: the helper next to the app's executable, Claude Code found as agent
+/// sessions find it (`claudePath`, else PATH).
+pub fn hooks_store(
+    repos: Arc<RepoIndex>,
+    projects: Arc<projects::ProjectsStore>,
+) -> hooks::HooksStore {
+    hooks::HooksStore::new(repos, Git::system(), core::hook::helper_path, move || {
+        let settings = projects.get_settings().unwrap_or_default();
+        core::claude::find(
+            settings.claude_path.as_deref(),
+            std::env::var_os("PATH").as_deref(),
+        )
+    })
 }
 
 impl<R: Runtime> roadmap::ProgressSink for TauriSessionEvents<R> {
@@ -338,18 +415,6 @@ pub fn app_builder<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> 
             let data_dir = app.path().app_data_dir()?;
             let repos = Arc::new(RepoIndex::default());
             let sessions = Arc::new(SessionRegistry::default());
-            let hook_endpoint = Arc::new(HookEndpointCell::default());
-            let (agent_events, hook_server) = agent_events_store(
-                app.handle(),
-                Arc::clone(&repos),
-                Arc::clone(&sessions),
-                Arc::clone(&hook_endpoint),
-            );
-            app.manage(agent_events);
-            if let Some(server) = hook_server {
-                app.manage(server);
-            }
-            app.manage(hook_endpoint);
             let projects = Arc::new(projects_store(
                 app.handle(),
                 data_dir.clone(),
@@ -357,6 +422,23 @@ pub fn app_builder<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> 
                 Arc::clone(&repos),
                 Arc::clone(&sessions),
             )?);
+            let hook_endpoint = Arc::new(HookEndpointCell::default());
+            let (agent_events, hook_server) = agent_events_store(
+                app.handle(),
+                Arc::clone(&repos),
+                Arc::clone(&sessions),
+                Arc::clone(&projects),
+                Arc::clone(&hook_endpoint),
+            );
+            app.manage(agent_events);
+            if let Some(server) = hook_server {
+                app.manage(server);
+            }
+            app.manage(hook_endpoint);
+            app.manage(Arc::new(hooks_store(
+                Arc::clone(&repos),
+                Arc::clone(&projects),
+            )));
             app.manage(Arc::new(session_manager(
                 app.handle(),
                 sessions,
@@ -400,7 +482,7 @@ pub fn run() {
         tracing::error!(%err, "bindings export failed");
     }
 
-    let mut builder = tauri::Builder::default();
+    let mut builder = tauri::Builder::default().plugin(tauri_plugin_notification::init());
     if cfg!(debug_assertions) {
         builder = builder.plugin(
             tauri_plugin_log::Builder::default()
@@ -1332,6 +1414,46 @@ opus-test"
         );
     }
 
+    /// `osNotificationsEnabled` and `osNotificationSeverity` become the events store's policy.
+    #[test]
+    fn notification_settings_map_to_the_events_policy() {
+        use agent_events::Severity;
+        use projects::NotificationSeverity;
+        for (severity, min) in [
+            (NotificationSeverity::Danger, Severity::Danger),
+            (NotificationSeverity::WarnAndDanger, Severity::Warn),
+            (NotificationSeverity::All, Severity::Info),
+            (
+                NotificationSeverity::Invalid(serde_json::json!("loud")),
+                Severity::Danger,
+            ),
+        ] {
+            for enabled in [true, false] {
+                let settings = projects::Settings {
+                    os_notifications_enabled: enabled,
+                    os_notification_severity: severity.clone(),
+                    ..Default::default()
+                };
+                assert_eq!(
+                    notify_policy(&settings),
+                    agent_events::NotifyPolicy {
+                        enabled,
+                        min_severity: min
+                    }
+                );
+            }
+        }
+        let defaults = notify_policy(&projects::Settings::default());
+        assert!(defaults.enabled);
+        assert_eq!(defaults.min_severity, Severity::Danger);
+    }
+
+    /// The helper enforces the same protected floor the team feature writes into roles.json.
+    #[test]
+    fn the_helpers_protected_floor_matches_the_teams() {
+        assert_eq!(core::hook_policy::PROTECTED_FLOOR, team::PROTECTED_FLOOR);
+    }
+
     /// Regenerates the real bindings file, then checks the contract is in it.
     #[test]
     fn export_bindings_regenerates_file_with_app_info() {
@@ -1415,6 +1537,13 @@ opus-test"
             "export type AgentEventCounts",
             "\"report_ready\"",
             "\"danger\"",
+            "hooksInstall",
+            "hooksUninstall",
+            "hooksStatus",
+            "export type HooksStatus",
+            "export type HooksChange",
+            "\"invalid_json\"",
+            "\"claude_version_unsupported\"",
         ] {
             assert!(ts.contains(name), "{name} missing from bindings");
         }
