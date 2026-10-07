@@ -6,7 +6,7 @@ function TeamsPage({ project }: { project: Project }) {
   const projects = useProjects();
   usePageHeader({
     title: "Teams",
-    subtitle: `Working on ${project.name}`,
+    subtitle: "Working on",
     subtitleMenu: {
       label: "Switch project",
       items: projects.filter((other) => !other.archived).map((other) => ({ title: other.name, to: `/teams/${other.id}` })),

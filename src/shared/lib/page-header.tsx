@@ -17,8 +17,9 @@ export interface Crumb {
   /** Makes the crumb a link. Ignored on the last crumb (the current page). */
   to?: string;
   /**
-   * Turns the subtitle into a dropdown that navigates (e.g. Teams' project switcher). Plain
-   * data, so crumbs stay comparable by value.
+   * Adds a dropdown pill after the subtitle, showing the current item and navigating to the
+   * one picked (e.g. Teams' "Working on" [project ▾]). Plain data, so crumbs stay comparable
+   * by value.
    */
   subtitleMenu?: CrumbMenu;
 }

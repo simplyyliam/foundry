@@ -1,4 +1,5 @@
 import { FitAddon } from "@xterm/addon-fit";
+import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import "./terminal.css";
@@ -82,8 +83,6 @@ export class TerminalRegistry {
     const term = new Terminal({
       allowTransparency: true,
       fontFamily: TERMINAL_FONT,
-      fontSize: 12.5,
-      lineHeight: 1.15,
       cursorBlink: true,
       scrollback: 5000,
       theme,
@@ -174,8 +173,25 @@ export class TerminalRegistry {
       // Opened only once it's in the document, so xterm can measure the font.
       entry.term.open(entry.host);
       entry.opened = true;
+      this.useWebgl(entry);
     }
     this.scheduleResize(agentId);
+  }
+
+  /**
+   * Draws with WebGL when it's available. Its renderer draws block and box characters itself,
+   * on whole pixels, so drawings made of them (Claude Code's banner) have no seams; the DOM
+   * renderer uses the font's glyphs, which leave gaps at fractional cell widths. If WebGL is
+   * missing or its context is lost, the terminal falls back to the DOM renderer.
+   */
+  private useWebgl(entry: Entry) {
+    try {
+      const webgl = new WebglAddon();
+      webgl.onContextLoss(() => webgl.dispose());
+      entry.term.loadAddon(webgl);
+    } catch (error) {
+      console.warn("WebGL terminal renderer unavailable, using the DOM renderer:", error);
+    }
   }
 
   /** Takes the terminal out of `container`, unless it has already moved elsewhere. */

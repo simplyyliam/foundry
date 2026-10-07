@@ -45,7 +45,7 @@ export function CrumbItem({ crumb, index, isCurrent }: CrumbItemProps) {
         <span aria-current={isCurrent ? "page" : undefined} className="shrink-0 font-medium text-foreground">
           {crumb.title}
         </span>
-        <SubtitleMenu subtitle={crumb.subtitle ?? ""} menu={crumb.subtitleMenu} />
+        <SubtitleMenu subtitle={crumb.subtitle} menu={crumb.subtitleMenu} />
       </motion.li>
     );
   }

@@ -29,6 +29,8 @@
     --color-slice: var(--slice);
     --color-slice-fill: var(--slice-fill);
     --color-slice-foreground: var(--slice-foreground);
+    --color-pill: var(--pill);
+    --color-pill-hover: var(--pill-hover);
     --color-status-running: var(--status-running);
     --color-status-starting: var(--status-starting);
     --color-chart-5: var(--chart-5);
@@ -104,6 +106,9 @@
     --agent-card: #f0f0f3;
     --agent-card-hover: #e8e8ec;
     --agent-card-selected: #e1e1e7;
+    /* Header pills, e.g. Teams' project switcher. */
+    --pill: #f1f1f1;
+    --pill-hover: #e8e8e8;
     --status-running: oklch(0.62 0.15 150);
     --status-starting: oklch(0.72 0.15 75);
 }
@@ -146,6 +151,8 @@
     --agent-card: oklch(0.225 0.004 286);
     --agent-card-hover: oklch(0.245 0.004 286);
     --agent-card-selected: oklch(0.27 0.004 286);
+    --pill: oklch(0.25 0 0);
+    --pill-hover: oklch(0.29 0 0);
     --status-running: oklch(0.72 0.15 150);
     --status-starting: oklch(0.8 0.14 80);
 }
