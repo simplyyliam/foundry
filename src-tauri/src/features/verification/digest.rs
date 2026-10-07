@@ -213,7 +213,7 @@ pub fn build(
     }
     attention.extend(event_items);
     // Stable: equal severities keep their order.
-    attention.sort_by(|a, b| b.severity.cmp(&a.severity));
+    attention.sort_by_key(|a| std::cmp::Reverse(a.severity));
 
     Ok(ManagerDigest {
         project_id: project_id.to_string(),
