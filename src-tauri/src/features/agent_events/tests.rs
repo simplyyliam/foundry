@@ -9,6 +9,7 @@ use serde_json::{json, Value};
 use super::classify::{self, is_test_command, Context, Draft, Streak};
 use super::*;
 use crate::core::hook::{HookEndpointCell, TOKEN_HEADER};
+use crate::core::sessions::SessionKey;
 use crate::core::ErrorCode;
 use crate::testing::TestRepo;
 
@@ -982,8 +983,9 @@ fn two_projects_with_the_same_agent_id_never_mix() {
 // ---------- R-8a-7: quiet fires once per quiet stretch ----------
 
 fn running(env: &Env, project: &str) -> u64 {
-    env.sessions.reserve(AGENT, project, 5).unwrap();
-    env.sessions.set_running(AGENT, Some(1)).unwrap().since
+    let key = SessionKey::new(project, AGENT);
+    env.sessions.reserve(&key, 5).unwrap();
+    env.sessions.set_running(&key, Some(1)).unwrap().since
 }
 
 #[test]
@@ -1033,10 +1035,11 @@ fn quiet_fires_once_per_quiet_stretch() {
 #[test]
 fn quiet_ignores_sessions_that_are_not_running() {
     let env = Env::new();
-    env.sessions.reserve(AGENT, P1, 5).unwrap(); // starting, not running
+    let key = SessionKey::new(P1, AGENT);
+    env.sessions.reserve(&key, 5).unwrap(); // starting, not running
     env.clock.set(u64::MAX / 2);
     assert!(env.store.check_quiet().is_empty());
-    env.sessions.release(AGENT);
+    env.sessions.release(&key);
     assert!(env.store.check_quiet().is_empty());
 }
 

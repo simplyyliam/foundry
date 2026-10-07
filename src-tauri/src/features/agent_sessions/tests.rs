@@ -10,6 +10,7 @@ use crate::core::process_tree::pid_alive;
 use crate::testing::{fake_agent_path, TestRepo};
 
 const PROJECT: &str = "project-1";
+const OTHER_PROJECT: &str = "project-2";
 
 // ---------- fixtures ----------
 
@@ -17,6 +18,8 @@ const PROJECT: &str = "project-1";
 struct Recorder {
     registry: Arc<SessionRegistry>,
     output: Mutex<Vec<Vec<u8>>>,
+    /// The same batches, with the project each event named.
+    output_in: Mutex<Vec<(String, Vec<u8>)>>,
     statuses: Mutex<Vec<AgentStatus>>,
     /// For each `exited` event: was the project still active when it was emitted?
     active_at_exit: Mutex<Vec<bool>>,
@@ -28,6 +31,10 @@ impl SessionEvents for Recorder {
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(event.chunk)
             .unwrap();
+        self.output_in
+            .lock()
+            .unwrap()
+            .push((event.project_id, bytes.clone()));
         self.output.lock().unwrap().push(bytes);
         self.changed.notify_all();
     }
@@ -53,6 +60,19 @@ impl Recorder {
         self.output.lock().unwrap().len()
     }
 
+    /// The output of one project's sessions.
+    fn text_in(&self, project_id: &str) -> String {
+        let bytes: Vec<u8> = self
+            .output_in
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(project, _)| project == project_id)
+            .flat_map(|(_, bytes)| bytes.clone())
+            .collect();
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+
     /// Waits until `ok` holds for the recorded output text.
     fn wait_text(&self, timeout: Duration, ok: impl Fn(&str) -> bool) -> String {
         let deadline = Instant::now() + timeout;
@@ -69,30 +89,39 @@ impl Recorder {
         }
     }
 
-    /// Waits for the agent's `exited` event and returns it.
+    /// Waits for the agent's `exited` event in [`PROJECT`] and returns it.
     fn wait_exited(&self, agent_id: &str, timeout: Duration) -> AgentStatus {
+        self.wait_exited_in(PROJECT, agent_id, timeout)
+    }
+
+    fn wait_exited_in(&self, project_id: &str, agent_id: &str, timeout: Duration) -> AgentStatus {
         let deadline = Instant::now() + timeout;
         let mut guard = self.statuses.lock().unwrap();
         loop {
-            if let Some(event) = guard
-                .iter()
-                .find(|e| e.agent_id == agent_id && e.status == SessionStatus::Exited)
-            {
+            if let Some(event) = guard.iter().find(|e| {
+                e.project_id == project_id
+                    && e.agent_id == agent_id
+                    && e.status == SessionStatus::Exited
+            }) {
                 return event.clone();
             }
             let left = deadline
                 .checked_duration_since(Instant::now())
-                .unwrap_or_else(|| panic!("{agent_id} never exited"));
+                .unwrap_or_else(|| panic!("{project_id}/{agent_id} never exited"));
             guard = self.changed.wait_timeout(guard, left).unwrap().0;
         }
     }
 
     fn statuses_of(&self, agent_id: &str) -> Vec<SessionStatus> {
+        self.statuses_in(PROJECT, agent_id)
+    }
+
+    fn statuses_in(&self, project_id: &str, agent_id: &str) -> Vec<SessionStatus> {
         self.statuses
             .lock()
             .unwrap()
             .iter()
-            .filter(|e| e.agent_id == agent_id)
+            .filter(|e| e.project_id == project_id && e.agent_id == agent_id)
             .map(|e| e.status)
             .collect()
     }
@@ -115,6 +144,7 @@ impl Env {
         let events = Arc::new(Recorder {
             registry: Arc::clone(&registry),
             output: Mutex::default(),
+            output_in: Mutex::default(),
             statuses: Mutex::default(),
             active_at_exit: Mutex::default(),
             changed: Condvar::new(),
@@ -136,9 +166,13 @@ impl Env {
     }
 
     fn spec(&self, agent_id: &str, args: &[&str]) -> LaunchSpec {
+        self.spec_in(PROJECT, agent_id, args)
+    }
+
+    fn spec_in(&self, project_id: &str, agent_id: &str, args: &[&str]) -> LaunchSpec {
         LaunchSpec {
             agent_id: agent_id.into(),
-            project_id: PROJECT.into(),
+            project_id: project_id.into(),
             program: fake_agent_path(),
             args: args.iter().map(|a| a.to_string()).collect(),
             cwd: self.repo.path().to_path_buf(),
@@ -146,6 +180,7 @@ impl Env {
                 port: 4567,
                 token: "tok-123".into(),
             },
+            slice_id: None,
             cols: 200,
             rows: 50,
         }
@@ -308,14 +343,19 @@ fn input_written_with_agent_write_reaches_the_process() {
     let env = Env::new(3);
     env.start("builder", &["--echo-upper"]);
 
-    env.manager.write("builder", b"hello foundry\r\n").unwrap();
+    env.manager
+        .write(PROJECT, "builder", b"hello foundry\r\n")
+        .unwrap();
 
     // Only the process itself turns the line into upper case.
     env.events
         .wait_text(LONG, |text| text.contains("got:HELLO FOUNDRY"));
-    env.manager.stop("builder", true).unwrap();
+    env.manager.stop(PROJECT, "builder", true).unwrap();
     assert_eq!(
-        env.manager.write("builder", b"x").unwrap_err().code,
+        env.manager
+            .write(PROJECT, "builder", b"x")
+            .unwrap_err()
+            .code,
         ErrorCode::NotFound,
         "writing after exit is refused"
     );
@@ -331,11 +371,11 @@ fn writes_after_an_exit_is_observed_are_always_refused() {
     for round in 0..20 {
         let agent = format!("stopped-{round}");
         env.start(&agent, &["--echo-upper"]);
-        env.manager.stop(&agent, true).unwrap();
+        env.manager.stop(PROJECT, &agent, true).unwrap();
         let err = env
             .manager
             .write(
-                &agent, b"late
+                PROJECT, &agent, b"late
 ",
             )
             .unwrap_err();
@@ -348,7 +388,7 @@ fn writes_after_an_exit_is_observed_are_always_refused() {
     assert_eq!(
         env.manager
             .write(
-                "quitter", b"late
+                PROJECT, "quitter", b"late
 "
             )
             .unwrap_err()
@@ -367,7 +407,7 @@ fn writes_racing_an_exit_only_succeed_or_report_not_found() {
         env.start(&agent, &["--sleep-ms", "50"]);
         let deadline = Instant::now() + LONG;
         loop {
-            match env.manager.write(&agent, b"x") {
+            match env.manager.write(PROJECT, &agent, b"x") {
                 Ok(()) => assert!(Instant::now() < deadline, "round {round}: never exited"),
                 Err(err) => {
                     assert_eq!(err.code, ErrorCode::NotFound, "round {round}: {err}");
@@ -386,13 +426,16 @@ fn writes_racing_an_exit_only_succeed_or_report_not_found() {
 fn agent_resize_changes_the_pty_size() {
     let env = Env::new(3);
     env.start("builder", &["--echo-upper"]);
-    assert_eq!(env.manager.size("builder").unwrap(), (200, 50));
+    assert_eq!(env.manager.size(PROJECT, "builder").unwrap(), (200, 50));
 
-    env.manager.resize("builder", 120, 40).unwrap();
+    env.manager.resize(PROJECT, "builder", 120, 40).unwrap();
 
-    assert_eq!(env.manager.size("builder").unwrap(), (120, 40));
+    assert_eq!(env.manager.size(PROJECT, "builder").unwrap(), (120, 40));
     assert_eq!(
-        env.manager.resize("builder", 0, 40).unwrap_err().code,
+        env.manager
+            .resize(PROJECT, "builder", 0, 40)
+            .unwrap_err()
+            .code,
         ErrorCode::InvalidInput
     );
 }
@@ -410,13 +453,13 @@ fn a_resized_terminal_reports_its_new_size_to_the_program() {
     }
     env.manager.start(spec).unwrap();
 
-    env.manager.resize("shell", 132, 43).unwrap();
+    env.manager.resize(PROJECT, "shell", 132, 43).unwrap();
     let probe: &[u8] = if cfg!(windows) {
         b"mode con\r\n"
     } else {
         b"stty size\n"
     };
-    env.manager.write("shell", probe).unwrap();
+    env.manager.write(PROJECT, "shell", probe).unwrap();
 
     if cfg!(windows) {
         env.events.wait_text(LONG, |text| {
@@ -426,7 +469,7 @@ fn a_resized_terminal_reports_its_new_size_to_the_program() {
     } else {
         env.events.wait_text(LONG, |text| text.contains("43 132"));
     }
-    env.manager.stop("shell", true).unwrap();
+    env.manager.stop(PROJECT, "shell", true).unwrap();
 }
 
 // ---------- R-7-5 ----------
@@ -445,7 +488,7 @@ fn agent_stop_ends_the_process_and_its_child() {
     );
     assert!(pid_alive(parent) && pid_alive(child));
 
-    env.manager.stop("builder", false).unwrap();
+    env.manager.stop(PROJECT, "builder", false).unwrap();
 
     assert!(!pid_alive(parent), "agent still running");
     assert!(
@@ -453,7 +496,7 @@ fn agent_stop_ends_the_process_and_its_child() {
         "child still running"
     );
     env.events.wait_exited("builder", LONG);
-    assert!(env.manager.list().is_empty());
+    assert!(env.manager.list(PROJECT).is_empty());
 }
 
 #[test]
@@ -470,7 +513,7 @@ fn force_stop_kills_the_whole_tree_at_once() {
     );
 
     let started = Instant::now();
-    env.manager.stop("builder", true).unwrap();
+    env.manager.stop(PROJECT, "builder", true).unwrap();
 
     assert!(
         started.elapsed() < STOP_GRACE,
@@ -501,7 +544,7 @@ fn stop_kills_after_the_grace_period_when_the_interrupt_is_ignored() {
         .wait_text(LONG, |text| text.contains("FOUNDRY-READY>"));
 
     let started = Instant::now();
-    env.manager.stop("shell", false).unwrap();
+    env.manager.stop(PROJECT, "shell", false).unwrap();
 
     let took = started.elapsed();
     assert!(
@@ -534,11 +577,16 @@ fn the_session_cap_is_enforced() {
         .start(env.spec("a", &["--sleep-ms", "60000"]))
         .unwrap_err();
     assert_eq!(again.code, ErrorCode::SessionRunning);
-    assert_eq!(env.manager.list().len(), 2);
+    assert_eq!(env.manager.list(PROJECT).len(), 2);
 
-    env.manager.stop("a", true).unwrap();
+    env.manager.stop(PROJECT, "a", true).unwrap();
     env.start("c", &["--sleep-ms", "60000"]);
-    let ids: Vec<String> = env.manager.list().into_iter().map(|s| s.agent_id).collect();
+    let ids: Vec<String> = env
+        .manager
+        .list(PROJECT)
+        .into_iter()
+        .map(|s| s.agent_id)
+        .collect();
     assert_eq!(ids, ["b", "c"]);
 }
 
@@ -556,7 +604,7 @@ fn the_ring_buffer_is_bounded_and_snapshot_returns_the_latest_bytes() {
         all.len()
     );
 
-    let snapshot = env.manager.snapshot("builder");
+    let snapshot = env.manager.snapshot(PROJECT, "builder");
 
     assert_eq!(snapshot.len(), RING_BYTES);
     assert_eq!(
@@ -565,7 +613,7 @@ fn the_ring_buffer_is_bounded_and_snapshot_returns_the_latest_bytes() {
         "exactly the newest bytes"
     );
     assert!(String::from_utf8_lossy(&snapshot).contains("burst-39999"));
-    assert!(env.manager.snapshot("never-ran").is_empty());
+    assert!(env.manager.snapshot(PROJECT, "never-ran").is_empty());
 }
 
 // ---------- R-7-8 ----------
@@ -667,22 +715,148 @@ fn start_validates_its_spec() {
         env.manager.start(tiny).unwrap_err().code,
         ErrorCode::InvalidInput
     );
-    assert!(env.manager.list().is_empty());
+    assert!(env.manager.list(PROJECT).is_empty());
+}
+
+// ---------- sessions are per (project, agent) ----------
+
+#[test]
+fn the_same_agent_id_in_two_projects_gets_two_sessions_and_stopping_one_leaves_the_other() {
+    let env = Env::new(3);
+    let one = env.start("builder", &["--echo-upper"]);
+    let two = env
+        .manager
+        .start(env.spec_in(OTHER_PROJECT, "builder", &["--echo-upper"]))
+        .unwrap();
+    assert_ne!(one.pid, two.pid);
+    assert_eq!(
+        (env.manager.list(PROJECT), env.manager.list(OTHER_PROJECT)),
+        (
+            vec![env.registry.list()[0].clone()],
+            vec![env.registry.list()[1].clone()]
+        ),
+        "each project lists only its own session"
+    );
+    assert_eq!(env.manager.list(OTHER_PROJECT)[0].project_id, OTHER_PROJECT);
+
+    // Input and output stay with their session, and the events say which project.
+    env.manager
+        .write(OTHER_PROJECT, "builder", b"second\r\n")
+        .unwrap();
+    assert!(wait_until(LONG, || env
+        .events
+        .text_in(OTHER_PROJECT)
+        .contains("got:SECOND")));
+    assert!(!env.events.text_in(PROJECT).contains("got:SECOND"));
+    assert!(
+        String::from_utf8_lossy(&env.manager.snapshot(OTHER_PROJECT, "builder"))
+            .contains("got:SECOND")
+    );
+    assert!(
+        !String::from_utf8_lossy(&env.manager.snapshot(PROJECT, "builder")).contains("got:SECOND")
+    );
+
+    env.manager.stop(PROJECT, "builder", true).unwrap();
+
+    env.events.wait_exited_in(PROJECT, "builder", LONG);
+    assert!(env.manager.list(PROJECT).is_empty());
+    assert_eq!(
+        env.manager.list(OTHER_PROJECT).len(),
+        1,
+        "the other one runs on"
+    );
+    assert!(pid_alive(two.pid.unwrap()));
+    assert_eq!(
+        env.manager
+            .write(PROJECT, "builder", b"x")
+            .unwrap_err()
+            .code,
+        ErrorCode::NotFound
+    );
+    env.manager
+        .write(OTHER_PROJECT, "builder", b"still\r\n")
+        .unwrap();
+    assert!(wait_until(LONG, || env
+        .events
+        .text_in(OTHER_PROJECT)
+        .contains("got:STILL")));
+    assert_eq!(
+        env.events.statuses_in(OTHER_PROJECT, "builder"),
+        [SessionStatus::Starting, SessionStatus::Running],
+        "no exit reported for the other project"
+    );
+
+    // One session per agent per project still holds.
+    assert_eq!(
+        env.manager
+            .start(env.spec_in(OTHER_PROJECT, "builder", &["--echo-upper"]))
+            .unwrap_err()
+            .code,
+        ErrorCode::SessionRunning
+    );
+    env.manager.stop(OTHER_PROJECT, "builder", true).unwrap();
+}
+
+/// The cap counts sessions in every project.
+#[test]
+fn the_session_cap_counts_every_project() {
+    let env = Env::new(2);
+    env.start("a", &["--sleep-ms", "60000"]);
+    env.manager
+        .start(env.spec_in(OTHER_PROJECT, "a", &["--sleep-ms", "60000"]))
+        .unwrap();
+    let refused = env
+        .manager
+        .start(env.spec_in(OTHER_PROJECT, "b", &["--sleep-ms", "60000"]))
+        .unwrap_err();
+    assert_eq!(refused.code, ErrorCode::TooManySessions);
 }
 
 // ---------- commands over IPC ----------
 
 #[test]
-fn commands_round_trip_over_ipc_and_agent_start_is_a_stub() {
+fn commands_round_trip_over_ipc() {
     use tauri::test::{mock_builder, mock_context, noop_assets, INVOKE_KEY};
     use tauri::{Manager, WebviewWindowBuilder};
 
     let env = Env::new(3);
-    env.start("builder", &["--echo-upper"]);
+    // A manager that can launch: this repo as PROJECT, fake-claude as `claude`.
+    let bin = TestRepo::new();
+    let claude = crate::testing::install_fake_claude(bin.path());
+    let repos = Arc::new(RepoIndex::default());
+    repos.replace_all([(PROJECT, env.repo.path())]);
+    let endpoint = Arc::new(HookEndpointCell::default());
+    endpoint.publish(crate::core::hook::HookEndpoint {
+        port: 4567,
+        token: "tok-ipc".into(),
+    });
+    let manager = Arc::new(
+        SessionManager::new(
+            Arc::clone(&env.registry),
+            || 3,
+            Arc::clone(&env.events) as Arc<dyn SessionEvents>,
+        )
+        .with_launcher(repos, endpoint, move || {
+            Ok(ClaudeLaunch {
+                program: claude.clone(),
+                model: None,
+            })
+        }),
+    );
+    env.repo.write(
+        "agents/roles.json",
+        r#"{"version":1,"agents":[{"id":"designer","displayName":"Dee","title":"Designer"}]}"#,
+    );
+    env.repo
+        .write(".foundry/prompts/handoff.md", "# Hand-off\n");
+    manager
+        .start(env.spec("builder", &["--echo-upper"]))
+        .unwrap();
+
     let app = crate::app_builder(mock_builder())
         .build(mock_context(noop_assets()))
         .unwrap();
-    app.manage(Arc::clone(&env.manager));
+    app.manage(Arc::clone(&manager));
     let webview = WebviewWindowBuilder::new(&app, "main", Default::default())
         .build()
         .unwrap();
@@ -707,57 +881,77 @@ fn commands_round_trip_over_ipc_and_agent_start_is_a_stub() {
         )
         .map(|body| body.deserialize::<serde_json::Value>().unwrap())
     };
+    let list = |project: &str| invoke("agent_list", serde_json::json!({ "projectId": project }));
 
-    let listed = invoke("agent_list", serde_json::json!({})).unwrap();
+    let listed = list(PROJECT).unwrap();
     assert_eq!(listed[0]["agentId"], "builder");
+    assert_eq!(listed[0]["projectId"], PROJECT);
     assert_eq!(listed[0]["status"], "running");
+    assert_eq!(list(OTHER_PROJECT).unwrap(), serde_json::json!([]));
 
     invoke(
         "agent_write",
-        serde_json::json!({ "agentId": "builder", "data": "ipc\r\n" }),
+        serde_json::json!({ "projectId": PROJECT, "agentId": "builder", "data": "ipc\r\n" }),
     )
     .unwrap();
     env.events.wait_text(LONG, |text| text.contains("got:IPC"));
     invoke(
         "agent_resize",
-        serde_json::json!({ "agentId": "builder", "cols": 90, "rows": 30 }),
+        serde_json::json!({ "projectId": PROJECT, "agentId": "builder", "cols": 90, "rows": 30 }),
     )
     .unwrap();
-    assert_eq!(env.manager.size("builder").unwrap(), (90, 30));
+    assert_eq!(manager.size(PROJECT, "builder").unwrap(), (90, 30));
     let snapshot = invoke(
         "agent_snapshot",
-        serde_json::json!({ "agentId": "builder" }),
+        serde_json::json!({ "projectId": PROJECT, "agentId": "builder" }),
     )
     .unwrap();
     let snapshot = base64::engine::general_purpose::STANDARD
         .decode(snapshot.as_str().unwrap())
         .unwrap();
     assert!(String::from_utf8_lossy(&snapshot).contains("got:IPC"));
-
-    let stub = invoke(
-        "agent_start",
-        serde_json::json!({ "agentId": "designer", "options": { "promptFile": null, "sliceId": null } }),
+    // The same agent id in another project is another session: nothing to write to.
+    let elsewhere = invoke(
+        "agent_write",
+        serde_json::json!({ "projectId": OTHER_PROJECT, "agentId": "builder", "data": "x" }),
     )
     .unwrap_err();
-    assert_eq!(stub["code"], "not_implemented");
-    assert!(
-        env.registry.get("designer").is_none(),
-        "the stub starts nothing"
-    );
+    assert_eq!(elsewhere["code"], "not_found");
 
-    invoke(
-        "agent_stop",
-        serde_json::json!({ "agentId": "builder", "options": { "force": true } }),
+    // agent_start: `sliceId` may be left out; the backend builds the message.
+    let refused = invoke(
+        "agent_start",
+        serde_json::json!({ "projectId": PROJECT, "agentId": "designer",
+                            "options": { "promptFile": "AGENTS.md" } }),
+    )
+    .unwrap_err();
+    assert_eq!(refused["code"], "invalid_input");
+    let started = invoke(
+        "agent_start",
+        serde_json::json!({ "projectId": PROJECT, "agentId": "designer",
+                            "options": { "promptFile": ".foundry/prompts/handoff.md",
+                                         "sliceId": "s-1" } }),
     )
     .unwrap();
-    assert_eq!(
-        invoke("agent_list", serde_json::json!({})).unwrap(),
-        serde_json::json!([])
-    );
+    assert_eq!(started["projectId"], PROJECT);
+    assert_eq!(started["agentId"], "designer");
+    assert_eq!(started["status"], "running");
+    env.events.wait_text(LONG, |text| text.contains("ready"));
+    assert_eq!(list(PROJECT).unwrap().as_array().unwrap().len(), 2);
+
+    for agent in ["builder", "designer"] {
+        invoke(
+            "agent_stop",
+            serde_json::json!({ "projectId": PROJECT, "agentId": agent, "options": { "force": true } }),
+        )
+        .unwrap();
+    }
+    assert_eq!(list(PROJECT).unwrap(), serde_json::json!([]));
     let missing = invoke(
         "agent_stop",
-        serde_json::json!({ "agentId": "nobody", "options": { "force": false } }),
+        serde_json::json!({ "projectId": PROJECT, "agentId": "nobody", "options": { "force": false } }),
     )
     .unwrap_err();
     assert_eq!(missing["code"], "not_found");
+    manager.shutdown();
 }

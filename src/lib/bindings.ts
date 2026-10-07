@@ -84,28 +84,27 @@ export const commands = {
 	bakeryMove: (projectId: string, id: string, x: Coord, y: Coord, w: number | null, h: number | null, z: number | null) => typedError<BakeryState, AppError>(__TAURI_INVOKE("bakery_move", { projectId, id, x, y, w, h, z })),
 	/**  Removes the card and deletes its image file (only ever inside `docs/bakery/`). */
 	bakeryRemove: (projectId: string, id: string) => typedError<BakeryState, AppError>(__TAURI_INVOKE("bakery_remove", { projectId, id })),
-	/**  Live agent sessions, ordered by agent id. (Idle agents join this once the roster exists.) */
-	agentList: () => typedError<SessionInfo[], AppError>(__TAURI_INVOKE("agent_list")),
+	/**  The project's live agent sessions, ordered by agent id. */
+	agentList: (projectId: string) => typedError<SessionInfo[], AppError>(__TAURI_INVOKE("agent_list", { projectId })),
 	/**
-	 *  Starts the agent's Claude Code session. Not available yet: it needs the roster and launch
-	 *  message (P6), the subscription preflight (P3) and the hook server (P8). Always returns
-	 *  `not_implemented` and starts nothing.
+	 *  Starts the agent's Claude Code session on a prompt file under `.foundry/prompts/`. The
+	 *  launch message is built by the backend from `agents/roles.json` and the prompt file.
 	 */
-	agentStart: (agentId: string, options: AgentStartOptions) => typedError<SessionInfo, AppError>(__TAURI_INVOKE("agent_start", { agentId, options })),
+	agentStart: (projectId: string, agentId: string, options: AgentStartOptions) => typedError<SessionInfo, AppError>(__TAURI_INVOKE("agent_start", { projectId, agentId, options })),
 	/**  Sends keystrokes or pasted text to a running session. */
-	agentWrite: (agentId: string, data: string) => typedError<null, AppError>(__TAURI_INVOKE("agent_write", { agentId, data })),
+	agentWrite: (projectId: string, agentId: string, data: string) => typedError<null, AppError>(__TAURI_INVOKE("agent_write", { projectId, agentId, data })),
 	/**  Resizes a running session's terminal. */
-	agentResize: (agentId: string, cols: number, rows: number) => typedError<null, AppError>(__TAURI_INVOKE("agent_resize", { agentId, cols, rows })),
+	agentResize: (projectId: string, agentId: string, cols: number, rows: number) => typedError<null, AppError>(__TAURI_INVOKE("agent_resize", { projectId, agentId, cols, rows })),
 	/**
 	 *  Stops a session: Ctrl+C, then after 5 s (at once with `force`) kills its whole process
 	 *  tree. Resolves once the process is gone.
 	 */
-	agentStop: (agentId: string, options: AgentStopOptions) => typedError<null, AppError>(__TAURI_INVOKE("agent_stop", { agentId, options })),
+	agentStop: (projectId: string, agentId: string, options: AgentStopOptions) => typedError<null, AppError>(__TAURI_INVOKE("agent_stop", { projectId, agentId, options })),
 	/**
 	 *  Base64 of the newest terminal output (≤ 256 KB), for a terminal view that remounts.
-	 *  Empty if the agent hasn't run.
+	 *  Empty if the agent hasn't run in this project.
 	 */
-	agentSnapshot: (agentId: string) => typedError<string, AppError>(__TAURI_INVOKE("agent_snapshot", { agentId })),
+	agentSnapshot: (projectId: string, agentId: string) => typedError<string, AppError>(__TAURI_INVOKE("agent_snapshot", { projectId, agentId })),
 	/**
 	 *  Generates the roadmap from `docs/brain-dump.md`, validates it (one retry), and saves it
 	 *  to `.foundry/roadmap.json`. Progress arrives as `roadmap:progress`.
@@ -308,18 +307,26 @@ export type AgentEventsQuery = {
 
 /**  `agent:output`: a coalesced batch of raw terminal output. */
 export type AgentOutput = {
+	projectId: string,
 	agentId: string,
 	/**  Base64 of the raw bytes (may split a UTF-8 sequence or an escape code). */
 	chunk: string,
 } & EventMeta;
 
+/**
+ *  `agent_start`'s options. The launch message is built from these; no free text from the
+ *  frontend reaches the process arguments.
+ */
 export type AgentStartOptions = {
-	promptFile: string | null,
-	sliceId: string | null,
+	/**  Repo-relative, an existing file directly in `.foundry/prompts/`. */
+	promptFile: string,
+	/**  Passed to the hook helper as `FOUNDRY_SLICE_ID`. */
+	sliceId?: string | null,
 };
 
 /**  `agent:status`: a session changed state. */
 export type AgentStatus = {
+	projectId: string,
 	agentId: string,
 	status: SessionStatus,
 	/**  Set with `exited` when the process reported one. */
@@ -522,8 +529,6 @@ export type ErrorCode =
 "session_running" | 
 /**  `maxConcurrentAgents` sessions are already running. */
 "too_many_sessions" | 
-/**  The command exists in the contract but its backend isn't built yet. */
-"not_implemented" | 
 /**  No `claude` executable on PATH or at `claudePath`. */
 "claude_not_found" | 
 /**  Claude Code isn't signed in. */

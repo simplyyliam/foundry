@@ -38,8 +38,6 @@ pub enum ErrorCode {
     SessionRunning,
     /// `maxConcurrentAgents` sessions are already running.
     TooManySessions,
-    /// The command exists in the contract but its backend isn't built yet.
-    NotImplemented,
     /// No `claude` executable on PATH or at `claudePath`.
     ClaudeNotFound,
     /// Claude Code isn't signed in.
@@ -117,7 +115,6 @@ impl ErrorCode {
             Self::FileTooLarge => "file_too_large",
             Self::SessionRunning => "session_running",
             Self::TooManySessions => "too_many_sessions",
-            Self::NotImplemented => "not_implemented",
             Self::ClaudeNotFound => "claude_not_found",
             Self::NotSignedIn => "not_signed_in",
             Self::WrongAuthMode => "wrong_auth_mode",
@@ -235,7 +232,6 @@ mod tests {
             ErrorCode::FileTooLarge,
             ErrorCode::SessionRunning,
             ErrorCode::TooManySessions,
-            ErrorCode::NotImplemented,
             ErrorCode::ClaudeNotFound,
             ErrorCode::NotSignedIn,
             ErrorCode::WrongAuthMode,

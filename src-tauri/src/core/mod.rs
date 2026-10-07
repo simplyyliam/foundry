@@ -10,6 +10,7 @@ pub mod hook;
 pub mod hook_policy;
 pub mod ids;
 pub mod image;
+pub mod launch_message;
 pub mod llm;
 pub mod paths;
 pub mod process_tree;

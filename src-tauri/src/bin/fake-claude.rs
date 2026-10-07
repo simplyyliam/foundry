@@ -17,7 +17,8 @@
 //!                                           `pids.txt` next to this exe, then sleep 60 s
 //!                               otherwise   `reply.txt` from this exe's folder, else "ok"
 //!   --sleep-child             sleep 60 s (the FAKE:SLEEP child)
-//!   [--model <m>] <message>   interactive mode, like `claude "<message>"`:
+//!   [--model <m>] <message>   interactive mode, like `claude "<message>"`. The message
+//!                             containing:
 //!                               FAKE:ENV    write the environment to `env.json` next to
 //!                                           this exe (exact; terminal output isn't), exit
 //!                               FAKE:ARGS   write the arguments to `args.json`, exit
@@ -152,11 +153,11 @@ fn interactive(args: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    if message == "FAKE:ENV" {
+    if message.contains("FAKE:ENV") {
         let vars: std::collections::BTreeMap<String, String> = std::env::vars().collect();
         let _ = std::fs::write(here().join("env.json"), serde_json::json!(vars).to_string());
         println!("done");
-    } else if message == "FAKE:ARGS" {
+    } else if message.contains("FAKE:ARGS") {
         let _ = std::fs::write(
             here().join("args.json"),
             serde_json::json!(args).to_string(),

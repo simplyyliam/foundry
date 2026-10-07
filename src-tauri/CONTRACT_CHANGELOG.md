@@ -332,3 +332,36 @@ Not in the Tauri contract:
 - **The helper's POST.** It goes to `127.0.0.1:FOUNDRY_HOOK_PORT/events` in P8a's body shape, with `sliceId` from `FOUNDRY_SLICE_ID` and `decision: { blocked, rule }` on judged `PreToolUse` calls. It needs `FOUNDRY_PROJECT_ID`, `FOUNDRY_HOOK_PORT` and `FOUNDRY_HOOK_TOKEN`. File contents, diffs and command output are dropped from `tool_input`/`tool_response` first, and an over-cap body falls back to the fields the classifier reads. Connect, send and the first bytes of the answer must all fit in 500 ms, and the answer is ignored.
 - **`core::repo_write::merge_json`.** The only writer for merge-only files. A missing file reads as `{}`. Invalid JSON or a non-object → `invalid_json`, untouched. A merge that changes nothing writes nothing. A UTF-8 BOM is kept. Keys come out sorted: serde_json's `preserve_order` isn't enabled.
 - **Sidecar.** `tauri.bundle.conf.json` adds `bundle.externalBin: ["binaries/foundry-hook"]`, and its `beforeBuildCommand` runs `scripts/stage-foundry-hook.mjs`, which builds and copies the helper to `binaries/foundry-hook-<triple>(.exe)` (git-ignored). Bundle with `tauri build --config src-tauri/tauri.bundle.conf.json`. In dev, `beforeDevCommand` builds `foundry-hook` first. Either way the app finds it next to its own executable (`core::hook::helper_path`).
+
+## agent_start wired; sessions keyed by project (decided by the human)
+
+**Breaking**, approved by the human: no UI used these commands yet. A session is identified by `(projectId, agentId)`, because agent ids are slugs of display names and two projects can have the same one.
+
+| Kind | Name | Before → After | Why |
+| --- | --- | --- | --- |
+| command | `agent_list` | `agentList(): SessionInfo[]` (every session) → `agentList(projectId): SessionInfo[]` | That project's live sessions, ordered by agent id. |
+| command | `agent_start` | `agentStart(agentId, options): SessionInfo`, always `not_implemented` → `agentStart(projectId, agentId, options): SessionInfo` | Real launch (below). |
+| command | `agent_write` | `agentWrite(agentId, data)` → `agentWrite(projectId, agentId, data)` | `not_found` unless that agent has a running session in that project. |
+| command | `agent_resize` | `agentResize(agentId, cols, rows)` → `agentResize(projectId, agentId, cols, rows)` | |
+| command | `agent_stop` | `agentStop(agentId, options)` → `agentStop(projectId, agentId, options)` | Stopping one project's session leaves the same agent id in another project running. |
+| command | `agent_snapshot` | `agentSnapshot(agentId)` → `agentSnapshot(projectId, agentId)` | Empty if the agent hasn't run in that project. |
+| event | `agent:output` | `{ id, ts, agentId, chunk }` → `{ id, ts, projectId, agentId, chunk }` | |
+| event | `agent:status` | `{ id, ts, agentId, status, exitCode, pid, since }` → `{ id, ts, projectId, agentId, status, exitCode, pid, since }` | |
+| type | `AgentStartOptions` | `{ promptFile: string \| null, sliceId: string \| null }` → `{ promptFile: string, sliceId?: string \| null }` | A prompt file is required; `sliceId` may be left out. |
+| type | `ErrorCode` | removes `"not_implemented"` | Only the `agent_start` stub returned it. |
+
+Unchanged: `SessionInfo` already carried `projectId`. The cap (`maxConcurrentAgents`) still counts sessions in every project; one session per agent now means per agent per project (`session_running`).
+
+`agent_start(projectId, agentId, { promptFile, sliceId? })`, in order, nothing spawned unless all pass:
+
+1. The project's repo: `not_found`, `folder_missing`.
+2. A confirmed team (`agents/roles.json` exists): `team_not_confirmed`. The agent is in it: `not_found`.
+3. `promptFile` is an existing file directly in `.foundry/prompts/`, resolved through `core::paths` (`./` and `\` accepted; a link out of the folder doesn't count): `invalid_input` otherwise, missing included. Same rule as `launch_message`.
+4. `sliceId`, when given, is 1–200 characters on one line: `invalid_input`.
+5. The launch message is built by the backend, never taken from the frontend: `You are {displayName}, {title}. Read agents/roles/{agentId}.md, then {promptFile} and follow it.`, one line, no control characters, at most 500 characters (`invalid_input`).
+6. The hook server's port and token from `core::hook::HookEndpointCell`: `internal` if the server isn't running.
+7. `SessionManager::launch` as before: preflight with `claudePath` (`claude_not_found` / `not_signed_in` / `wrong_auth_mode`), `claude_needs_native` for a `.cmd`/`.bat` shim, `project_archived` (atomic with the reservation), then `session_running` / `too_many_sessions`. Runs `claude [--model <defaultModel>] "<message>"`.
+
+Slice dependencies aren't re-checked: `generate_task_prompt` gates them. The terminal opens at 120×30; the view sends its size with `agent_resize`. The environment is unchanged except that `FOUNDRY_SLICE_ID=<sliceId>` is added only when a slice is given; an inherited `FOUNDRY_SLICE_ID` is always dropped.
+
+Internal: the launch-message builder and its checks moved from the prompts feature to `core::launch_message` (`roster`, `find_agent`, `prompt_file`, `build`). `launch_message` calls it, with the same output and errors. `core::sessions::SessionRegistry` is keyed by `SessionKey { projectId, agentId }` and gains `list_project`. `SessionManager::with_launcher` takes the `Arc<HookEndpointCell>`. fake-claude's interactive mode acts on `FAKE:ENV` / `FAKE:ARGS` anywhere in the message.

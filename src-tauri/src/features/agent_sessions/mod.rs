@@ -1,12 +1,15 @@
 //! Live agent sessions in pseudo-terminals (ConPTY on Windows).
 //!
-//! The engine runs whatever [`LaunchSpec`] it's given. Building the real `claude` spec needs
-//! the roster and launch message (P6), the subscription preflight (P3) and the hook server
-//! (P8); until those exist, `agent_start` is a stub and the engine is driven by tests.
+//! The engine runs whatever [`LaunchSpec`] it's given. [`SessionManager::start_agent`]
+//! builds the real one: the agent from `agents/roles.json`, the launch message from
+//! `core::launch_message`, the hook server's port and token from `core::hook`, then
+//! [`SessionManager::launch`] with its preflight.
 //!
-//! Live state goes through `core::sessions`, so other features can ask whether a project has
-//! a running session. Raw terminal output is never written to disk (it can hold secrets):
-//! it lives only in each session's in-memory ring buffer.
+//! A session is identified by (project id, agent id): agent ids are slugs of display names,
+//! so two projects can share one. Live state goes through `core::sessions`, so other
+//! features can ask whether a project has a running session. Raw terminal output is never
+//! written to disk (it can hold secrets): it lives only in each session's in-memory ring
+//! buffer.
 
 pub mod commands;
 mod ring;
@@ -27,9 +30,11 @@ use specta::Type;
 use tauri_specta::Event;
 
 use crate::core::events::EventMeta;
+use crate::core::hook::HookEndpointCell;
+use crate::core::launch_message;
 use crate::core::process_tree::ProcessTree;
 use crate::core::repos::RepoIndex;
-use crate::core::sessions::{now_ms, SessionInfo, SessionRegistry, SessionStatus};
+use crate::core::sessions::{now_ms, SessionInfo, SessionKey, SessionRegistry, SessionStatus};
 use crate::core::subscription::subscription_env;
 use crate::core::{AppError, ErrorCode};
 use ring::Ring;
@@ -45,6 +50,12 @@ pub const STOP_GRACE: Duration = Duration::from_secs(5);
 /// How long to wait for the process to be gone after killing its tree.
 const KILL_WAIT: Duration = Duration::from_secs(3);
 const READ_CHUNK: usize = 8 * 1024;
+/// The terminal size `agent_start` opens with; the view sends its real size with
+/// `agent_resize` once it mounts.
+pub const START_COLS: u16 = 120;
+pub const START_ROWS: u16 = 30;
+/// A `sliceId` passed to `agent_start` is at most this many characters.
+const MAX_SLICE_ID_CHARS: usize = 200;
 /// Ctrl+C, written to the terminal's input.
 const INTERRUPT: &[u8] = b"\x03";
 /// "Where is the cursor?" (DSR). ConPTY sends it once at startup and blocks the program until
@@ -70,8 +81,16 @@ pub struct LaunchSpec {
     /// The linked repo.
     pub cwd: PathBuf,
     pub hook: HookEnv,
+    /// Becomes `FOUNDRY_SLICE_ID` when set.
+    pub slice_id: Option<String>,
     pub cols: u16,
     pub rows: u16,
+}
+
+impl LaunchSpec {
+    fn key(&self) -> SessionKey {
+        SessionKey::new(&self.project_id, &self.agent_id)
+    }
 }
 
 /// The `claude` to launch, from the preflight: the executable and the `defaultModel`.
@@ -87,17 +106,32 @@ pub struct ClaudeLaunch {
 pub struct LaunchRequest {
     pub project_id: String,
     pub agent_id: String,
-    /// The initial prompt (P6's `launch_message`).
+    /// The initial prompt (`core::launch_message`).
     pub launch_message: String,
     pub hook: HookEnv,
+    /// Becomes `FOUNDRY_SLICE_ID` when set.
+    pub slice_id: Option<String>,
     pub cols: u16,
     pub rows: u16,
 }
 
-/// What `launch` needs beyond the engine: where repos are (and which are archived), and the
-/// preflight that finds `claude` and checks the subscription login.
+/// `agent_start`'s options. The launch message is built from these; no free text from the
+/// frontend reaches the process arguments.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentStartOptions {
+    /// Repo-relative, an existing file directly in `.foundry/prompts/`.
+    pub prompt_file: String,
+    /// Passed to the hook helper as `FOUNDRY_SLICE_ID`.
+    #[serde(default)]
+    pub slice_id: Option<String>,
+}
+
+/// What `launch` needs beyond the engine: where repos are (and which are archived), where
+/// the hook server listens, and the preflight that finds `claude` and checks the login.
 struct Launcher {
     repos: Arc<RepoIndex>,
+    endpoint: Arc<HookEndpointCell>,
     preflight: Box<dyn Fn() -> Result<ClaudeLaunch, AppError> + Send + Sync>,
 }
 
@@ -108,16 +142,18 @@ struct Launcher {
 pub struct AgentOutput {
     #[serde(flatten)]
     pub meta: EventMeta,
+    pub project_id: String,
     pub agent_id: String,
     /// Base64 of the raw bytes (may split a UTF-8 sequence or an escape code).
     pub chunk: String,
 }
 
 impl AgentOutput {
-    pub fn new(agent_id: &str, bytes: &[u8]) -> Self {
+    pub fn new(key: &SessionKey, bytes: &[u8]) -> Self {
         Self {
             meta: EventMeta::new(),
-            agent_id: agent_id.to_string(),
+            project_id: key.project_id.clone(),
+            agent_id: key.agent_id.clone(),
             chunk: base64::engine::general_purpose::STANDARD.encode(bytes),
         }
     }
@@ -130,6 +166,7 @@ impl AgentOutput {
 pub struct AgentStatus {
     #[serde(flatten)]
     pub meta: EventMeta,
+    pub project_id: String,
     pub agent_id: String,
     pub status: SessionStatus,
     /// Set with `exited` when the process reported one.
@@ -143,14 +180,15 @@ pub struct AgentStatus {
 
 impl AgentStatus {
     fn new(
-        agent_id: &str,
+        key: &SessionKey,
         status: SessionStatus,
         exit_code: Option<u32>,
         pid: Option<u32>,
     ) -> Self {
         Self {
             meta: EventMeta::new(),
-            agent_id: agent_id.to_string(),
+            project_id: key.project_id.clone(),
+            agent_id: key.agent_id.clone(),
             status,
             exit_code,
             pid,
@@ -165,16 +203,31 @@ pub trait SessionEvents: Send + Sync + 'static {
     fn status(&self, event: AgentStatus);
 }
 
-/// What every session adds on top of [`subscription_env`]: the four `FOUNDRY_*` variables
-/// and `TERM`.
-fn session_vars(spec: &LaunchSpec) -> [(&'static str, String); 5] {
-    [
+/// Every variable a session may set. Inherited ones of these names are always dropped, even
+/// when this session doesn't set it (no stale `FOUNDRY_SLICE_ID` from a parent).
+const SESSION_VARS: [&str; 6] = [
+    "FOUNDRY_AGENT_ID",
+    "FOUNDRY_PROJECT_ID",
+    "FOUNDRY_HOOK_PORT",
+    "FOUNDRY_HOOK_TOKEN",
+    "FOUNDRY_SLICE_ID",
+    "TERM",
+];
+
+/// What every session adds on top of [`subscription_env`]: four `FOUNDRY_*` variables and
+/// `TERM`, plus `FOUNDRY_SLICE_ID` when the session is for a slice.
+fn session_vars(spec: &LaunchSpec) -> Vec<(&'static str, String)> {
+    let mut vars = vec![
         ("FOUNDRY_AGENT_ID", spec.agent_id.clone()),
         ("FOUNDRY_PROJECT_ID", spec.project_id.clone()),
         ("FOUNDRY_HOOK_PORT", spec.hook.port.to_string()),
         ("FOUNDRY_HOOK_TOKEN", spec.hook.token.clone()),
         ("TERM", "xterm-256color".to_string()),
-    ]
+    ];
+    if let Some(slice_id) = &spec.slice_id {
+        vars.push(("FOUNDRY_SLICE_ID", slice_id.clone()));
+    }
+    vars
 }
 
 /// `subscription_env()` plus the session's variables. An inherited variable of the same name
@@ -183,7 +236,11 @@ fn child_env(spec: &LaunchSpec) -> Vec<(OsString, OsString)> {
     let ours = session_vars(spec);
     let mut env: Vec<(OsString, OsString)> = subscription_env()
         .into_iter()
-        .filter(|(key, _)| !ours.iter().any(|(name, _)| key.eq_ignore_ascii_case(name)))
+        .filter(|(key, _)| {
+            !SESSION_VARS
+                .iter()
+                .any(|name| key.eq_ignore_ascii_case(name))
+        })
         .collect();
     env.extend(
         ours.into_iter()
@@ -264,8 +321,11 @@ struct Live {
 }
 
 impl Live {
-    fn not_running(agent_id: &str) -> AppError {
-        AppError::not_found(format!("agent {agent_id} has no running session"))
+    fn not_running(key: &SessionKey) -> AppError {
+        AppError::not_found(format!(
+            "agent {} has no running session in project {}",
+            key.agent_id, key.project_id
+        ))
     }
 }
 
@@ -275,7 +335,7 @@ pub struct SessionManager {
     max_sessions: Box<dyn Fn() -> u32 + Send + Sync>,
     events: Arc<dyn SessionEvents>,
     /// Running sessions, and exited ones until the agent starts again (for snapshots).
-    live: Mutex<HashMap<String, Arc<Live>>>,
+    live: Mutex<HashMap<SessionKey, Arc<Live>>>,
     launcher: Option<Launcher>,
     /// Tests only: hold the exit thread just after it marks the exit, widening the window
     /// in which a closed writer matters.
@@ -301,18 +361,79 @@ impl SessionManager {
         }
     }
 
-    /// Enables [`launch`](Self::launch): `repos` resolves projects (and which are archived),
-    /// `preflight` finds `claude` and checks the login (`core::claude::preflight`).
+    /// Enables [`launch`](Self::launch) and [`start_agent`](Self::start_agent): `repos`
+    /// resolves projects (and which are archived), `endpoint` is where the hook server
+    /// listens, `preflight` finds `claude` and checks the login (`core::claude::preflight`).
     pub fn with_launcher(
         mut self,
         repos: Arc<RepoIndex>,
+        endpoint: Arc<HookEndpointCell>,
         preflight: impl Fn() -> Result<ClaudeLaunch, AppError> + Send + Sync + 'static,
     ) -> Self {
         self.launcher = Some(Launcher {
             repos,
+            endpoint,
             preflight: Box::new(preflight),
         });
         self
+    }
+
+    fn launcher(&self) -> Result<&Launcher, AppError> {
+        self.launcher
+            .as_ref()
+            .ok_or_else(|| AppError::internal("agent launching isn't configured"))
+    }
+
+    /// `agent_start`: launches the agent's Claude Code session on a prompt file.
+    ///
+    /// In order: the repo (`not_found`, `folder_missing`); a confirmed team
+    /// (`team_not_confirmed`) with this agent in `agents/roles.json` (`not_found`); the
+    /// prompt file, an existing file directly in `.foundry/prompts/` (`invalid_input`); the
+    /// slice id, one line (`invalid_input`); the launch message, built here
+    /// (`core::launch_message`, `invalid_input`); the hook server's endpoint (`internal` when
+    /// it isn't running); then [`launch`](Self::launch), with its preflight, shim refusal,
+    /// archived check and cap. Slice dependencies aren't checked again: prompt generation
+    /// gates them.
+    pub fn start_agent(
+        &self,
+        project_id: &str,
+        agent_id: &str,
+        options: AgentStartOptions,
+    ) -> Result<SessionInfo, AppError> {
+        let launcher = self.launcher()?;
+        let repo = launcher.repos.repo(project_id)?;
+        let agent = launch_message::find_agent(&repo, agent_id)?;
+        let prompt = launch_message::prompt_file(&repo, &options.prompt_file)?;
+        if let Some(slice_id) = &options.slice_id {
+            let one_line = !slice_id.trim().is_empty()
+                && !slice_id.chars().any(char::is_control)
+                && slice_id.chars().count() <= MAX_SLICE_ID_CHARS;
+            if !one_line {
+                return Err(AppError::invalid_input(format!(
+                    "the slice id must be one line of 1 to {MAX_SLICE_ID_CHARS} characters"
+                )));
+            }
+        }
+        let message = launch_message::build(&agent, &prompt)?;
+        let endpoint = launcher.endpoint.get().ok_or_else(|| {
+            AppError::internal(
+                "the hook server isn't running, so the agent's actions couldn't be recorded; \
+                 restart Foundry",
+            )
+        })?;
+        tracing::info!(project_id, agent_id, prompt_file = %prompt.rel, slice_id = ?options.slice_id, "starting agent");
+        self.launch(LaunchRequest {
+            project_id: project_id.to_string(),
+            agent_id: agent.id,
+            launch_message: message,
+            hook: HookEnv {
+                port: endpoint.port,
+                token: endpoint.token,
+            },
+            slice_id: options.slice_id,
+            cols: START_COLS,
+            rows: START_ROWS,
+        })
     }
 
     /// Launches an agent's interactive Claude Code session in the project's repo.
@@ -325,10 +446,7 @@ impl SessionManager {
     /// project can never be archived and get a new session at once. Nothing is spawned
     /// unless every check passes.
     pub fn launch(&self, request: LaunchRequest) -> Result<SessionInfo, AppError> {
-        let launcher = self
-            .launcher
-            .as_ref()
-            .ok_or_else(|| AppError::internal("agent launching isn't configured"))?;
+        let launcher = self.launcher()?;
         let claude = (launcher.preflight)()?;
         let cwd = launcher.repos.repo(&request.project_id)?;
         require_native(&claude.program)?;
@@ -344,6 +462,7 @@ impl SessionManager {
             args,
             cwd,
             hook: request.hook,
+            slice_id: request.slice_id,
             cols: request.cols,
             rows: request.rows,
         };
@@ -366,13 +485,16 @@ impl SessionManager {
         self
     }
 
-    fn live(&self, agent_id: &str) -> Option<Arc<Live>> {
-        lock(&self.live).get(agent_id).cloned()
+    fn live(&self, key: &SessionKey) -> Result<Arc<Live>, AppError> {
+        lock(&self.live)
+            .get(key)
+            .cloned()
+            .ok_or_else(|| Live::not_running(key))
     }
 
-    /// Live sessions, ordered by agent id.
-    pub fn list(&self) -> Vec<SessionInfo> {
-        self.registry.list()
+    /// One project's live sessions, ordered by agent id.
+    pub fn list(&self, project_id: &str) -> Vec<SessionInfo> {
+        self.registry.list_project(project_id)
     }
 
     /// Spawns the session. `session_running` if this agent already runs, `too_many_sessions`
@@ -404,35 +526,24 @@ impl SessionManager {
                 format!("project folder is missing: {}", spec.cwd.display()),
             ));
         }
-        self.registry.reserve_if(
-            &spec.agent_id,
-            &spec.project_id,
-            (self.max_sessions)(),
-            allowed,
-        )?;
-        self.events.status(AgentStatus::new(
-            &spec.agent_id,
-            SessionStatus::Starting,
-            None,
-            None,
-        ));
-        match self.spawn(&spec) {
+        let key = spec.key();
+        self.registry
+            .reserve_if(&key, (self.max_sessions)(), allowed)?;
+        self.events
+            .status(AgentStatus::new(&key, SessionStatus::Starting, None, None));
+        match self.spawn(&spec, &key) {
             Ok(info) => Ok(info),
             Err(err) => {
-                self.registry.release(&spec.agent_id);
-                self.events.status(AgentStatus::new(
-                    &spec.agent_id,
-                    SessionStatus::Exited,
-                    None,
-                    None,
-                ));
-                tracing::warn!(agent_id = %spec.agent_id, error = %err, "agent session failed to start");
+                self.registry.release(&key);
+                self.events
+                    .status(AgentStatus::new(&key, SessionStatus::Exited, None, None));
+                tracing::warn!(agent_id = %key.agent_id, project_id = %key.project_id, error = %err, "agent session failed to start");
                 Err(err)
             }
         }
     }
 
-    fn spawn(&self, spec: &LaunchSpec) -> Result<SessionInfo, AppError> {
+    fn spawn(&self, spec: &LaunchSpec, key: &SessionKey) -> Result<SessionInfo, AppError> {
         let pair = native_pty_system()
             .openpty(PtySize {
                 rows: spec.rows,
@@ -445,8 +556,8 @@ impl SessionManager {
         cmd.args(&spec.args);
         cmd.cwd(&spec.cwd);
         cmd.env_clear();
-        for (key, value) in child_env(spec) {
-            cmd.env(key, value);
+        for (name, value) in child_env(spec) {
+            cmd.env(name, value);
         }
         let mut child = pair.slave.spawn_command(cmd).map_err(|e| {
             AppError::new(
@@ -483,23 +594,19 @@ impl SessionManager {
             tree,
             exit: Exit::default(),
         });
-        lock(&self.live).insert(spec.agent_id.clone(), Arc::clone(&live));
+        lock(&self.live).insert(key.clone(), Arc::clone(&live));
 
         let info = self
             .registry
-            .set_running(&spec.agent_id, pid)
+            .set_running(key, pid)
             .ok_or_else(|| AppError::internal("session vanished while starting"))?;
-        self.events.status(AgentStatus::new(
-            &spec.agent_id,
-            SessionStatus::Running,
-            None,
-            pid,
-        ));
-        tracing::info!(agent_id = %spec.agent_id, project_id = %spec.project_id, ?pid, "agent session started");
+        self.events
+            .status(AgentStatus::new(key, SessionStatus::Running, None, pid));
+        tracing::info!(agent_id = %key.agent_id, project_id = %key.project_id, ?pid, "agent session started");
 
         // Reader → coalescer → ring + events. A dedicated thread per stage: reads block.
         let (tx, rx) = mpsc::channel::<Vec<u8>>();
-        let agent = spec.agent_id.clone();
+        let agent = key.agent_id.clone();
         let replier = Arc::clone(&live);
         spawn_named(format!("pty-read-{agent}"), move || {
             read_pty(reader, &tx, |reply| {
@@ -508,25 +615,26 @@ impl SessionManager {
                 }
             });
         })?;
-        let (events, ring_owner) = (Arc::clone(&self.events), Arc::clone(&live));
+        let (events, ring_owner, batch_key) =
+            (Arc::clone(&self.events), Arc::clone(&live), key.clone());
         let coalescer = spawn_named(format!("pty-batch-{agent}"), move || {
             coalesce(&rx, BATCH, |batch| {
                 lock(&ring_owner.ring).push(batch);
-                events.output(AgentOutput::new(&agent, batch));
+                events.output(AgentOutput::new(&batch_key, batch));
             });
         })?;
 
-        let (registry, events, agent) = (
+        let (registry, events, exit_key) = (
             Arc::clone(&self.registry),
             Arc::clone(&self.events),
-            spec.agent_id.clone(),
+            key.clone(),
         );
         #[cfg(test)]
         let exit_pause = self.exit_pause;
         spawn_named(format!("pty-wait-{agent}"), move || {
             let code = child.wait().ok().map(|status| status.exit_code());
             // First, so `is_project_active` turns false the instant the process is gone.
-            registry.release(&agent);
+            registry.release(&exit_key);
             // Before marking the exit, so a write after `stop` returns is always refused.
             lock(&live.writer).take();
             live.exit.set(code);
@@ -535,35 +643,44 @@ impl SessionManager {
             // Closing the terminal ends the reader (ConPTY gives no EOF while it's open).
             lock(&live.master).take();
             let _ = coalescer.join();
-            events.status(AgentStatus::new(&agent, SessionStatus::Exited, code, None));
-            tracing::info!(agent_id = %agent, ?code, "agent session exited");
+            events.status(AgentStatus::new(
+                &exit_key,
+                SessionStatus::Exited,
+                code,
+                None,
+            ));
+            tracing::info!(agent_id = %exit_key.agent_id, project_id = %exit_key.project_id, ?code, "agent session exited");
         })?;
         Ok(info)
     }
 
     /// Sends keystrokes (or pasted text) to the session.
-    pub fn write(&self, agent_id: &str, data: &[u8]) -> Result<(), AppError> {
-        let live = self
-            .live(agent_id)
-            .ok_or_else(|| Live::not_running(agent_id))?;
+    pub fn write(&self, project_id: &str, agent_id: &str, data: &[u8]) -> Result<(), AppError> {
+        let key = SessionKey::new(project_id, agent_id);
+        let live = self.live(&key)?;
         let mut writer = lock(&live.writer);
-        let writer = writer.as_mut().ok_or_else(|| Live::not_running(agent_id))?;
+        let writer = writer.as_mut().ok_or_else(|| Live::not_running(&key))?;
         writer.write_all(data)?;
         writer.flush()?;
         Ok(())
     }
 
-    pub fn resize(&self, agent_id: &str, cols: u16, rows: u16) -> Result<(), AppError> {
+    pub fn resize(
+        &self,
+        project_id: &str,
+        agent_id: &str,
+        cols: u16,
+        rows: u16,
+    ) -> Result<(), AppError> {
         if cols == 0 || rows == 0 {
             return Err(AppError::invalid_input(
                 "terminal size must be at least 1×1",
             ));
         }
-        let live = self
-            .live(agent_id)
-            .ok_or_else(|| Live::not_running(agent_id))?;
+        let key = SessionKey::new(project_id, agent_id);
+        let live = self.live(&key)?;
         let master = lock(&live.master);
-        let master = master.as_ref().ok_or_else(|| Live::not_running(agent_id))?;
+        let master = master.as_ref().ok_or_else(|| Live::not_running(&key))?;
         master
             .resize(PtySize {
                 rows,
@@ -575,12 +692,11 @@ impl SessionManager {
     }
 
     /// The terminal's current size, as `(cols, rows)`.
-    pub fn size(&self, agent_id: &str) -> Result<(u16, u16), AppError> {
-        let live = self
-            .live(agent_id)
-            .ok_or_else(|| Live::not_running(agent_id))?;
+    pub fn size(&self, project_id: &str, agent_id: &str) -> Result<(u16, u16), AppError> {
+        let key = SessionKey::new(project_id, agent_id);
+        let live = self.live(&key)?;
         let master = lock(&live.master);
-        let master = master.as_ref().ok_or_else(|| Live::not_running(agent_id))?;
+        let master = master.as_ref().ok_or_else(|| Live::not_running(&key))?;
         let size = master
             .get_size()
             .map_err(|e| pty_error("could not read the terminal size", e))?;
@@ -590,25 +706,23 @@ impl SessionManager {
     /// Stops the session: Ctrl+C, then after [`STOP_GRACE`] (or at once with `force`) kills
     /// the whole process tree. Returns once the process is gone. Stopping an agent that
     /// already exited is fine.
-    pub fn stop(&self, agent_id: &str, force: bool) -> Result<(), AppError> {
-        let live = self
-            .live(agent_id)
-            .ok_or_else(|| Live::not_running(agent_id))?;
+    pub fn stop(&self, project_id: &str, agent_id: &str, force: bool) -> Result<(), AppError> {
+        let live = self.live(&SessionKey::new(project_id, agent_id))?;
         if live.exit.done() {
             return Ok(());
         }
         if !force {
-            if let Err(err) = self.write(agent_id, INTERRUPT) {
-                tracing::warn!(agent_id, error = %err, "could not interrupt agent");
+            if let Err(err) = self.write(project_id, agent_id, INTERRUPT) {
+                tracing::warn!(project_id, agent_id, error = %err, "could not interrupt agent");
             }
             if live.exit.wait(STOP_GRACE) {
-                tracing::info!(agent_id, "agent stopped by interrupt");
+                tracing::info!(project_id, agent_id, "agent stopped by interrupt");
                 return Ok(());
             }
         }
         live.tree.kill()?;
         if live.exit.wait(KILL_WAIT) {
-            tracing::info!(agent_id, force, "agent process tree killed");
+            tracing::info!(project_id, agent_id, force, "agent process tree killed");
             Ok(())
         } else {
             Err(AppError::internal(format!(
@@ -618,29 +732,29 @@ impl SessionManager {
     }
 
     /// The newest output (at most [`RING_BYTES`]), for a terminal that remounts. Empty if
-    /// the agent hasn't run.
-    pub fn snapshot(&self, agent_id: &str) -> Vec<u8> {
-        self.live(agent_id)
+    /// the agent hasn't run in this project.
+    pub fn snapshot(&self, project_id: &str, agent_id: &str) -> Vec<u8> {
+        self.live(&SessionKey::new(project_id, agent_id))
             .map(|live| lock(&live.ring).snapshot())
             .unwrap_or_default()
     }
 
     /// Kills every session's process tree and waits briefly for each. For app exit.
     pub fn shutdown(&self) {
-        let all: Vec<(String, Arc<Live>)> = lock(&self.live)
+        let all: Vec<(SessionKey, Arc<Live>)> = lock(&self.live)
             .iter()
-            .map(|(id, live)| (id.clone(), Arc::clone(live)))
+            .map(|(key, live)| (key.clone(), Arc::clone(live)))
             .collect();
-        for (agent_id, live) in &all {
+        for (key, live) in &all {
             if !live.exit.done() {
                 if let Err(err) = live.tree.kill() {
-                    tracing::warn!(%agent_id, error = %err, "could not kill agent on exit");
+                    tracing::warn!(agent_id = %key.agent_id, project_id = %key.project_id, error = %err, "could not kill agent on exit");
                 }
             }
         }
-        for (agent_id, live) in &all {
+        for (key, live) in &all {
             if !live.exit.wait(KILL_WAIT) {
-                tracing::warn!(%agent_id, "agent still running at exit");
+                tracing::warn!(agent_id = %key.agent_id, project_id = %key.project_id, "agent still running at exit");
             }
         }
         tracing::info!(sessions = all.len(), "agent sessions shut down");

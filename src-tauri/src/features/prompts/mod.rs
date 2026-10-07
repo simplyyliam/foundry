@@ -22,14 +22,13 @@ use specta::Type;
 
 use crate::core::paths::{self, PathKind};
 use crate::core::repos::RepoIndex;
-use crate::core::{repo_write, AppError, ErrorCode};
+use crate::core::{launch_message, repo_write, AppError, ErrorCode};
 
 pub use render::FORCED_PREFIX;
 
-pub const PROMPTS_DIR: &str = ".foundry/prompts";
+/// `launch_message` returns at most this many characters (built in `core::launch_message`).
+pub use crate::core::launch_message::{MAX_LAUNCH_CHARS, PROMPTS_DIR};
 const HANDOFF_FILE: &str = ".foundry/prompts/handoff.md";
-/// `launch_message` returns at most this many characters.
-pub const MAX_LAUNCH_CHARS: usize = 500;
 /// `read_prompt` refuses files over this size (200 KB).
 pub const MAX_PROMPT_BYTES: u64 = 200 * 1000;
 
@@ -359,34 +358,9 @@ impl PromptsStore {
         require_confirmed_plan(&plan)?;
         require_agents_md(&repo)?;
         let agent = find_agent(require_team(&repo)?, agent_id)?;
+        let prompt = launch_message::prompt_file(&repo, prompt_file)?;
 
-        let invalid = || {
-            AppError::invalid_input(format!(
-                "the prompt file must be an existing file under {PROMPTS_DIR}/"
-            ))
-        };
-        if prompt_file.chars().any(char::is_control) {
-            return Err(invalid());
-        }
-        let rel =
-            paths::check(Path::new(prompt_file), PathKind::Relative).map_err(|_| invalid())?;
-        if !rel.starts_with(PROMPTS_DIR) || rel.components().count() != 3 {
-            return Err(invalid());
-        }
-        let name = rel
-            .file_name()
-            .and_then(|n| n.to_str())
-            .ok_or_else(invalid)?
-            .to_string();
-        // Through core::paths: a link out of the prompts folder doesn't count.
-        let dir = paths::resolve(&repo, PROMPTS_DIR).map_err(|_| invalid())?;
-        let resolved = paths::resolve(&repo, &rel).map_err(|_| invalid())?;
-        if !resolved.starts_with(&dir) || !resolved.is_file() {
-            return Err(invalid());
-        }
-        let normalized = format!("{PROMPTS_DIR}/{name}");
-
-        if let Some((slice_id, _)) = parse_task_name(&plan, &name) {
+        if let Some((slice_id, _)) = parse_task_name(&plan, &prompt.name) {
             if let Some(slice) = plan.slice(slice_id) {
                 let unfinished: Vec<String> = plan
                     .unfinished_dependencies(slice)
@@ -394,7 +368,7 @@ impl PromptsStore {
                     .map(|s| s.name.clone())
                     .collect();
                 if !unfinished.is_empty() {
-                    let text = std::fs::read_to_string(&resolved)?;
+                    let text = std::fs::read_to_string(&prompt.path)?;
                     let forced = text.lines().any(|l| l.starts_with(FORCED_PREFIX));
                     if !forced {
                         return Err(dependencies_not_done(&unfinished));
@@ -403,13 +377,14 @@ impl PromptsStore {
             }
         }
 
-        let message = render::launch_message(&agent, &normalized);
-        if message.chars().any(char::is_control) || message.chars().count() > MAX_LAUNCH_CHARS {
-            return Err(AppError::invalid_input(format!(
-                "the launch message must be one line of at most {MAX_LAUNCH_CHARS} characters"
-            )));
-        }
-        Ok(message)
+        launch_message::build(
+            &launch_message::RosterAgent {
+                id: agent.id,
+                display_name: agent.display_name,
+                title: agent.title,
+            },
+            &prompt,
+        )
     }
 
     /// The text of one prompt file, as stored. `file` is a repo-relative `.md` file directly in

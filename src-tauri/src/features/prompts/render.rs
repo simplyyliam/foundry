@@ -315,11 +315,3 @@ pub fn task_prompt(input: &TaskInputs<'_>) -> Result<String, AppError> {
     out.push_str("\n```\n");
     Ok(out)
 }
-
-/// `You are …, …. Read agents/roles/<id>.md, then <promptFile> and follow it.`
-pub fn launch_message(agent: &Agent, prompt_file: &str) -> String {
-    format!(
-        "You are {}, {}. Read agents/roles/{}.md, then {} and follow it.",
-        agent.display_name, agent.title, agent.id, prompt_file
-    )
-}
