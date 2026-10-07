@@ -1,0 +1,23 @@
+{
+  "session_id": "81b67006-dc1f-4230-acfb-63aceb0905a1",
+  "transcript_path": "{{HOME}}\\.claude\\projects\\scratch\\81b67006-dc1f-4230-acfb-63aceb0905a1.jsonl",
+  "cwd": "{{ROOT}}",
+  "prompt_id": "e0696aee-22b7-442b-906f-fb6fbd9d529d",
+  "permission_mode": "acceptEdits",
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Write",
+  "tool_input": {
+    "file_path": "{{ROOT}}\\a.txt",
+    "content": "x"
+  },
+  "tool_response": {
+    "type": "create",
+    "filePath": "{{ROOT}}\\a.txt",
+    "content": "x",
+    "structuredPatch": [],
+    "originalFile": null,
+    "userModified": false
+  },
+  "tool_use_id": "toolu_01XNrvKkMFQwSff1W5xGtmHo",
+  "duration_ms": 132
+}

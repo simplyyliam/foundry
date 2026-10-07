@@ -1,0 +1,7 @@
+{
+  "session_id": "81b67006-dc1f-4230-acfb-63aceb0905a1",
+  "transcript_path": "{{HOME}}\\.claude\\projects\\scratch\\81b67006-dc1f-4230-acfb-63aceb0905a1.jsonl",
+  "cwd": "{{ROOT}}",
+  "hook_event_name": "SessionStart",
+  "source": "startup"
+}

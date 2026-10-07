@@ -1,0 +1,14 @@
+{
+  "session_id": "81b67006-dc1f-4230-acfb-63aceb0905a1",
+  "transcript_path": "{{HOME}}\\.claude\\projects\\scratch\\81b67006-dc1f-4230-acfb-63aceb0905a1.jsonl",
+  "cwd": "{{ROOT}}",
+  "prompt_id": "e0696aee-22b7-442b-906f-fb6fbd9d529d",
+  "permission_mode": "acceptEdits",
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "echo hi",
+    "description": "Echo hi"
+  },
+  "tool_use_id": "toolu_011Yb2KXwVLmn2bLELEisabV"
+}
