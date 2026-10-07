@@ -16,6 +16,7 @@ export {
   usePageHeader,
   usePageHeaderCrumbs,
   type Crumb,
+  type CrumbMenu,
 } from "./lib/page-header";
 export { useElementHeight } from "./hook/useElementHeight";
 export { mergeRefs } from "./utils/merge-refs";

@@ -29,6 +29,8 @@
     --color-slice: var(--slice);
     --color-slice-fill: var(--slice-fill);
     --color-slice-foreground: var(--slice-foreground);
+    --color-status-running: var(--status-running);
+    --color-status-starting: var(--status-starting);
     --color-chart-5: var(--chart-5);
     --color-chart-4: var(--chart-4);
     --color-chart-3: var(--chart-3);
@@ -98,6 +100,12 @@
     --slice: oklch(0.7 0.16 52);
     --slice-fill: oklch(0.965 0.035 62);
     --slice-foreground: oklch(0.42 0.11 48);
+    /* Teams cards when the avatar's colour isn't known (yet): neutral. See agent-tint.css. */
+    --agent-card: #f0f0f3;
+    --agent-card-hover: #e8e8ec;
+    --agent-card-selected: #e1e1e7;
+    --status-running: oklch(0.62 0.15 150);
+    --status-starting: oklch(0.72 0.15 75);
 }
 
 .dark {
@@ -135,6 +143,11 @@
     --slice: oklch(0.74 0.15 55);
     --slice-fill: oklch(0.3 0.06 50);
     --slice-foreground: oklch(0.86 0.09 62);
+    --agent-card: oklch(0.225 0.004 286);
+    --agent-card-hover: oklch(0.245 0.004 286);
+    --agent-card-selected: oklch(0.27 0.004 286);
+    --status-running: oklch(0.72 0.15 150);
+    --status-starting: oklch(0.8 0.14 80);
 }
 
 @layer base {

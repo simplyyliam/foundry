@@ -34,8 +34,9 @@ export const PANEL_VIEWS = {
   "agent-chats": {
     id: "agent-chats",
     title: "Agent Chats",
-    needsProject: false,
-    component: () => <ContextualPanel />,
+    // The project comes from `/teams/:projectId`; plain `/teams` only redirects, so no panel.
+    needsProject: true,
+    component: ({ projectId }) => (projectId ? <ContextualPanel projectId={projectId} /> : null),
   },
   // Reserved: the ticket system's panel goes here.
   tickets: {
@@ -59,6 +60,6 @@ export const ROUTE_VIEWS: readonly { path: string; view: PanelViewId }[] = [
   { path: "/projects/:projectId/requirements", view: "roadmap" },
   { path: "/projects/:projectId/setup", view: "roadmap" },
   { path: "/projects/:projectId/prompts", view: "roadmap" },
-  { path: "/teams/*", view: "agent-chats" },
+  { path: "/teams/:projectId", view: "agent-chats" },
   { path: "/tickets/*", view: "tickets" },
 ];

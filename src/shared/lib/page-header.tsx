@@ -16,6 +16,19 @@ export interface Crumb {
   subtitle?: string;
   /** Makes the crumb a link. Ignored on the last crumb (the current page). */
   to?: string;
+  /**
+   * Turns the subtitle into a dropdown that navigates (e.g. Teams' project switcher). Plain
+   * data, so crumbs stay comparable by value.
+   */
+  subtitleMenu?: CrumbMenu;
+}
+
+export interface CrumbMenu {
+  /** Accessible name of the dropdown, e.g. "Switch project". */
+  label: string;
+  items: readonly { title: string; to: string }[];
+  /** The `to` of the item shown as current. */
+  current?: string;
 }
 
 type Entry = { owner: string; crumbs: readonly Crumb[] };

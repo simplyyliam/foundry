@@ -9,9 +9,16 @@ import {
 import { IconButton } from "@/shared/components/IconButton"
 import { Plus } from "lucide-react"
 
-export function ContextualPanel() {
+export interface ContextualPanelProps {
+  /** The project from the Teams route (`/teams/:projectId`). */
+  projectId: string
+}
+
+// The agent list below is still a placeholder; it gets its data from `projectId` once Agent
+// Chats is built. The frame remounts this per project already.
+export function ContextualPanel({ projectId }: ContextualPanelProps) {
   return (
-    <Sidebar side="right" variant="inset">
+    <Sidebar side="right" variant="inset" data-project-id={projectId}>
       <SidebarHeader>
         <div className="flex items-center justify-between w-full px-2.5">
           <h1 className="font-medium text-[14px]">Agent Chats</h1>

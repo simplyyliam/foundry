@@ -3,6 +3,7 @@ import { motion, useReducedMotionConfig } from "motion/react";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { usePressScale, type Crumb } from "@/shared";
+import { SubtitleMenu } from "./SubtitleMenu";
 
 const ENTER_EASE = [0.32, 0.72, 0, 1] as const;
 
@@ -30,6 +31,24 @@ interface CrumbItemProps {
 
 export function CrumbItem({ crumb, index, isCurrent }: CrumbItemProps) {
   const reducedMotion = useReducedMotionConfig();
+
+  if (crumb.subtitleMenu) {
+    // The subtitle is its own control, so the crumb is never a link as well.
+    return (
+      <motion.li
+        initial={reducedMotion ? false : { opacity: 0, x: -4 }}
+        animate={{ opacity: 1, x: 0 }}
+        transition={{ duration: 0.2, ease: ENTER_EASE }}
+        className="flex min-w-0 items-center gap-2"
+      >
+        {index > 0 && <ChevronRight aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />}
+        <span aria-current={isCurrent ? "page" : undefined} className="shrink-0 font-medium text-foreground">
+          {crumb.title}
+        </span>
+        <SubtitleMenu subtitle={crumb.subtitle ?? ""} menu={crumb.subtitleMenu} />
+      </motion.li>
+    );
+  }
 
   const content = (
     <>

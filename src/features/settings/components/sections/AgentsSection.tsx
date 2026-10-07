@@ -18,8 +18,7 @@ export function AgentsSection({ settings }: { settings: Settings }) {
     <SettingGroup>
       <SettingRow
         label="Auto-install hooks"
-        description="Install hooks after the team is confirmed."
-        tag={<NotActiveTag />}
+        description="Install Foundry's hooks before an agent starts, if the project doesn't have them."
         error={autoHooks.error}
         control={(ids) => (
           <SettingSwitch checked={autoHooks.value} onChange={(next) => void autoHooks.commit(next)} ids={ids} />
