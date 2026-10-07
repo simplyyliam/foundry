@@ -238,6 +238,8 @@ export const commands = {
 	/**  One line that starts an agent's session on a prompt file under `.foundry/prompts/`. */
 	launchMessage: (projectId: string, agentId: string, promptFile: string) => typedError<string, AppError>(__TAURI_INVOKE("launch_message", { projectId, agentId, promptFile })),
 	listPrompts: (projectId: string) => typedError<PromptFile[], AppError>(__TAURI_INVOKE("list_prompts", { projectId })),
+	/**  The text of a prompt file under `.foundry/prompts/` (`.md`, at most 200 KB). */
+	readPrompt: (projectId: string, file: string) => typedError<string, AppError>(__TAURI_INVOKE("read_prompt", { projectId, file })),
 };
 
 /** Events */

@@ -60,6 +60,17 @@ pub async fn launch_message(
     .await
 }
 
+/// The text of a prompt file under `.foundry/prompts/` (`.md`, at most 200 KB).
+#[tauri::command]
+#[specta::specta]
+pub async fn read_prompt(
+    store: Store<'_>,
+    project_id: String,
+    file: String,
+) -> Result<String, AppError> {
+    blocking(&store, move |s| s.read_prompt(&project_id, &file)).await
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn list_prompts(

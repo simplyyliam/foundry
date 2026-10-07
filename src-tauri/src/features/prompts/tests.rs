@@ -903,3 +903,138 @@ fn nothing_is_written_outside_the_prompts_folder() {
         ]
     );
 }
+
+// ---------- read_prompt ----------
+
+#[test]
+fn read_prompt_returns_a_generated_prompt_exactly() {
+    let fix = Fix::ready();
+    fix.store.generate_handoff(P).unwrap();
+    fix.task("s-auth", "ada", false).unwrap();
+    for path in [
+        ".foundry/prompts/handoff.md",
+        ".foundry/prompts/s-auth-ada.md",
+    ] {
+        let stored = std::fs::read(fix.repo.path().join(path)).unwrap();
+        let text = fix.store.read_prompt(P, path).unwrap();
+        assert_eq!(text.as_bytes(), stored.as_slice(), "{path}");
+    }
+    // `./` and Windows separators are normalized, as for launch_message.
+    assert_eq!(
+        fix.store
+            .read_prompt(P, r"./.foundry\prompts\handoff.md")
+            .unwrap(),
+        fix.store
+            .read_prompt(P, ".foundry/prompts/handoff.md")
+            .unwrap()
+    );
+}
+
+#[test]
+fn read_prompt_refuses_paths_outside_the_prompts_folder() {
+    let fix = Fix::ready();
+    fix.store.generate_handoff(P).unwrap();
+    fix.repo.write(".foundry/prompts/sub/deep.md", "x");
+    let absolute = fix.repo.path().join(".foundry/prompts/handoff.md");
+    for bad in [
+        ".foundry/prompts/../prompts/handoff.md",
+        "../.foundry/prompts/handoff.md",
+        ".foundry/prompts/../../outside.md",
+        absolute.to_str().unwrap(),
+        "/etc/passwd.md",
+        ".foundry/plan.json",
+        "AGENTS.md",
+        ".foundry/prompts",
+        ".foundry/prompts/sub/deep.md",
+    ] {
+        assert_code(fix.store.read_prompt(P, bad), ErrorCode::PathEscape);
+    }
+    assert_code(
+        fix.store.read_prompt(P, ".foundry/prompts/handoff.md\n"),
+        ErrorCode::InvalidPath,
+    );
+    assert_code(fix.store.read_prompt(P, ""), ErrorCode::PathEscape);
+}
+
+#[test]
+fn read_prompt_refuses_a_junction_out_of_the_folder() {
+    let fix = Fix::ready();
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("handoff.md"), "secret").unwrap();
+    // The prompts folder itself is a link to somewhere else.
+    crate::testing::link_dir(
+        outside.path(),
+        &fix.repo.path().join(".foundry").join("prompts"),
+    );
+    assert_code(
+        fix.store.read_prompt(P, ".foundry/prompts/handoff.md"),
+        ErrorCode::PathEscape,
+    );
+}
+
+#[test]
+fn read_prompt_refuses_non_markdown_files() {
+    let fix = Fix::ready();
+    fix.repo.write(".foundry/prompts/notes.txt", "n");
+    fix.repo.write(".foundry/prompts/noext", "n");
+    for bad in [
+        ".foundry/prompts/notes.txt",
+        ".foundry/prompts/noext",
+        ".foundry/prompts/missing.txt",
+    ] {
+        assert_code(fix.store.read_prompt(P, bad), ErrorCode::UnsupportedFile);
+    }
+}
+
+#[test]
+fn read_prompt_refuses_oversized_files_but_takes_one_at_the_cap() {
+    let fix = Fix::ready();
+    let cap = usize::try_from(MAX_PROMPT_BYTES).unwrap();
+    fix.repo
+        .write(".foundry/prompts/at-cap.md", &"a".repeat(cap));
+    fix.repo
+        .write(".foundry/prompts/big.md", &"a".repeat(cap + 1));
+    assert_eq!(
+        fix.store
+            .read_prompt(P, ".foundry/prompts/at-cap.md")
+            .unwrap()
+            .len(),
+        cap
+    );
+    assert_code(
+        fix.store.read_prompt(P, ".foundry/prompts/big.md"),
+        ErrorCode::FileTooLarge,
+    );
+}
+
+#[test]
+fn read_prompt_unknown_project_and_missing_file_are_not_found() {
+    let fix = Fix::ready();
+    assert_code(
+        fix.store.read_prompt("nope", ".foundry/prompts/handoff.md"),
+        ErrorCode::NotFound,
+    );
+    assert_code(
+        fix.store.read_prompt(P, ".foundry/prompts/handoff.md"),
+        ErrorCode::NotFound,
+    );
+    // A folder named like a prompt isn't a file.
+    std::fs::create_dir_all(fix.repo.path().join(".foundry/prompts/dir.md")).unwrap();
+    assert_code(
+        fix.store.read_prompt(P, ".foundry/prompts/dir.md"),
+        ErrorCode::NotFound,
+    );
+}
+
+#[test]
+fn read_prompt_writes_nothing() {
+    let fix = Fix::ready();
+    fix.store.generate_handoff(P).unwrap();
+    let before = snapshot(fix.repo.path());
+    fix.store
+        .read_prompt(P, ".foundry/prompts/handoff.md")
+        .unwrap();
+    let _ = fix.store.read_prompt(P, ".foundry/prompts/missing.md");
+    let _ = fix.store.read_prompt(P, "../x.md");
+    assert_eq!(snapshot(fix.repo.path()), before);
+}

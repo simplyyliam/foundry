@@ -109,6 +109,7 @@ pub fn specta_builder<R: Runtime>() -> tauri_specta::Builder<R> {
             prompts::commands::generate_task_prompt,
             prompts::commands::launch_message,
             prompts::commands::list_prompts,
+            prompts::commands::read_prompt,
         ])
         .events(collect_events![
             app::AppReady,

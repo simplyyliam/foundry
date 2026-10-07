@@ -12,6 +12,7 @@ mod disk;
 mod render;
 
 use std::collections::BTreeMap;
+use std::io::Read;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
@@ -29,6 +30,8 @@ pub const PROMPTS_DIR: &str = ".foundry/prompts";
 const HANDOFF_FILE: &str = ".foundry/prompts/handoff.md";
 /// `launch_message` returns at most this many characters.
 pub const MAX_LAUNCH_CHARS: usize = 500;
+/// `read_prompt` refuses files over this size (200 KB).
+pub const MAX_PROMPT_BYTES: u64 = 200 * 1000;
 
 /// AGENTS.md placeholder keys (the design feature's slugs of the template's labels).
 mod key {
@@ -407,6 +410,60 @@ impl PromptsStore {
             )));
         }
         Ok(message)
+    }
+
+    /// The text of one prompt file, as stored. `file` is a repo-relative `.md` file directly in
+    /// `.foundry/prompts/`, at most `MAX_PROMPT_BYTES`. Read-only.
+    pub fn read_prompt(&self, project_id: &str, file: &str) -> Result<String, AppError> {
+        let repo = self.repos.repo(project_id)?;
+        if file.chars().any(char::is_control) {
+            return Err(AppError::invalid_path(
+                "the prompt file path has control characters",
+            ));
+        }
+        let rel = paths::check(Path::new(file), PathKind::Relative)?;
+        let outside = || {
+            AppError::path_escape(format!(
+                "the prompt file must be directly in {PROMPTS_DIR}/"
+            ))
+        };
+        if !rel.starts_with(PROMPTS_DIR) || rel.components().count() != 3 {
+            return Err(outside());
+        }
+        if rel.extension().and_then(|e| e.to_str()) != Some("md") {
+            return Err(AppError::new(
+                ErrorCode::UnsupportedFile,
+                "only .md prompt files can be read",
+            ));
+        }
+        // Through core::paths: a link out of the prompts folder doesn't count.
+        let dir = paths::resolve(&repo, PROMPTS_DIR)?;
+        let resolved = paths::resolve(&repo, &rel)?;
+        if !resolved.starts_with(&dir) {
+            return Err(outside());
+        }
+        let file_not_found = || AppError::not_found(format!("no prompt file {file}"));
+        // A folder can't be opened on Windows, so check before opening.
+        if !resolved.is_file() {
+            return Err(file_not_found());
+        }
+        let handle = match std::fs::File::open(&resolved) {
+            Ok(handle) => handle,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Err(file_not_found()),
+            Err(err) => return Err(err.into()),
+        };
+        // One byte past the cap tells an oversized file from one exactly at it, even if it
+        // grows between the open and the read.
+        let mut bytes = Vec::new();
+        handle.take(MAX_PROMPT_BYTES + 1).read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > MAX_PROMPT_BYTES {
+            return Err(AppError::new(
+                ErrorCode::FileTooLarge,
+                format!("prompt files can be at most {} KB", MAX_PROMPT_BYTES / 1000),
+            ));
+        }
+        String::from_utf8(bytes)
+            .map_err(|_| AppError::invalid_input("the prompt file isn't valid UTF-8 text"))
     }
 
     /// The hand-off and task prompts in `.foundry/prompts/`, by file name. Other files
