@@ -34,6 +34,12 @@ tauri-specta = { version = "=2.0.0-rc.25", features = ["derive", "typescript"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 portable-pty = "0.9"
 base64 = "0.22"
+# Agent events (P8a): the local hook server. hyper, hyper-util and http-body-util were already
+# in the tree via reqwest; hyper's `server` feature adds only `httpdate` (approved).
+tokio = { version = "1", features = ["net", "time", "rt"] }
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
 
 [dev-dependencies]
 tauri = { version = "2.11.0", features = ["specta", "protocol-asset", "test"] }

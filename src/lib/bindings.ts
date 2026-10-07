@@ -240,10 +240,20 @@ export const commands = {
 	listPrompts: (projectId: string) => typedError<PromptFile[], AppError>(__TAURI_INVOKE("list_prompts", { projectId })),
 	/**  The text of a prompt file under `.foundry/prompts/` (`.md`, at most 200 KB). */
 	readPrompt: (projectId: string, file: string) => typedError<string, AppError>(__TAURI_INVOKE("read_prompt", { projectId, file })),
+	/**
+	 *  The agent's events in the project, newest first: those before `beforeId`, at least
+	 *  `minSeverity`, at most `limit` (1–500, default 100).
+	 */
+	agentEvents: (projectId: string, agentId: string, query: AgentEventsQuery) => typedError<AgentEvent[], AppError>(__TAURI_INVOKE("agent_events", { projectId, agentId, query })),
+	/**  Unread and unread-danger counts per agent with events in the project, by agent id. */
+	agentEventCounts: (projectId: string) => typedError<AgentEventCounts[], AppError>(__TAURI_INVOKE("agent_event_counts", { projectId })),
+	/**  Marks the agent's events up to `upToId` read (never backwards, never past the newest). */
+	agentMarkRead: (projectId: string, agentId: string, upToId: number) => typedError<null, AppError>(__TAURI_INVOKE("agent_mark_read", { projectId, agentId, upToId })),
 };
 
 /** Events */
 export const events = {
+	agentEvent: makeEvent<AgentEvent>("agent:event"),
 	agentOutput: makeEvent<AgentOutput>("agent:output"),
 	agentStatus: makeEvent<AgentStatus>("agent:status"),
 	appReady: makeEvent<AppReady>("app:ready"),
@@ -252,6 +262,40 @@ export const events = {
 };
 
 /* Types */
+/**  One thing an agent did, as stored (one JSONL line) and as emitted on `agent:event`. */
+export type AgentEvent = {
+	/**  1, 2, 3, … per project and agent; never reused, also across rotation. */
+	id: number,
+	/**  Epoch ms. */
+	ts: number,
+	projectId: string,
+	agentId: string,
+	sliceId: string | null,
+	kind: EventKind,
+	severity: Severity,
+	title: string,
+	detail: string | null,
+	/**  Repo-relative with `/` when the file is inside the repo. */
+	path: string | null,
+	command: string | null,
+};
+
+export type AgentEventCounts = {
+	agentId: string,
+	/**  Events after the agent's read marker. */
+	unread: number,
+	/**  Of those, the ones with severity `danger`. */
+	danger: number,
+};
+
+export type AgentEventsQuery = {
+	/**  Only events with a smaller id (paging back from the oldest one shown). */
+	beforeId: number | null,
+	/**  1–500, default 100. */
+	limit: number | null,
+	minSeverity: Severity | null,
+};
+
 /**  `agent:output`: a coalesced batch of raw terminal output. */
 export type AgentOutput = {
 	agentId: string,
@@ -528,6 +572,8 @@ export type ErrorCode =
 "plan_not_confirmed" | 
 /**  AGENTS.md is missing from the repo or still has a `[[ FILL IN` marker (`generate_agents`). */
 "agents_md_not_ready";
+
+export type EventKind = "session_started" | "edit" | "command" | "tests_ran" | "blocked" | "needs_attention" | "turn_complete" | "session_ended" | "stuck" | "quiet" | "danger" | "report_ready";
 
 /**  Identity and timestamp shared by every event. Flatten it into the payload struct. */
 export type EventMeta = {
@@ -926,6 +972,9 @@ export type Settings = {
 	osNotificationsEnabled: boolean,
 	osNotificationSeverity: NotificationSeverity,
 };
+
+/**  Ordered: `info < warn < danger` (`minSeverity` filters on it). */
+export type Severity = "info" | "warn" | "danger";
 
 export type Slice = {
 	name: string,

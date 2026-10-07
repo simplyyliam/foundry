@@ -5,6 +5,7 @@ pub mod error;
 pub mod events;
 pub mod fsx;
 pub mod git;
+pub mod hook;
 pub mod ids;
 pub mod image;
 pub mod llm;

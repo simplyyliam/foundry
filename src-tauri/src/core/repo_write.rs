@@ -68,6 +68,21 @@ pub fn write(repo: &Path, rel: &str, contents: impl AsRef<[u8]>) -> Result<(), A
     fsx::write_atomic(&target, contents)
 }
 
+/// Appends to an allowlisted file, creating it if needed. Not atomic like [`write`]: for
+/// append-only logs (one JSON line per call), where rewriting the whole file per line would
+/// cost O(size). `contents` goes out in a single `write_all`; a crash can leave at most one
+/// torn final line, which readers of such logs must skip.
+pub fn append(repo: &Path, rel: &str, contents: impl AsRef<[u8]>) -> Result<(), AppError> {
+    use std::io::Write as _;
+    let target = guard(repo, rel)?;
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(target)?;
+    file.write_all(contents.as_ref())?;
+    Ok(())
+}
+
 /// Writes an allowlisted file only if it doesn't exist yet. Returns whether it was written.
 pub fn write_if_missing(
     repo: &Path,
@@ -259,6 +274,37 @@ mod tests {
             ErrorCode::PathEscape
         );
         assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn append_adds_to_allowlisted_files_only() {
+        let repo = TestRepo::new();
+        append(
+            repo.path(),
+            ".foundry/events/a.jsonl",
+            "1
+",
+        )
+        .unwrap();
+        append(
+            repo.path(),
+            ".foundry/events/a.jsonl",
+            "2
+",
+        )
+        .unwrap();
+        assert_eq!(
+            repo.read(".foundry/events/a.jsonl"),
+            "1
+2
+"
+        );
+        assert_not_allowed(append(repo.path(), "src/log.txt", "x"));
+        assert_eq!(
+            append(repo.path(), ".foundry/../x", "x").unwrap_err().code,
+            ErrorCode::PathEscape
+        );
+        assert_not_allowed(append(repo.path(), ".claude/settings.local.json", "x"));
     }
 
     #[test]

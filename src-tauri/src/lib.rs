@@ -14,13 +14,15 @@ use tauri_specta::{collect_commands, collect_events};
 
 use crate::core::events;
 use crate::core::git::Git;
+use crate::core::hook::HookEndpointCell;
 use crate::core::repos::RepoIndex;
 use crate::core::sessions::SessionRegistry;
 use crate::core::AppError;
 #[cfg(test)]
 use crate::core::ErrorCode;
 use crate::features::{
-    agent_sessions, app, bakery, design, folders, plan, projects, prompts, roadmap, team,
+    agent_events, agent_sessions, app, bakery, design, folders, plan, projects, prompts, roadmap,
+    team,
 };
 
 /// Where the generated TypeScript bindings live. Never hand-edit that file.
@@ -110,13 +112,17 @@ pub fn specta_builder<R: Runtime>() -> tauri_specta::Builder<R> {
             prompts::commands::launch_message,
             prompts::commands::list_prompts,
             prompts::commands::read_prompt,
+            agent_events::commands::agent_events,
+            agent_events::commands::agent_event_counts,
+            agent_events::commands::agent_mark_read,
         ])
         .events(collect_events![
             app::AppReady,
             agent_sessions::AgentOutput,
             agent_sessions::AgentStatus,
             roadmap::RoadmapProgress,
-            plan::PlanChanged
+            plan::PlanChanged,
+            agent_events::AgentEvent
         ])
 }
 
@@ -213,6 +219,38 @@ impl<R: Runtime> plan::PlanEvents for TauriSessionEvents<R> {
     }
 }
 
+impl<R: Runtime> agent_events::AgentEventSink for TauriSessionEvents<R> {
+    fn event(&self, event: agent_events::AgentEvent) {
+        let _ = events::emit(&self.app, &event);
+    }
+}
+
+/// The agent-events store emitting `agent:event`, its quiet timer, and the hook server on
+/// 127.0.0.1, whose port and token are published to `endpoint` for agent sessions to read.
+/// A server that can't bind is logged, not fatal: the app runs without hook events, and
+/// `endpoint` stays empty.
+pub fn agent_events_store<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    repos: Arc<RepoIndex>,
+    sessions: Arc<SessionRegistry>,
+    endpoint: Arc<HookEndpointCell>,
+) -> (
+    Arc<agent_events::AgentEventsStore>,
+    Option<agent_events::server::HookServer>,
+) {
+    let store = Arc::new(agent_events::AgentEventsStore::new(
+        repos,
+        sessions,
+        Arc::new(TauriSessionEvents { app: app.clone() }),
+    ));
+    // Runs for the app's lifetime.
+    let _timer = store.spawn_quiet_timer(agent_events::QUIET_CHECK_EVERY);
+    let server = agent_events::server::start(Arc::clone(&store), endpoint)
+        .map_err(|err| tracing::error!(error = %err, "hook server failed to start"))
+        .ok();
+    (store, server)
+}
+
 impl<R: Runtime> roadmap::ProgressSink for TauriSessionEvents<R> {
     fn progress(&self, event: roadmap::RoadmapProgress) {
         let _ = events::emit(&self.app, &event);
@@ -300,6 +338,18 @@ pub fn app_builder<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> 
             let data_dir = app.path().app_data_dir()?;
             let repos = Arc::new(RepoIndex::default());
             let sessions = Arc::new(SessionRegistry::default());
+            let hook_endpoint = Arc::new(HookEndpointCell::default());
+            let (agent_events, hook_server) = agent_events_store(
+                app.handle(),
+                Arc::clone(&repos),
+                Arc::clone(&sessions),
+                Arc::clone(&hook_endpoint),
+            );
+            app.manage(agent_events);
+            if let Some(server) = hook_server {
+                app.manage(server);
+            }
+            app.manage(hook_endpoint);
             let projects = Arc::new(projects_store(
                 app.handle(),
                 data_dir.clone(),
@@ -1356,6 +1406,15 @@ opus-test"
             "\"confirmed_requirements\"",
             "roleHandbookAddFromPaths",
             "\"role_exists\"",
+            "agentEvents",
+            "agentEventCounts",
+            "agentMarkRead",
+            "\"agent:event\"",
+            "export type AgentEvent",
+            "export type AgentEventsQuery",
+            "export type AgentEventCounts",
+            "\"report_ready\"",
+            "\"danger\"",
         ] {
             assert!(ts.contains(name), "{name} missing from bindings");
         }
