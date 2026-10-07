@@ -1,4 +1,4 @@
-import type { Plan, PlanRequirement, SliceStatus, SliceView } from "@/lib/bindings";
+import type { Plan, PlanDeferred, PlanRequirement, SliceStatus, SliceView } from "@/lib/bindings";
 
 /** Slices by layer, then name (ids break ties so the order never flickers). */
 export function orderSlices(slices: readonly SliceView[]): SliceView[] {
@@ -29,3 +29,7 @@ export const STATUS_LABEL: Record<SliceStatus, string> = {
   in_progress: "in progress",
   done: "done",
 };
+
+/** A "Later" item's anchor name, or a note when the slice it pointed at is gone. */
+export const anchorName = (plan: Plan, item: PlanDeferred) =>
+  plan.slices.find((slice) => slice.id === item.anchoredTo)?.name ?? "a removed slice";

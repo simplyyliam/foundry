@@ -46,3 +46,6 @@ src-tauri/src/
 ## 6. Done means
 
 `cargo fmt --check`, `cargo clippy -- -D warnings` and `cargo test` pass. Bindings regenerate cleanly. `CONTRACT_CHANGELOG.md` is updated. The final report lists every requirement per Law 5.
+
+## Checkpoints
+- Only when I ask ("tag this as checkpoint-<name>: <note>"): check that git status is clean and the branch is main, then run git tag -a checkpoint-<name> -m "<note>", and show git log --oneline -3 and the checkpoint tags. Never tag on your own, never push, and never move or delete a tag.

@@ -3,6 +3,7 @@ import {
   AddSliceDialog,
   BlueprintCanvas,
   BlueprintHeader,
+  DeferredSheet,
   LoadFailed,
   NoSlices,
   NoticeBanner,
@@ -28,6 +29,16 @@ function ProjectBlueprint({ projectId, requirementsHref }: BlueprintProps) {
   const { load, notice, dismissNotice, report, mutate } = usePlan(projectId);
   const actions = usePlanActions(projectId, mutate);
   const [openSliceId, setOpenSliceId] = useState<string | null>(null);
+  const [openDeferredId, setOpenDeferredId] = useState<string | null>(null);
+  // One sheet at a time.
+  const openSlice = useCallback((sliceId: string | null) => {
+    setOpenDeferredId(null);
+    setOpenSliceId(sliceId);
+  }, []);
+  const openDeferred = useCallback((deferredId: string | null) => {
+    setOpenSliceId(null);
+    setOpenDeferredId(deferredId);
+  }, []);
   const [adding, setAdding] = useState(false);
 
   const setDependencies = useCallback(
@@ -50,7 +61,9 @@ function ProjectBlueprint({ projectId, requirementsHref }: BlueprintProps) {
         <BlueprintCanvas
           plan={plan}
           openSliceId={openSliceId}
-          onOpenSlice={setOpenSliceId}
+          onOpenSlice={openSlice}
+          openDeferredId={openDeferredId}
+          onOpenDeferred={openDeferred}
           onSetDependencies={setDependencies}
         />
         <div className="pointer-events-none absolute inset-x-0 top-3 flex justify-center px-4">
@@ -63,7 +76,14 @@ function ProjectBlueprint({ projectId, requirementsHref }: BlueprintProps) {
         )}
       </div>
       <SliceSheet plan={plan} sliceId={openSliceId} actions={actions} onClose={() => setOpenSliceId(null)} />
-      <AddSliceDialog open={adding} onOpenChange={setAdding} actions={actions} onAdded={setOpenSliceId} />
+      <DeferredSheet
+        plan={plan}
+        deferredId={openDeferredId}
+        actions={actions}
+        onMoved={setOpenDeferredId}
+        onClose={() => setOpenDeferredId(null)}
+      />
+      <AddSliceDialog open={adding} onOpenChange={setAdding} actions={actions} onAdded={openSlice} />
     </div>
   );
 }

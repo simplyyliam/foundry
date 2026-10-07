@@ -1,5 +1,6 @@
 export { AddSliceDialog } from "./components/AddSliceDialog";
 export { BlueprintCanvas } from "./components/BlueprintCanvas";
+export { DeferredSheet } from "./components/DeferredSheet";
 export { BlueprintHeader } from "./components/BlueprintHeader";
 export { LoadFailed, NoSlices } from "./components/BlueprintStates";
 export { NoticeBanner } from "./components/Notices";

@@ -36,6 +36,9 @@ export interface BlueprintCanvasProps {
   /** The slice whose sheet is open (drawn with a heavier outline). */
   openSliceId: string | null;
   onOpenSlice: (sliceId: string) => void;
+  /** The "Later" item whose sheet is open. */
+  openDeferredId: string | null;
+  onOpenDeferred: (deferredId: string) => void;
   /**
    * Replaces one slice's dependencies (the full list). The canvas only ever draws what the
    * plan says, so a refused change leaves it exactly as it was.
@@ -51,7 +54,7 @@ export function BlueprintCanvas(props: BlueprintCanvasProps) {
   );
 }
 
-function Canvas({ plan, openSliceId, onOpenSlice, onSetDependencies }: BlueprintCanvasProps) {
+function Canvas({ plan, openSliceId, onOpenSlice, openDeferredId, onOpenDeferred, onSetDependencies }: BlueprintCanvasProps) {
   const layout = useMemo(() => layoutBlueprint(plan), [plan]);
   const [selectedEdges, setSelectedEdges] = useState<ReadonlySet<string>>(new Set());
 
@@ -91,12 +94,21 @@ function Canvas({ plan, openSliceId, onOpenSlice, onSetDependencies }: Blueprint
             data:
               box.kind === "unassigned"
                 ? { id: box.id, height: box.height, kind: "unassigned", count: box.count }
-                : { id: box.id, height: box.height, kind: "later", after: box.after },
+                : {
+                    id: box.id,
+                    height: box.height,
+                    kind: "later",
+                    deferredId: box.deferredId,
+                    label: box.label,
+                    after: box.after,
+                    open: box.deferredId === openDeferredId,
+                    onOpen: onOpenDeferred,
+                  },
             ...fixed,
           },
     );
     return [lanes, ...boxes];
-  }, [layout, openSliceId, onOpenSlice]);
+  }, [layout, openSliceId, onOpenSlice, openDeferredId, onOpenDeferred]);
 
   const removeEdges = useCallback(
     async (ids: readonly string[]) => {

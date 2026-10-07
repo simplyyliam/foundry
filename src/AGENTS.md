@@ -34,3 +34,6 @@ You work on Foundry's React frontend in `src/`. A separate agent owns the Rust b
 - You can't click inside the Tauri window. Say what you couldn't check by eye. A passing type-check doesn't mean it works.
 - List each requirement in the prompt as met / partly / not met, and say how you checked it.
 - Append one line to `src/DECISIONS.md` for any decision that isn't obvious from the code.
+
+## Checkpoints
+- Only when I ask ("tag this as checkpoint-<name>: <note>"): check that git status is clean and the branch is main, then run git tag -a checkpoint-<name> -m "<note>", and show git log --oneline -3 and the checkpoint tags. Never tag on your own, never push, and never move or delete a tag.

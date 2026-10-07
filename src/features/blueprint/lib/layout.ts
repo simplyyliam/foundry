@@ -35,7 +35,7 @@ export interface Row {
 export type Box =
   | { kind: "slice"; id: string; slice: SliceView; column: number; x: number; y: number; height: number; count: number }
   | { kind: "unassigned"; id: string; column: number; x: number; y: number; height: number; count: number }
-  | { kind: "later"; id: string; column: number; x: number; y: number; height: number; after: string };
+  | { kind: "later"; id: string; deferredId: string; label: string; column: number; x: number; y: number; height: number; after: string };
 
 export interface BlueprintLayout {
   rows: Row[];
@@ -108,6 +108,8 @@ export function layoutBlueprint(plan: Plan): BlueprintLayout {
       boxes.push({
         kind: "later",
         id: `later:${item.id}`,
+        deferredId: item.id,
+        label: item.label,
         column,
         x: columnX(column),
         y,

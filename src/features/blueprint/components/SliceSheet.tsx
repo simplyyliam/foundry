@@ -1,4 +1,5 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useReducedMotionConfig } from "motion/react";
 import { Pencil, Trash2 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
@@ -9,6 +10,7 @@ import type { PlanActions } from "../hooks/usePlanActions";
 import { plural } from "../lib/order";
 import { ActionError } from "./Notices";
 import { SliceDependencies } from "./SliceDependencies";
+import { SliceLaterItems } from "./SliceLaterItems";
 import { SliceDecisions, SliceQuestions } from "./SliceNotes";
 import { SliceStatusControl } from "./SliceStatusControl";
 import { StatusChip } from "./StatusChip";
@@ -80,6 +82,9 @@ function SliceDetails({ plan, slice, actions, onRemoved }: SliceDetailsProps) {
         </Section>
         <Section title="Open questions">
           <SliceQuestions slice={slice} actions={actions} />
+        </Section>
+        <Section title="Later items">
+          <SliceLaterItems plan={plan} slice={slice} actions={actions} />
         </Section>
         <DeleteSlice slice={slice} actions={actions} onRemoved={onRemoved} />
       </div>
@@ -167,14 +172,22 @@ function SliceName({ slice, actions }: { slice: SliceView; actions: PlanActions 
 
 /**
  * Delete, with one confirming click. The backend refuses while requirements, dependent slices
- * or deferred items still point at the slice; its message says which.
+ * or deferred items still point at the slice; its message says which (shown as-is). Later
+ * items are fixed in the section right above.
  */
 function DeleteSlice({ slice, actions, onRemoved }: { slice: SliceView; actions: PlanActions; onRemoved: () => void }) {
   const [confirming, setConfirming] = useState(false);
   const { busy, error, run } = useAction();
+  const sectionRef = useRef<HTMLElement>(null);
+  const reducedMotion = useReducedMotionConfig();
+
+  // A refusal lands at the very bottom of the sheet: bring it into view.
+  useEffect(() => {
+    if (error) sectionRef.current?.scrollIntoView({ block: "nearest", behavior: reducedMotion ? "auto" : "smooth" });
+  }, [error, reducedMotion]);
 
   return (
-    <section className="mt-2 flex flex-col gap-2 border-t border-border/60 pt-4">
+    <section ref={sectionRef} className="mt-2 flex flex-col gap-2 border-t border-border/60 pt-4">
       {confirming ? (
         <div className="flex flex-wrap items-center gap-2">
           <p className="mr-auto text-[13px]">Delete “{slice.name}”?</p>
