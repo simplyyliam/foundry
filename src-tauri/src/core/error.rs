@@ -104,6 +104,9 @@ pub enum ErrorCode {
     VerificationRunning,
     /// `testCommands` changed while the human was reviewing them: nothing was confirmed.
     TestCommandsChanged,
+    /// A slice can't start while Foundry's setup files (AGENTS.md, `agents/`, `docs/`, the
+    /// VSM files, `plan.json`) are uncommitted: they'd count as the agent's changes.
+    SetupNotCommitted,
 }
 
 impl ErrorCode {
@@ -154,6 +157,7 @@ impl ErrorCode {
             Self::NotVerified => "not_verified",
             Self::VerificationRunning => "verification_running",
             Self::TestCommandsChanged => "test_commands_changed",
+            Self::SetupNotCommitted => "setup_not_committed",
         }
     }
 }
@@ -275,6 +279,7 @@ mod tests {
             ErrorCode::NotVerified,
             ErrorCode::VerificationRunning,
             ErrorCode::TestCommandsChanged,
+            ErrorCode::SetupNotCommitted,
         ] {
             assert_eq!(serde_json::to_value(code).unwrap(), json!(code.as_str()));
         }

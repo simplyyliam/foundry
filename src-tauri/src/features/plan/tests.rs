@@ -388,12 +388,13 @@ fn a_slice_with_assigned_requirements_cannot_be_removed() {
 fn the_status_gate_honours_dependencies_and_overrides_need_a_reason() {
     let repo = TestRepo::with_git();
     repo.write("README.md", "hi");
-    repo.git(&["add", "README.md"]);
-    repo.git(&["commit", "--quiet", "-m", "start"]);
-    let head = repo.git(&["rev-parse", "HEAD"]);
     let env = Env::in_repo(repo);
     let a = env.slice("A", &[]);
     let b = env.slice("B", &[&a]);
+    // Setup (plan.json, vsm_data.js) is committed before a slice can start.
+    env.repo.git(&["add", "-A"]);
+    env.repo.git(&["commit", "--quiet", "-m", "start"]);
+    let head = env.repo.git(&["rev-parse", "HEAD"]);
     let start = |id: &str, options: StatusOptions| {
         env.store
             .set_slice_status(P, id, SliceStatus::InProgress, options, None)
@@ -452,6 +453,73 @@ fn the_status_gate_honours_dependencies_and_overrides_need_a_reason() {
         .unwrap();
     start(&c, StatusOptions::default()).unwrap();
     assert!(env.slice_view(&c).slice.decisions.is_empty());
+}
+
+#[test]
+fn a_slice_cant_start_while_setup_files_are_uncommitted() {
+    let repo = TestRepo::with_git();
+    repo.git(&["commit", "--quiet", "--allow-empty", "-m", "initial"]);
+    repo.write("AGENTS.md", "# rules\n");
+    repo.write("agents/roles.json", "{}");
+    repo.write("docs/brain-dump.md", "ideas");
+    let env = Env::in_repo(repo);
+    let a = env.slice("A", &[]);
+    let start = || {
+        env.store.set_slice_status(
+            P,
+            &a,
+            SliceStatus::InProgress,
+            StatusOptions::default(),
+            None,
+        )
+    };
+
+    // A fresh project: everything from Setup is untracked.
+    let err = start().unwrap_err();
+    assert_eq!(err.code, ErrorCode::SetupNotCommitted);
+    assert!(
+        err.message.starts_with("Commit your setup first"),
+        "{}",
+        err.message
+    );
+    for file in [
+        "AGENTS.md",
+        "agents/roles.json",
+        "docs/brain-dump.md",
+        ".foundry/plan.json",
+    ] {
+        assert!(err.message.contains(file), "{file}: {}", err.message);
+    }
+    assert_eq!(env.slice_view(&a).slice.status, SliceStatus::Queued);
+    assert_eq!(env.slice_view(&a).slice.start_commit, None);
+    assert_eq!(
+        env.repo.git(&["rev-list", "--count", "HEAD"]),
+        "1",
+        "Foundry never commits for the user"
+    );
+
+    // Committed, then edited by hand: still refused.
+    env.repo.git(&["add", "-A"]);
+    env.repo.git(&["commit", "--quiet", "-m", "setup"]);
+    env.repo.write("AGENTS.md", "# edited\n");
+    let err = start().unwrap_err();
+    assert_eq!(err.code, ErrorCode::SetupNotCommitted);
+    assert!(
+        err.message.contains("AGENTS.md is not committed"),
+        "{}",
+        err.message
+    );
+    env.repo.git(&["checkout", "--", "AGENTS.md"]);
+
+    // Plan edits since the setup commit don't block (Foundry rewrites plan.json and its mirror).
+    env.slice("B", &[]);
+    start().unwrap();
+    let started = env.slice_view(&a).slice;
+    assert_eq!(started.status, SliceStatus::InProgress);
+    assert_eq!(
+        started.start_commit,
+        Some(env.repo.git(&["rev-parse", "HEAD"]))
+    );
 }
 
 // ---------- P9: done needs a passed, current verification ----------

@@ -631,6 +631,52 @@ fn a_diff_touching_a_protected_file_gives_danger() {
 }
 
 #[test]
+fn a_second_verify_right_after_the_first_still_passes() {
+    let env = Env::new();
+    env.commands(&[]);
+    env.repo.write("src/feed.rs", "// the work\n");
+    env.write_report(&report(json!([met("r-1", "test a"), met("r-2", "test b")])));
+
+    let first = env.verify().unwrap();
+    assert!(first.review.passed, "{:?}", first.review.findings);
+    env.store.write_digest_file(P).unwrap();
+    let second = env.verify().unwrap();
+    assert!(second.review.passed, "{:?}", second.review.findings);
+
+    // Committing Foundry's own output (reviews, digest, events) doesn't change that.
+    env.repo.write(".foundry/events/ada.jsonl", "{}\n");
+    env.repo.git(&["add", "-A"]);
+    env.repo.git(&["commit", "--quiet", "-m", "slice work"]);
+    let third = env.verify().unwrap();
+    assert!(third.review.passed, "{:?}", third.review.findings);
+    let own = |p: &str| p.starts_with(".foundry/reviews/") || p.starts_with(".foundry/events/");
+    assert!(
+        third
+            .review
+            .findings
+            .iter()
+            .all(|f| !f.path.as_deref().is_some_and(own)),
+        "{:?}",
+        third.review.findings
+    );
+}
+
+#[test]
+fn a_hand_edit_to_agents_md_still_fails_on_every_verify() {
+    let env = Env::new();
+    env.commands(&[]);
+    env.repo.write("AGENTS.md", "# loosened rules\n");
+    env.write_report(&report(json!([met("r-1", "test a"), met("r-2", "test b")])));
+
+    for _ in 0..2 {
+        let v = env.verify().unwrap();
+        let hit = finding(&v, code::PROTECTED_FILE_CHANGED);
+        assert_eq!(hit.path.as_deref(), Some("AGENTS.md"));
+        assert!(!v.review.passed);
+    }
+}
+
+#[test]
 fn setting_test_commands_after_the_start_commit_gives_no_boundary_finding() {
     let env = Env::new();
     // Rewrites project.json after the slice's start commit, as the UI would mid-slice.

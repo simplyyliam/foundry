@@ -430,3 +430,10 @@ Everything is additive except `set_slice_status`, whose new `done` gate was requ
 | command | `verify_slice` (boundary check) | a change to `.foundry/project.json` since `startCommit` → `protected_file_changed` (danger) → ignored | Setting the test commands through Foundry rewrites it after a slice's start commit. The confirmation gate already stops an agent's edit of the commands from running. |
 
 **Protected floor** (not a Tauri contract change): `.foundry/reviews/**` → `.foundry/reviews/*.json` and `.foundry/reviews/digest.md`, in both `core::hook_policy::PROTECTED_FLOOR` and `team::PROTECTED_FLOOR`. These are the files Foundry writes and the plan trusts. Other files in `.foundry/reviews/` (e.g. a Manager role's `<slice>-notes.md`) are writable for a role whose `writeGlobs` allow them. `.foundry/project.json` stays protected. `*` matches within one path segment, so only direct children ending in `.json` are protected.
+
+## Fix: a slice can't start on uncommitted setup
+
+| Kind | Name | Before → After | Why |
+| --- | --- | --- | --- |
+| type | `ErrorCode` | adds `"setup_not_committed"` | Additive. Returned by the start gate below. |
+| command | `set_slice_status` | moving a slice to `in_progress` recorded HEAD whatever the working tree held → refused with `setup_not_committed` while setup files are uncommitted | Verification's boundary check diffs against the slice's `startCommit`. In a fresh project, Setup's files (`AGENTS.md`, `agents/**`) are uncommitted, so they counted as the agent's work and the slice failed every verify with `protected_file_changed`. Setup files: `AGENTS.md`, `agents/`, `docs/`, `vsm_viewer.html` (untracked or modified), and `.foundry/plan.json`, `vsm_data.js` (only while untracked, because every plan change rewrites them). The message starts `Commit your setup first:` and names up to five files. Foundry never commits for the user. No git repo, or git failing: no check (the boundary check reports `boundary_skipped`). |

@@ -696,7 +696,12 @@ export type ErrorCode =
 /**  A verification is already running for this project. */
 "verification_running" | 
 /**  `testCommands` changed while the human was reviewing them: nothing was confirmed. */
-"test_commands_changed";
+"test_commands_changed" | 
+/**
+ *  A slice can't start while Foundry's setup files (AGENTS.md, `agents/`, `docs/`, the
+ *  VSM files, `plan.json`) are uncommitted: they'd count as the agent's changes.
+ */
+"setup_not_committed";
 
 export type EventKind = "session_started" | "edit" | "command" | "tests_ran" | "blocked" | "needs_attention" | "turn_complete" | "session_ended" | "stuck" | "quiet" | "danger" | "report_ready";
 
