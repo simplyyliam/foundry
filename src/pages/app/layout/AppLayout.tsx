@@ -11,7 +11,7 @@ import {
   WindowFrame,
 } from "@/shared";
 import { useRoadmapProgressListener } from "@/features/roadmap";
-import { AddAgentDialog, AppSidebar, InsetHeader } from "@/widgets";
+import { AddAgentDialog, AppSidebar, AutoVerify, InsetHeader } from "@/widgets";
 import { ContextualPanelFrame } from "./contextual-panel/ContextualPanelFrame";
 import { SettingsFrame } from "./settings/SettingsFrame";
 
@@ -37,6 +37,8 @@ export default function AppLayout() {
                   <div className="min-h-0 flex-1 overflow-auto">
                     <Outlet />
                   </div>
+                  {/* Always mounted: verification progress and auto mode work on every page. */}
+                  <AutoVerify />
                 </SidebarInset>
                 <ContextualPanelFrame />
               </SidebarProvider>

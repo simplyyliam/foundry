@@ -8,6 +8,7 @@ export { Requirements, type RequirementsProps } from "./requirements";
 export { Setup, type SetupProps } from "./setup";
 export { AddAgentDialog, TeamComposition, type TeamCompositionProps } from "./team-composition";
 export { Prompts, type PromptsProps } from "./prompts";
+export { AutoVerify, Verification, type VerificationProps } from "./verification";
 export { Teams, type TeamsProps } from "./teams";
 export { ReferencesPanel, type ReferencesPanelProps } from "./references";
 export {

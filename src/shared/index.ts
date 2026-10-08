@@ -39,3 +39,4 @@ export { useFileDrop } from "./hook/useFileDrop";
 export { DropOverlay } from "./components/DropOverlay";
 export { TagEditor } from "./components/TagEditor";
 export { SetupSection } from "./components/SetupSection";
+export { NotVerifiedDialog, type OverrideOutcome } from "./components/NotVerifiedDialog";

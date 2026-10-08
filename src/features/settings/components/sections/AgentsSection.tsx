@@ -1,6 +1,5 @@
 import type { Settings, VerifyMode } from "@/lib/bindings";
 import { useSettingField } from "../../hooks/useSettingField";
-import { NotActiveTag } from "../NotActiveTag";
 import { SettingGroup, SettingRow } from "../SettingRow";
 import { SettingSelect } from "../SettingSelect";
 import { SettingSwitch } from "../SettingSwitch";
@@ -26,7 +25,7 @@ export function AgentsSection({ settings }: { settings: Settings }) {
       />
       <SettingRow
         label="Default verify mode"
-        tag={<NotActiveTag />}
+        description="Auto verifies a slice as soon as its agent reports it's ready. Manual waits for you to click Verify."
         error={verifyMode.error}
         control={(ids) => (
           <SettingSelect value={verifyMode.value} options={VERIFY_MODES} onChange={(next) => void verifyMode.commit(next)} ids={ids} />

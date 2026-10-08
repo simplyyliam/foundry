@@ -12,7 +12,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import type { Plan, SliceStatus, SliceView } from "@/lib/bindings";
-import { PressButton, usePressScale } from "@/shared";
+import { NotVerifiedDialog, PressButton, usePressScale } from "@/shared";
 import { useAction } from "../hooks/useAction";
 import type { PlanActions } from "../hooks/usePlanActions";
 import { STATUS_LABEL } from "../lib/order";
@@ -29,10 +29,12 @@ interface SliceStatusControlProps {
 /**
  * queued / in progress / done. Starting a slice whose dependencies aren't done asks for a
  * reason first: that's the override, and the backend records the reason as a decision.
+ * Marking done without a passed verification (`not_verified`) asks for a reason the same way.
  */
 export function SliceStatusControl({ plan, slice, actions }: SliceStatusControlProps) {
   const { busy, error, run } = useAction();
   const [overrideOpen, setOverrideOpen] = useState(false);
+  const [notVerifiedOpen, setNotVerifiedOpen] = useState(false);
   const unfinished = slice.dependsOn
     .map((id) => plan.slices.find((candidate) => candidate.id === id))
     .filter((dependency) => dependency !== undefined && dependency.status !== "done")
@@ -47,6 +49,7 @@ export function SliceStatusControl({ plan, slice, actions }: SliceStatusControlP
     const outcome = await run(() => actions.setStatus(slice.id, status));
     // The plan moved on under us (a dependency was reopened): ask for the reason after all.
     if (!outcome.ok && outcome.error.code === "dependencies_not_done") setOverrideOpen(true);
+    if (!outcome.ok && outcome.error.code === "not_verified") setNotVerifiedOpen(true);
   };
 
   return (
@@ -56,13 +59,18 @@ export function SliceStatusControl({ plan, slice, actions }: SliceStatusControlP
           <StatusOption key={status} status={status} active={status === slice.status} disabled={busy} onClick={() => void choose(status)} />
         ))}
       </div>
-      {!overrideOpen && <ActionError error={error} />}
+      {!overrideOpen && !notVerifiedOpen && error?.code !== "not_verified" && <ActionError error={error} />}
       <OverrideDialog
         open={overrideOpen}
         onOpenChange={setOverrideOpen}
         sliceName={slice.name}
         unfinished={unfinished}
         onSubmit={(reason) => actions.setStatus(slice.id, "in_progress", reason)}
+      />
+      <NotVerifiedDialog
+        open={notVerifiedOpen}
+        onOpenChange={setNotVerifiedOpen}
+        onOverride={(reason) => actions.setStatus(slice.id, "done", reason)}
       />
     </div>
   );
