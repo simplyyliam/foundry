@@ -1072,3 +1072,113 @@ fn read_prompt_writes_nothing() {
     let _ = fix.store.read_prompt(P, "../x.md");
     assert_eq!(snapshot(fix.repo.path()), before);
 }
+
+// ---------- project rules ----------
+
+/// A confirmed, project-wide constraint with no slice.
+fn rule_json(id: &str, text: &str) -> Value {
+    let mut rule = req_json(id, text, "");
+    rule["kind"] = json!("constraint");
+    rule["sliceId"] = Value::Null;
+    rule["projectWide"] = json!(true);
+    rule
+}
+
+fn add_rules(fix: &Fix) {
+    fix.edit_plan(|plan| {
+        let requirements = plan["requirements"].as_array_mut().unwrap();
+        requirements.push(rule_json("r-5", "The app works well in a desktop browser."));
+        requirements.push(rule_json(
+            "r-6",
+            "Compare, inspect and search run entirely in the browser.",
+        ));
+    });
+}
+
+#[test]
+fn a_plan_with_only_project_rules_unassigned_is_confirmed_but_a_proposed_one_is_not() {
+    let fix = Fix::ready();
+    add_rules(&fix);
+    fix.store.generate_handoff(P).unwrap();
+    fix.task("s-feed", "ada", false).unwrap();
+
+    fix.edit_plan(|plan| plan["requirements"][4]["state"] = json!("proposed"));
+    assert_code(fix.store.generate_handoff(P), ErrorCode::PlanNotConfirmed);
+    // Unassigned and not project-wide: not confirmed either.
+    fix.edit_plan(|plan| {
+        plan["requirements"][4]["state"] = json!("confirmed");
+        plan["requirements"][4]["projectWide"] = json!(false);
+    });
+    assert_code(fix.store.generate_handoff(P), ErrorCode::PlanNotConfirmed);
+}
+
+#[test]
+fn handoff_lists_project_rules_with_their_verified_by_line() {
+    let fix = Fix::ready();
+    fix.store.generate_handoff(P).unwrap();
+    let before = fix.repo.read(".foundry/prompts/handoff.md");
+    assert!(
+        !before.contains(render::PROJECT_RULES_HEADING),
+        "none: no section"
+    );
+
+    add_rules(&fix);
+    fix.store.generate_handoff(P).unwrap();
+    let text = fix.repo.read(".foundry/prompts/handoff.md");
+    let section = format!(
+        "  - r-4: A shared link opens without signing in.\n\
+         \n\
+         {}\n\
+         - r-5: The app works well in a desktop browser.\n  Verified by: test r-5\n\
+         - r-6: Compare, inspect and search run entirely in the browser.\n  Verified by: test r-6\n\
+         \n\
+         FUTURE HORIZON ROADMAP PRIMITIVES:\n",
+        render::PROJECT_RULES_HEADING
+    );
+    assert!(text.contains(&section), "{text}");
+    // Nothing else changed: take the section out and it's the hand-off without rules.
+    let without = text.replace(
+        &section,
+        "  - r-4: A shared link opens without signing in.\n\nFUTURE HORIZON ROADMAP PRIMITIVES:\n",
+    );
+    assert_eq!(without, before);
+
+    // A proposed project rule isn't listed (and the plan isn't confirmed, so no hand-off);
+    // checked through the renderer directly.
+    let mut plan: disk::Plan = serde_json::from_value(fix.plan()).unwrap();
+    plan.requirements[5].state = disk::RequirementState::Proposed;
+    let lines = render::handoff_project_rules(&plan);
+    assert!(lines.iter().any(|l| l.contains("r-5")));
+    assert!(!lines.iter().any(|l| l.contains("r-6")));
+}
+
+#[test]
+fn task_prompts_are_unchanged_by_project_rules_and_carry_the_sentence() {
+    let fix = Fix::ready();
+    let mut before = Vec::new();
+    for slice in ["s-auth", "s-feed", "s-share"] {
+        let path = fix.task(slice, "ada", true).unwrap().path;
+        before.push(fix.repo.read(&path));
+    }
+    add_rules(&fix);
+    for (i, slice) in ["s-auth", "s-feed", "s-share"].into_iter().enumerate() {
+        let text = fix.repo.read(&fix.task(slice, "ada", true).unwrap().path);
+        assert_eq!(
+            text, before[i],
+            "{slice}: project rules changed the task prompt"
+        );
+        assert!(!text.contains("r-5") && !text.contains("r-6"), "{slice}");
+        assert_eq!(text.matches(render::PROJECT_RULES_SENTENCE).count(), 1);
+        // Right under the requirement list, before the next section.
+        let at = text.find(render::PROJECT_RULES_SENTENCE).unwrap();
+        let requirements = text.find("## Requirements").unwrap();
+        let decisions = text.find("## Decisions and open questions").unwrap();
+        assert!(requirements < at && at < decisions, "{slice}");
+        assert!(text[..at].ends_with("\n\n"));
+    }
+    assert_eq!(
+        render::PROJECT_RULES_SENTENCE,
+        "Project rules (in the hand-off) apply to everything you build; you are not asked to \
+         report on them."
+    );
+}

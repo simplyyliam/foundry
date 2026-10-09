@@ -32,6 +32,8 @@ const HEADER: &str = "\
 //   }]
 //   future_horizon: [{ id, label, anchored_to: slice id }]: deferred features. Don't build
 //     interfaces that block them (AGENTS.md, Law 8).
+//   project_rules (only when there are any): [{ id, text, verified_by,
+//     state: \"proposed\" | \"confirmed\" }]: constraints on the whole project, in no slice.
 ";
 
 #[derive(Serialize)]
@@ -39,6 +41,9 @@ struct VsmData<'a> {
     meta: Meta<'a>,
     slices: Vec<VsmSlice<'a>>,
     future_horizon: Vec<Horizon<'a>>,
+    /// Left out when empty, so a plan without any mirrors exactly as before.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    project_rules: Vec<ProjectRule<'a>>,
 }
 
 #[derive(Serialize)]
@@ -66,6 +71,14 @@ struct Horizon<'a> {
     id: &'a str,
     label: &'a str,
     anchored_to: &'a str,
+}
+
+#[derive(Serialize)]
+struct ProjectRule<'a> {
+    id: &'a str,
+    text: &'a str,
+    verified_by: &'a str,
+    state: super::RequirementState,
 }
 
 pub fn render(plan: &PlanFile, derived: &Derived, title: &str, subtitle: &str) -> String {
@@ -101,10 +114,23 @@ pub fn render(plan: &PlanFile, derived: &Derived, title: &str, subtitle: &str) -
         })
         .collect();
     future_horizon.sort_by(|a, b| (a.label, a.id).cmp(&(b.label, b.id)));
+    let mut project_rules: Vec<ProjectRule> = plan
+        .requirements
+        .iter()
+        .filter(|r| r.project_wide)
+        .map(|r| ProjectRule {
+            id: &r.id,
+            text: &r.text,
+            verified_by: &r.verified_by,
+            state: r.state,
+        })
+        .collect();
+    project_rules.sort_by(|a, b| a.id.cmp(b.id));
     let data = VsmData {
         meta: Meta { title, subtitle },
         slices,
         future_horizon,
+        project_rules,
     };
     // Serializing plain structs of strings and numbers can't fail.
     let json = serde_json::to_string_pretty(&data).unwrap_or_else(|_| "{}".into());

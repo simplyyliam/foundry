@@ -147,6 +147,9 @@ pub struct PlanRequirement {
     pub id: String,
     #[serde(default)]
     pub slice_id: Option<String>,
+    /// A rule for the whole project, in no slice. Missing in older plans: `false`.
+    #[serde(default)]
+    pub project_wide: bool,
 }
 
 /// The plan, or an empty one if there's no `plan.json` yet.

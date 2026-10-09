@@ -138,8 +138,8 @@ fn require_confirmed_plan(plan: &disk::Plan) -> Result<(), AppError> {
     } else {
         Err(AppError::new(
             ErrorCode::PlanNotConfirmed,
-            "confirm the plan first: every requirement assigned and confirmed, no dependency \
-             cycle",
+            "confirm the plan first: every requirement assigned (or project-wide) and \
+             confirmed, no dependency cycle",
         ))
     }
 }
@@ -275,7 +275,9 @@ impl PromptsStore {
         scalars.insert(field::DESIGN_FAMILY, family.to_string());
 
         let mut lists: BTreeMap<&str, Vec<String>> = BTreeMap::new();
-        lists.insert(field::REQUIREMENTS, render::handoff_requirements(&plan));
+        let mut requirements = render::handoff_requirements(&plan);
+        requirements.extend(render::handoff_project_rules(&plan));
+        lists.insert(field::REQUIREMENTS, requirements);
         lists.insert(field::HORIZON, render::handoff_horizon(&plan));
 
         let text = render::handoff(&scalars, &lists)?;

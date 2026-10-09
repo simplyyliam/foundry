@@ -175,10 +175,15 @@ export const commands = {
 	updateRequirement: (projectId: string, requirementId: string, patch: RequirementPatch, expectedRevision: number | null) => typedError<Plan, AppError>(__TAURI_INVOKE("update_requirement", { projectId, requirementId, patch, expectedRevision })),
 	/**  `sliceId: null` unassigns it, which also makes it `proposed`. */
 	assignRequirement: (projectId: string, requirementId: string, sliceId: string | null, expectedRevision: number | null) => typedError<Plan, AppError>(__TAURI_INVOKE("assign_requirement", { projectId, requirementId, sliceId, expectedRevision })),
+	/**
+	 *  Only a `constraint` can be project-wide (`invalid_input`). On clears its slice; off leaves
+	 *  it unassigned. Its state (proposed or confirmed) is unchanged either way.
+	 */
+	setRequirementProjectWide: (projectId: string, requirementId: string, value: boolean, expectedRevision: number | null) => typedError<Plan, AppError>(__TAURI_INVOKE("set_requirement_project_wide", { projectId, requirementId, value, expectedRevision })),
 	removeRequirement: (projectId: string, requirementId: string, expectedRevision: number | null) => typedError<Plan, AppError>(__TAURI_INVOKE("remove_requirement", { projectId, requirementId, expectedRevision })),
-	/**  `requirement_unassigned` while it has no slice. */
+	/**  `requirement_unassigned` while it has no slice and isn't project-wide. */
 	confirmRequirement: (projectId: string, requirementId: string, expectedRevision: number | null) => typedError<Plan, AppError>(__TAURI_INVOKE("confirm_requirement", { projectId, requirementId, expectedRevision })),
-	/**  Confirms every assigned requirement; unassigned ones stay `proposed`. */
+	/**  Confirms every assigned or project-wide requirement; unassigned ones stay `proposed`. */
 	confirmAll: (projectId: string, expectedRevision: number | null) => typedError<Plan, AppError>(__TAURI_INVOKE("confirm_all", { projectId, expectedRevision })),
 	unconfirmRequirement: (projectId: string, requirementId: string, expectedRevision: number | null) => typedError<Plan, AppError>(__TAURI_INVOKE("unconfirm_requirement", { projectId, requirementId, expectedRevision })),
 	/**  `anchoredTo` must be a slice id. */
@@ -1047,6 +1052,12 @@ export type PlanRequirement = {
 	state: RequirementState,
 	/**  The excerpt isn't in `docs/brain-dump.md` (whitespace-normalized), or is empty. */
 	unsourced: boolean,
+	/**
+	 *  A rule for the whole project, not one slice: `sliceId` is always null while it's
+	 *  set, and only a `constraint` can have it. Set only by `set_requirement_project_wide`;
+	 *  missing in older plans, which read as `false`.
+	 */
+	projectWide?: boolean,
 };
 
 export type PlanSlice = {
@@ -1069,7 +1080,7 @@ export type PlanSlice = {
 };
 
 export type PlanSummary = {
-	/**  Requirement ids with no slice. */
+	/**  Requirement ids with no slice that aren't project-wide. */
 	unassigned: string[],
 	/**  Requirement ids still `proposed`. */
 	unconfirmed: string[],
@@ -1079,8 +1090,8 @@ export type PlanSummary = {
 	blocked: string[],
 	acyclic: boolean,
 	/**
-	 *  At least one slice, the graph is acyclic, and every requirement is assigned and
-	 *  confirmed.
+	 *  At least one slice, the graph is acyclic, and every requirement is handled (assigned
+	 *  to a slice, or project-wide) and confirmed.
 	 */
 	confirmed: boolean,
 };

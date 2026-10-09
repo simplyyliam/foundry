@@ -18,7 +18,7 @@ mod run;
 #[cfg(test)]
 mod tests;
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -864,6 +864,20 @@ impl VerificationStore {
             .filter(|r| r.slice_id.as_deref() == Some(slice_id))
             .map(|r| r.id.clone())
             .collect();
+        // Project rules belong to no slice: a report that lists one anyway isn't held to it,
+        // and the entry isn't checked. The stored report (`value`) keeps it as written.
+        let project_wide: HashSet<&str> = plan
+            .requirements
+            .iter()
+            .filter(|r| r.project_wide)
+            .map(|r| r.id.as_str())
+            .collect();
+        let mut reports = reports;
+        for l in &mut reports {
+            l.report
+                .requirements
+                .retain(|r| !project_wide.contains(r.id.as_str()));
+        }
         Ok(Ready {
             repo,
             commands,

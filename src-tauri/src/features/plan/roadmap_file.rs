@@ -160,6 +160,7 @@ pub fn to_plan(file: RoadmapFile) -> Result<(PlanFile, Vec<String>), AppError> {
             verified_by: r.verified_by.trim().to_string(),
             state: RequirementState::Proposed,
             unsourced: r.unsourced,
+            project_wide: false,
         });
     }
 

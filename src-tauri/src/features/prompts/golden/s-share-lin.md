@@ -18,6 +18,8 @@ Each one is checked off individually. Meet every one.
 - r-4: A shared link opens without signing in.
   Verified by: test r-4
 
+Project rules (in the hand-off) apply to everything you build; you are not asked to report on them.
+
 ## Decisions and open questions
 
 Decisions so far:

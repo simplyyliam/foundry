@@ -18,6 +18,8 @@
 //   }]
 //   future_horizon: [{ id, label, anchored_to: slice id }]: deferred features. Don't build
 //     interfaces that block them (AGENTS.md, Law 8).
+//   project_rules (only when there are any): [{ id, text, verified_by,
+//     state: "proposed" | "confirmed" }]: constraints on the whole project, in no slice.
 
 const VSM_DATA = {
   "meta": {

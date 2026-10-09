@@ -18,6 +18,8 @@ Each one is checked off individually. Meet every one.
 - r-3: Pressing J moves to the next highlight; K moves back.
   Verified by: test r-3
 
+Project rules (in the hand-off) apply to everything you build; you are not asked to report on them.
+
 ## Decisions and open questions
 
 Decisions so far:

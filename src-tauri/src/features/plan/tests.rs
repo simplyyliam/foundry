@@ -172,11 +172,27 @@ fn expected_mirror(file: &PlanFile) -> Value {
         })
         .collect();
     horizon.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
-    json!({
+    let mut out = json!({
         "meta": { "title": "Orbit", "subtitle": "Read anywhere" },
         "slices": slices.into_iter().map(|s| s.3).collect::<Vec<_>>(),
         "future_horizon": horizon.into_iter().map(|h| h.2).collect::<Vec<_>>(),
-    })
+    });
+    // project_rules: only when there are any, sorted by id.
+    let mut rules: Vec<&Requirement> = file
+        .requirements
+        .iter()
+        .filter(|r| r.project_wide)
+        .collect();
+    rules.sort_by(|a, b| a.id.cmp(&b.id));
+    if !rules.is_empty() {
+        out["project_rules"] = rules
+            .iter()
+            .map(|r| {
+                json!({ "id": r.id, "text": r.text, "verified_by": r.verified_by, "state": r.state })
+            })
+            .collect();
+    }
+    out
 }
 
 // ---------- workspace access ----------
@@ -1566,4 +1582,274 @@ fn load_roadmap_honours_expected_revision() {
         .store
         .load_roadmap(P, LoadRoadmapOptions::default(), Some(1));
     assert_eq!(fresh.unwrap().plan.revision, 2);
+}
+
+// ---------- project-wide requirements ----------
+
+impl Env {
+    fn requirement_of(&self, kind: RequirementKind, slice: Option<&str>) -> String {
+        self.store
+            .add_requirement(
+                P,
+                NewRequirement {
+                    text: format!("A {kind:?} rule"),
+                    kind,
+                    slice_id: slice.map(str::to_string),
+                    source_excerpt: "it works".into(),
+                    verified_by: "a review".into(),
+                },
+                None,
+            )
+            .unwrap()
+            .id
+    }
+
+    fn req(&self, id: &str) -> Requirement {
+        self.plan()
+            .requirements
+            .into_iter()
+            .find(|r| r.id == id)
+            .unwrap()
+    }
+}
+
+#[test]
+fn project_wide_defaults_off() {
+    let env = Env::new();
+    let s = env.slice("A", &[]);
+    let r = env.requirement_of(RequirementKind::Constraint, Some(&s));
+    assert!(!env.req(&r).project_wide);
+    assert!(env
+        .repo
+        .read(".foundry/plan.json")
+        .contains("\"projectWide\": false"));
+    // No project rules: the mirror has no project_rules key at all.
+    let mirrored = mirror_value(&String::from_utf8(env.mirror_bytes()).unwrap());
+    assert!(mirrored.get("project_rules").is_none());
+    assert_mirror_matches(&env);
+}
+
+#[test]
+fn a_plan_written_before_project_wide_still_loads() {
+    let env = Env::new();
+    let s = env.slice("A", &[]);
+    let r = env.requirement_of(RequirementKind::Constraint, Some(&s));
+    let mut file: Value = serde_json::from_str(&env.repo.read(".foundry/plan.json")).unwrap();
+    for requirement in file["requirements"].as_array_mut().unwrap() {
+        requirement.as_object_mut().unwrap().remove("projectWide");
+    }
+    let text = file.to_string();
+    assert!(!text.contains("projectWide"));
+    env.repo.write(".foundry/plan.json", &text);
+    assert!(!env.req(&r).project_wide);
+    assert!(env.store.summary(P).unwrap().unassigned.is_empty());
+    // And the next change writes it out.
+    env.store
+        .set_requirement_project_wide(P, &r, true, None)
+        .unwrap();
+    assert!(env.req(&r).project_wide);
+}
+
+#[test]
+fn only_a_constraint_can_be_project_wide() {
+    let env = Env::new();
+    let s = env.slice("A", &[]);
+    for kind in [RequirementKind::Behavior, RequirementKind::Interaction] {
+        let r = env.requirement_of(kind, Some(&s));
+        let before = env.plan();
+        for value in [true, false] {
+            let err = env
+                .store
+                .set_requirement_project_wide(P, &r, value, None)
+                .unwrap_err();
+            assert_eq!(err.code, ErrorCode::InvalidInput, "{kind:?} {value}");
+        }
+        assert_eq!(env.plan(), before, "a refusal changes nothing");
+    }
+    // A project-wide requirement can't stop being a constraint while it's on.
+    let c = env.requirement_of(RequirementKind::Constraint, Some(&s));
+    env.store
+        .set_requirement_project_wide(P, &c, true, None)
+        .unwrap();
+    let err = env
+        .store
+        .update_requirement(
+            P,
+            &c,
+            RequirementPatch {
+                kind: Some(RequirementKind::Behavior),
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::InvalidInput);
+    assert_eq!(env.req(&c).kind, RequirementKind::Constraint);
+    assert_eq!(
+        env.store
+            .set_requirement_project_wide(P, "nope", true, None)
+            .unwrap_err()
+            .code,
+        ErrorCode::NotFound
+    );
+}
+
+#[test]
+fn turning_project_wide_on_clears_the_slice_and_keeps_the_state() {
+    let env = Env::new();
+    let s = env.slice("A", &[]);
+    let r = env.requirement_of(RequirementKind::Constraint, Some(&s));
+    env.store.confirm_requirement(P, &r, None).unwrap();
+
+    let revision = env.plan().revision;
+    let stale = env
+        .store
+        .set_requirement_project_wide(P, &r, true, Some(revision - 1));
+    assert_eq!(stale.unwrap_err().code, ErrorCode::StaleRevision);
+    let plan = env
+        .store
+        .set_requirement_project_wide(P, &r, true, Some(revision))
+        .unwrap();
+    assert_eq!(plan.revision, revision + 1);
+    let req = env.req(&r);
+    assert!(req.project_wide);
+    assert_eq!(req.slice_id, None, "on clears the slice");
+    assert_eq!(req.state, RequirementState::Confirmed, "state unchanged");
+
+    // Editing a confirmed project rule's text still makes it proposed; the flag stays.
+    env.store
+        .update_requirement(
+            P,
+            &r,
+            RequirementPatch {
+                text: Some("Works in a desktop browser".into()),
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+    let req = env.req(&r);
+    assert_eq!(req.state, RequirementState::Proposed);
+    assert!(req.project_wide);
+
+    // Off leaves it unassigned, and its state as it was.
+    env.store.confirm_requirement(P, &r, None).unwrap();
+    env.store
+        .set_requirement_project_wide(P, &r, false, None)
+        .unwrap();
+    let req = env.req(&r);
+    assert!(!req.project_wide);
+    assert_eq!(req.slice_id, None);
+    assert_eq!(req.state, RequirementState::Confirmed);
+    assert_eq!(env.store.summary(P).unwrap().unassigned, vec![r.clone()]);
+
+    // Assigning a project rule to a slice turns project-wide off.
+    env.store
+        .set_requirement_project_wide(P, &r, true, None)
+        .unwrap();
+    env.store
+        .assign_requirement(P, &r, Some(s.clone()), None)
+        .unwrap();
+    let req = env.req(&r);
+    assert!(!req.project_wide);
+    assert_eq!(req.slice_id.as_deref(), Some(s.as_str()));
+}
+
+#[test]
+fn summary_counts_project_wide_requirements_as_handled() {
+    let env = Env::new();
+    let s = env.slice("A", &[]);
+    let assigned = env.requirement_of(RequirementKind::Behavior, Some(&s));
+    let rule = env.requirement_of(RequirementKind::Constraint, None);
+    let loose = env.requirement_of(RequirementKind::Constraint, None);
+
+    let summary = env.store.summary(P).unwrap();
+    assert_eq!(summary.unassigned, vec![rule.clone(), loose.clone()]);
+    assert_eq!(
+        summary.unconfirmed,
+        vec![assigned.clone(), rule.clone(), loose.clone()]
+    );
+
+    env.store
+        .set_requirement_project_wide(P, &rule, true, None)
+        .unwrap();
+    let summary = env.store.summary(P).unwrap();
+    assert_eq!(summary.unassigned, vec![loose.clone()]);
+    assert_eq!(
+        summary.unconfirmed,
+        vec![assigned.clone(), rule.clone(), loose.clone()],
+        "project-wide doesn't confirm it"
+    );
+
+    // A project rule can be confirmed without a slice, one at a time or with confirm_all.
+    env.store.confirm_requirement(P, &rule, None).unwrap();
+    env.store.unconfirm_requirement(P, &rule, None).unwrap();
+    env.store.confirm_all(P, None).unwrap();
+    let summary = env.store.summary(P).unwrap();
+    assert_eq!(summary.unconfirmed, vec![loose.clone()]);
+    assert_eq!(
+        env.store
+            .confirm_requirement(P, &loose, None)
+            .unwrap_err()
+            .code,
+        ErrorCode::RequirementUnassigned
+    );
+}
+
+#[test]
+fn a_plan_is_confirmable_with_only_project_wide_requirements_unassigned() {
+    let env = Env::new();
+    let s = env.slice("A", &[]);
+    env.requirement_of(RequirementKind::Behavior, Some(&s));
+    let rules = [
+        env.requirement_of(RequirementKind::Constraint, None),
+        env.requirement_of(RequirementKind::Constraint, None),
+    ];
+    for r in &rules {
+        env.store
+            .set_requirement_project_wide(P, r, true, None)
+            .unwrap();
+    }
+    env.store.confirm_all(P, None).unwrap();
+    let summary = env.store.summary(P).unwrap();
+    assert!(summary.unassigned.is_empty());
+    assert!(summary.unconfirmed.is_empty());
+    assert!(summary.confirmed);
+}
+
+#[test]
+fn vsm_data_js_lists_project_rules_separately_and_keeps_what_the_viewer_reads() {
+    let env = Env::new();
+    let s = env.slice("A", &[]);
+    env.requirement_of(RequirementKind::Constraint, Some(&s));
+    let rule = env.requirement_of(RequirementKind::Constraint, None);
+    env.store
+        .set_requirement_project_wide(P, &rule, true, None)
+        .unwrap();
+    assert_mirror_matches(&env);
+    let mirrored = mirror_value(&String::from_utf8(env.mirror_bytes()).unwrap());
+    assert_eq!(
+        mirrored["project_rules"],
+        json!([{
+            "id": rule, "text": "A Constraint rule", "verified_by": "a review",
+            "state": "proposed"
+        }])
+    );
+
+    // Every VSM_DATA key vsm_viewer.html reads is still there, with the same shape.
+    let viewer = include_str!("../../../resources/vsm_viewer.html");
+    let mut keys: Vec<&str> = viewer
+        .split("VSM_DATA.")
+        .skip(1)
+        .filter_map(|rest| {
+            rest.split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                .next()
+        })
+        .collect();
+    keys.sort_unstable();
+    keys.dedup();
+    assert_eq!(keys, ["future_horizon", "meta", "slices"]);
+    assert!(mirrored["meta"].is_object());
+    assert!(mirrored["slices"].is_array());
+    assert!(mirrored["future_horizon"].is_array());
 }

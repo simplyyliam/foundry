@@ -104,6 +104,11 @@ pub struct Requirement {
     pub state: RequirementState,
     /// The excerpt isn't in `docs/brain-dump.md` (whitespace-normalized), or is empty.
     pub unsourced: bool,
+    /// A rule for the whole project, not one slice: `sliceId` is always null while it's
+    /// set, and only a `constraint` can have it. Set only by `set_requirement_project_wide`;
+    /// missing in older plans, which read as `false`.
+    #[serde(default)]
+    pub project_wide: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -195,7 +200,7 @@ pub struct PlanAdded {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanSummary {
-    /// Requirement ids with no slice.
+    /// Requirement ids with no slice that aren't project-wide.
     pub unassigned: Vec<String>,
     /// Requirement ids still `proposed`.
     pub unconfirmed: Vec<String>,
@@ -204,8 +209,8 @@ pub struct PlanSummary {
     /// Queued slice ids waiting on a dependency.
     pub blocked: Vec<String>,
     pub acyclic: bool,
-    /// At least one slice, the graph is acyclic, and every requirement is assigned and
-    /// confirmed.
+    /// At least one slice, the graph is acyclic, and every requirement is handled (assigned
+    /// to a slice, or project-wide) and confirmed.
     pub confirmed: bool,
 }
 
@@ -320,6 +325,11 @@ fn requirement_index(plan: &PlanFile, id: &str) -> Result<usize, AppError> {
         .ok_or_else(|| AppError::not_found(format!("no requirement with id {id}")))
 }
 
+/// Has a home: a slice, or the whole project.
+fn is_handled(r: &Requirement) -> bool {
+    r.slice_id.is_some() || r.project_wide
+}
+
 fn slice_name<'a>(plan: &'a PlanFile, id: &'a str) -> &'a str {
     plan.slices
         .iter()
@@ -409,7 +419,7 @@ pub fn summary(plan: &PlanFile) -> PlanSummary {
     let unassigned: Vec<String> = plan
         .requirements
         .iter()
-        .filter(|r| r.slice_id.is_none())
+        .filter(|r| !is_handled(r))
         .map(|r| r.id.clone())
         .collect();
     let unconfirmed: Vec<String> = plan
@@ -886,6 +896,7 @@ impl PlanStore {
                 source_excerpt: input.source_excerpt.trim().to_string(),
                 verified_by: input.verified_by.trim().to_string(),
                 state: RequirementState::Proposed,
+                project_wide: false,
             });
             Ok(())
         })?;
@@ -920,6 +931,12 @@ impl PlanStore {
                 r.text = text;
             }
             if let Some(kind) = patch.kind {
+                if r.project_wide && kind != RequirementKind::Constraint {
+                    return Err(AppError::invalid_input(
+                        "a project-wide requirement must stay a constraint: turn project-wide \
+                         off first",
+                    ));
+                }
                 changed_meaning |= kind != r.kind;
                 r.kind = kind;
             }
@@ -940,7 +957,8 @@ impl PlanStore {
         Ok(plan)
     }
 
-    /// `slice_id: null` unassigns it (and so unconfirms it).
+    /// `slice_id: null` unassigns it (and so unconfirms it). Assigning a project-wide
+    /// requirement to a slice turns project-wide off: it belongs to that slice now.
     pub fn assign_requirement(
         &self,
         project_id: &str,
@@ -956,10 +974,43 @@ impl PlanStore {
             let r = &mut plan.requirements[index];
             if slice_id.is_none() {
                 r.state = RequirementState::Proposed;
+            } else {
+                r.project_wide = false;
             }
             r.slice_id = slice_id;
             Ok(())
         })?;
+        Ok(plan)
+    }
+
+    /// Turns the requirement's `projectWide` on or off. Only a `constraint` can be
+    /// project-wide (`invalid_input` otherwise, either way). On clears its slice; off leaves it
+    /// unassigned. Its state (proposed or confirmed) is left as it is.
+    pub fn set_requirement_project_wide(
+        &self,
+        project_id: &str,
+        requirement_id: &str,
+        value: bool,
+        expected: Option<u32>,
+    ) -> Result<Plan, AppError> {
+        let (_, plan) = self.mutate(project_id, expected, |plan, _| {
+            let index = requirement_index(plan, requirement_id)?;
+            let r = &mut plan.requirements[index];
+            if r.kind != RequirementKind::Constraint {
+                return Err(AppError::invalid_input(
+                    "only a constraint can be project-wide",
+                ));
+            }
+            r.project_wide = value;
+            r.slice_id = None;
+            Ok(())
+        })?;
+        tracing::info!(
+            project_id,
+            requirement_id,
+            value,
+            "requirement project-wide set"
+        );
         Ok(plan)
     }
 
@@ -1015,10 +1066,11 @@ impl PlanStore {
         let (_, plan) = self.mutate(project_id, expected, |plan, _| {
             let index = requirement_index(plan, requirement_id)?;
             let r = &mut plan.requirements[index];
-            if state == RequirementState::Confirmed && r.slice_id.is_none() {
+            if state == RequirementState::Confirmed && !is_handled(r) {
                 return Err(AppError::new(
                     ErrorCode::RequirementUnassigned,
-                    "assign this requirement to a slice before confirming it",
+                    "assign this requirement to a slice, or make it project-wide, before \
+                     confirming it",
                 ));
             }
             r.state = state;
@@ -1027,15 +1079,11 @@ impl PlanStore {
         Ok(plan)
     }
 
-    /// Confirms every assigned requirement. Unassigned ones stay proposed (see `unassigned`
-    /// in `plan_summary`).
+    /// Confirms every assigned or project-wide requirement. Unassigned ones stay proposed
+    /// (see `unassigned` in `plan_summary`).
     pub fn confirm_all(&self, project_id: &str, expected: Option<u32>) -> Result<Plan, AppError> {
         let (_, plan) = self.mutate(project_id, expected, |plan, _| {
-            for r in plan
-                .requirements
-                .iter_mut()
-                .filter(|r| r.slice_id.is_some())
-            {
+            for r in plan.requirements.iter_mut().filter(|r| is_handled(r)) {
                 r.state = RequirementState::Confirmed;
             }
             Ok(())

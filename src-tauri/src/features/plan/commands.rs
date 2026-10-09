@@ -237,6 +237,23 @@ pub async fn assign_requirement(
     .await
 }
 
+/// Only a `constraint` can be project-wide (`invalid_input`). On clears its slice; off leaves
+/// it unassigned. Its state (proposed or confirmed) is unchanged either way.
+#[tauri::command]
+#[specta::specta]
+pub async fn set_requirement_project_wide(
+    store: Store<'_>,
+    project_id: String,
+    requirement_id: String,
+    value: bool,
+    expected_revision: Option<u32>,
+) -> Result<Plan, AppError> {
+    blocking(&store, move |s| {
+        s.set_requirement_project_wide(&project_id, &requirement_id, value, expected_revision)
+    })
+    .await
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn remove_requirement(
@@ -251,7 +268,7 @@ pub async fn remove_requirement(
     .await
 }
 
-/// `requirement_unassigned` while it has no slice.
+/// `requirement_unassigned` while it has no slice and isn't project-wide.
 #[tauri::command]
 #[specta::specta]
 pub async fn confirm_requirement(
@@ -266,7 +283,7 @@ pub async fn confirm_requirement(
     .await
 }
 
-/// Confirms every assigned requirement; unassigned ones stay `proposed`.
+/// Confirms every assigned or project-wide requirement; unassigned ones stay `proposed`.
 #[tauri::command]
 #[specta::specta]
 pub async fn confirm_all(

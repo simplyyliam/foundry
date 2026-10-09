@@ -81,6 +81,9 @@ pub struct Requirement {
     #[serde(default)]
     pub verified_by: String,
     pub state: RequirementState,
+    /// A rule for the whole project, in no slice. Missing in older plans: `false`.
+    #[serde(default)]
+    pub project_wide: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -108,14 +111,13 @@ impl Plan {
     }
 
     /// The plan feature's definition of confirmed (its `plan_summary`): at least one slice,
-    /// no dependency cycle, every requirement assigned and confirmed.
+    /// no dependency cycle, every requirement assigned (or project-wide) and confirmed.
     pub fn is_confirmed(&self) -> bool {
         !self.slices.is_empty()
             && acyclic(&self.slices)
-            && self
-                .requirements
-                .iter()
-                .all(|r| r.slice_id.is_some() && r.state == RequirementState::Confirmed)
+            && self.requirements.iter().all(|r| {
+                (r.slice_id.is_some() || r.project_wide) && r.state == RequirementState::Confirmed
+            })
     }
 
     /// The slice's dependencies that aren't done, in its `dependsOn` order.

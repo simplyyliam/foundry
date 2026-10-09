@@ -14,6 +14,12 @@ pub const MARKER: &str = "[[ FILL IN";
 const MARKER_CLOSE: &str = "]]";
 /// Starts the line a forced task prompt carries; `launch_message` looks for it.
 pub const FORCED_PREFIX: &str = "Started with unfinished dependencies:";
+/// Heads the hand-off's project rules, under the per-slice requirements.
+pub const PROJECT_RULES_HEADING: &str =
+    "PROJECT RULES (apply to everything built, in every slice):";
+/// Follows a task prompt's requirement list.
+pub const PROJECT_RULES_SENTENCE: &str = "Project rules (in the hand-off) apply to everything you \
+     build; you are not asked to report on them.";
 /// Closes the Boundaries section of a task prompt for a slice with `workspaceAccess`.
 pub const WORKSPACE_SENTENCE: &str = "For this slice you may run package installs and edit the \
      root files listed above; edit them only as much as the slice needs.";
@@ -129,6 +135,29 @@ pub fn handoff_requirements(plan: &Plan) -> Vec<String> {
         if !any {
             out.push("  - (no requirements assigned)".into());
         }
+    }
+    out
+}
+
+/// The confirmed project-wide requirements, each with its "Verified by" line, after a blank
+/// line and `PROJECT_RULES_HEADING`. Nothing at all when there are none, so the hand-off is
+/// unchanged for a plan without them.
+pub fn handoff_project_rules(plan: &Plan) -> Vec<String> {
+    let rules: Vec<&super::disk::Requirement> = plan
+        .requirements
+        .iter()
+        .filter(|r| r.project_wide && r.state == super::disk::RequirementState::Confirmed)
+        .collect();
+    if rules.is_empty() {
+        return Vec::new();
+    }
+    let mut out = vec![String::new(), PROJECT_RULES_HEADING.to_string()];
+    for requirement in rules {
+        out.push(format!("- {}: {}", requirement.id, requirement.text));
+        out.push(format!(
+            "  Verified by: {}",
+            normalize_ws(&requirement.verified_by)
+        ));
     }
     out
 }
@@ -250,6 +279,8 @@ pub fn task_prompt(input: &TaskInputs<'_>) -> Result<String, AppError> {
         out.push_str("- (none assigned)\n");
     }
     out.push('\n');
+    out.push_str(PROJECT_RULES_SENTENCE);
+    out.push_str("\n\n");
 
     // 5. Decisions and open questions.
     out.push_str("## Decisions and open questions\n\n");

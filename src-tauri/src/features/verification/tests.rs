@@ -1789,3 +1789,64 @@ fn a_report_that_isnt_one_is_invalid_json() {
         ErrorCode::InvalidJson
     );
 }
+
+// ---------- project rules ----------
+
+/// Adds a project-wide constraint `r-pw` (no slice) to the plan.
+fn add_project_rule(env: &Env) {
+    let mut plan: Value = serde_json::from_str(&env.repo.read(".foundry/plan.json")).unwrap();
+    plan["requirements"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({ "id": "r-pw", "sliceId": null, "projectWide": true }));
+    env.repo.write(".foundry/plan.json", &plan.to_string());
+}
+
+#[test]
+fn verification_neither_requires_nor_checks_project_rules() {
+    // Not reported: not required.
+    let env = Env::new();
+    env.commands(&[]);
+    add_project_rule(&env);
+    env.write_agent_report(
+        "ada",
+        &report_by(
+            "ada",
+            json!([met("r-1", "cargo test"), met("r-2", "cargo test")]),
+        ),
+    );
+    let v = env.verify().unwrap();
+    assert!(v.review.passed, "{:?}", v.review.findings);
+    assert!(!codes(&v).contains(&code::UNREPORTED_REQUIREMENT));
+    assert!(v.review.requirements.iter().all(|o| o.id != "r-pw"));
+
+    // Reported anyway (partly, no evidence): ignored, no finding, not in the outcomes.
+    let env = Env::new();
+    env.commands(&[]);
+    add_project_rule(&env);
+    let report = report_by(
+        "ada",
+        json!([
+            met("r-1", "cargo test"),
+            met("r-2", "cargo test"),
+            status("r-pw", "partly"),
+        ]),
+    );
+    env.write_agent_report("ada", &report);
+    let v = env.verify().unwrap();
+    assert!(v.review.passed, "{:?}", v.review.findings);
+    assert!(v
+        .review
+        .findings
+        .iter()
+        .all(|f| f.requirement_id.as_deref() != Some("r-pw")));
+    let ids: Vec<&str> = v
+        .review
+        .requirements
+        .iter()
+        .map(|o| o.id.as_str())
+        .collect();
+    assert_eq!(ids, ["r-1", "r-2"]);
+    // The stored report is kept exactly as written.
+    assert_eq!(v.review.reports[0].report, report);
+}
