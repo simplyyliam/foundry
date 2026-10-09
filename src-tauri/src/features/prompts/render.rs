@@ -264,7 +264,7 @@ pub fn task_prompt(input: &TaskInputs<'_>) -> Result<String, AppError> {
     out.push('\n');
 
     // 6. Boundaries.
-    let report_path = report::report_path(&slice.id);
+    let report_path = report::report_path(&slice.id, &agent.id);
     out.push_str("## Boundaries\n\n");
     out.push_str("You may write only files matching:\n");
     bullets(

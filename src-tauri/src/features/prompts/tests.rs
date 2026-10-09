@@ -521,7 +521,10 @@ fn task_prompt_sections_come_in_the_fixed_order() {
     assert!(text.contains("- Use cursor paging\n"));
     assert!(text.contains("- Infinite scroll or pages?\n"));
     assert!(text.contains("- `src/server/**`\n- `src/features/feed/**`\n"));
-    assert!(text.contains("You may also always write `.foundry/reports/s-feed.json`."));
+    // The agent's own report, named in both Boundaries and Done means; never the shared name.
+    assert!(text.contains("You may also always write `.foundry/reports/s-feed.ada.json`."));
+    assert!(text.contains("Then write `.foundry/reports/s-feed.ada.json` in exactly this shape"));
+    assert!(!text.contains(".foundry/reports/s-feed.json"));
     assert!(text.contains("  Verified by: test r-2\n"));
 }
 

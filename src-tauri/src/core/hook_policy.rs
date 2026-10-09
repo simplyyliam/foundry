@@ -7,8 +7,10 @@
 //! - Edit tools (`Write`, `Edit`, `MultiEdit`, `NotebookEdit`): the target, normalized and
 //!   resolved through links, must sit inside the repo, must not match the protected floor or
 //!   the agent's `protectedGlobs`, and must match its `writeGlobs`, except for the report
-//!   carve-out (`.foundry/reports/<name>.json`, a direct child). No `roles.json`, one that
-//!   doesn't parse, or no entry for the agent: blocked (fail closed).
+//!   carve-out: the agent's own report for the slice it was launched on
+//!   (`.foundry/reports/<sliceId>.<agentId>.json`) is always writable, and nothing else in
+//!   `.foundry/reports/` is (another agent's report, a legacy `<sliceId>.json`). No
+//!   `roles.json`, one that doesn't parse, or no entry for the agent: blocked (fail closed).
 //! - Command tools (`Bash`, `PowerShell`): clearly destructive commands are blocked; `git
 //!   push` and dependency installs are allowed with a warning.
 
@@ -112,11 +114,13 @@ struct RoleEntry {
 }
 
 /// Checks an edit tool's target. `roles_json` is the text of `agents/roles.json`, `None`
-/// when it's missing. `cwd` resolves a relative `target`.
+/// when it's missing. `slice_id` is the slice the session was launched on
+/// (`FOUNDRY_SLICE_ID`), whose report the agent may write. `cwd` resolves a relative `target`.
 pub fn check_edit(
     repo_root: &Path,
     roles_json: Option<&str>,
     agent_id: &str,
+    slice_id: Option<&str>,
     target: Option<&str>,
     cwd: &Path,
 ) -> Verdict {
@@ -159,7 +163,24 @@ pub fn check_edit(
             format!("{rel} is protected for agent {agent_id} (protectedGlobs \"{hit}\")"),
         );
     }
-    if is_report(&rel) || role.write_globs.iter().any(|g| glob::matches(g, &rel)) {
+    if rel.starts_with(REPORTS_PREFIX) {
+        let own = slice_id
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|slice| own_report(slice, agent_id));
+        return match own {
+            Some(own) if own == rel => Verdict::Allow,
+            Some(own) => block(
+                rule::PROTECTED,
+                format!("{rel} isn't agent {agent_id}'s report; it may write only {own}"),
+            ),
+            None => block(
+                rule::PROTECTED,
+                format!("{rel} is a slice report, and agent {agent_id} wasn't launched on a slice"),
+            ),
+        };
+    }
+    if role.write_globs.iter().any(|g| glob::matches(g, &rel)) {
         return Verdict::Allow;
     }
     block(
@@ -175,11 +196,12 @@ pub fn check_edit(
     )
 }
 
-/// `.foundry/reports/<name>.json`, a direct child: any agent may write its slice report.
-pub fn is_report(rel: &str) -> bool {
-    rel.strip_prefix(".foundry/reports/")
-        .and_then(|name| name.strip_suffix(".json"))
-        .is_some_and(|stem| !stem.is_empty() && !stem.contains('/'))
+const REPORTS_PREFIX: &str = ".foundry/reports/";
+
+/// The one report an agent launched on `slice_id` may write. Same as
+/// `core::report::report_path`, which this file can't import (a test there checks they agree).
+pub fn own_report(slice_id: &str, agent_id: &str) -> String {
+    format!("{REPORTS_PREFIX}{slice_id}.{agent_id}.json")
 }
 
 /// The target relative to the repo, `/`-separated, after resolving links: a `..` anywhere is
@@ -529,17 +551,67 @@ mod tests {
         }
     }
 
+    fn roles() -> String {
+        serde_json::json!({ "agents": [
+            { "id": "fs", "writeGlobs": ["src/**"], "protectedGlobs": [] },
+            { "id": "qa", "writeGlobs": ["tests/**"], "protectedGlobs": [] },
+            { "id": "all", "writeGlobs": ["**"], "protectedGlobs": [] }
+        ]})
+        .to_string()
+    }
+
+    fn edit(repo: &Path, agent: &str, slice: Option<&str>, rel: &str) -> Option<&'static str> {
+        let roles = roles();
+        check_edit(repo, Some(&roles), agent, slice, Some(rel), repo).rule()
+    }
+
     #[test]
-    fn report_paths_are_direct_json_children_only() {
-        assert!(is_report(".foundry/reports/s-feed.json"));
-        for no in [
-            ".foundry/reports/sub/x.json",
-            ".foundry/reports/.json",
-            ".foundry/reports/x.md",
-            ".foundry/plan.json",
-            "foundry/reports/x.json",
+    fn an_agent_may_write_only_its_own_report_for_its_slice() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        // Its own report, whatever its writeGlobs say.
+        assert_eq!(
+            edit(repo, "qa", Some("s-1"), ".foundry/reports/s-1.qa.json"),
+            None
+        );
+        assert_eq!(
+            edit(repo, "fs", Some("s-1"), ".foundry/reports/s-1.fs.json"),
+            None
+        );
+        for (agent, rel) in [
+            // Another agent's report on the same slice.
+            ("qa", ".foundry/reports/s-1.fs.json"),
+            // Its own name on another slice.
+            ("qa", ".foundry/reports/s-2.qa.json"),
+            // The legacy one-per-slice name.
+            ("qa", ".foundry/reports/s-1.json"),
+            // Anything else in reports, even for an agent whose writeGlobs are `**`.
+            ("all", ".foundry/reports/s-1.fs.json"),
+            ("all", ".foundry/reports/notes.md"),
+            ("qa", ".foundry/reports/sub/s-1.qa.json"),
         ] {
-            assert!(!is_report(no), "{no}");
+            assert_eq!(
+                edit(repo, agent, Some("s-1"), rel),
+                Some(rule::PROTECTED),
+                "{agent} {rel}"
+            );
+        }
+        // Not launched on a slice: no report at all.
+        assert_eq!(
+            edit(repo, "qa", None, ".foundry/reports/s-1.qa.json"),
+            Some(rule::PROTECTED)
+        );
+        assert_eq!(
+            edit(repo, "qa", Some(" "), ".foundry/reports/s-1.qa.json"),
+            Some(rule::PROTECTED)
+        );
+        // The reviews stay protected for everyone.
+        for rel in [".foundry/reviews/s-1.json", ".foundry/reviews/digest.md"] {
+            assert_eq!(
+                edit(repo, "all", Some("s-1"), rel),
+                Some(rule::PROTECTED),
+                "{rel}"
+            );
         }
     }
 }

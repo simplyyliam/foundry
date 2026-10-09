@@ -10,9 +10,9 @@ use serde_json::Value;
 use specta::Type;
 
 use super::{disk, FindingSeverity};
-use crate::core::report::report_path;
+use crate::core::report;
 use crate::core::sessions::{SessionRegistry, SessionStatus};
-use crate::core::{repo_write, AppError};
+use crate::core::AppError;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -34,7 +34,7 @@ pub enum VerificationState {
     Failed,
     /// Never verified.
     None,
-    /// The report changed (or is gone) since it was verified.
+    /// A report changed, is gone or appeared since it was verified.
     Stale,
 }
 
@@ -45,6 +45,7 @@ pub struct SliceDigest {
     pub name: String,
     /// The plan's status: `queued`, `in_progress` or `done`.
     pub status: String,
+    /// At least one report file (any agent's, or the legacy one) exists for the slice.
     pub report_present: bool,
     pub verification: VerificationState,
 }
@@ -95,17 +96,28 @@ fn count(n: usize) -> u32 {
 
 fn verification_state(repo: &Path, slice_id: &str) -> Result<VerificationState, AppError> {
     #[derive(Deserialize)]
+    struct StoredReport {
+        path: String,
+        report: Value,
+    }
+    #[derive(Deserialize)]
     struct Stored {
         passed: bool,
         report: Value,
+        #[serde(default)]
+        reports: Vec<StoredReport>,
     }
     let Some(review) = disk::read_json_lenient(repo, &disk::review_path(slice_id))?
         .and_then(|value| serde_json::from_value::<Stored>(value).ok())
     else {
         return Ok(VerificationState::None);
     };
-    let current = disk::read_json_lenient(repo, &report_path(slice_id))?;
-    Ok(if current.as_ref() != Some(&review.report) {
+    let verified = report::verified_snapshot(
+        slice_id,
+        review.reports.into_iter().map(|r| (r.path, r.report)),
+        review.report,
+    );
+    Ok(if report::snapshot(repo, slice_id)? != verified {
         VerificationState::Stale
     } else if review.passed {
         VerificationState::Passed
@@ -172,7 +184,7 @@ pub fn build(
     let mut slices = Vec::new();
     let mut attention = Vec::new();
     for slice in disk::plan(repo)?.slices {
-        let report_present = repo_write::read_to_string(repo, &report_path(&slice.id))?.is_some();
+        let report_present = !report::slice_report_paths(repo, &slice.id)?.is_empty();
         let verification = verification_state(repo, &slice.id)?;
         let label = format!("\"{}\"", slice.name);
         let item = match verification {

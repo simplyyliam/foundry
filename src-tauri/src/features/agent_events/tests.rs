@@ -424,6 +424,13 @@ fn rule_stop_is_turn_complete_with_the_last_message_cut_to_300() {
 #[test]
 fn rule_report_write_is_exactly_one_report_ready_with_the_file_slice() {
     let repo = TestRepo::new();
+    // A per-agent report names its slice like the legacy one does.
+    let own = repo.path().join(".foundry/reports/s-feed.qa.json");
+    let d = one(&write_tool("Write", &own), repo.path(), &floor());
+    assert_eq!(
+        (d.kind, d.slice_id.as_deref()),
+        (EventKind::ReportReady, Some("s-feed"))
+    );
     let file = repo
         .path()
         .join(".foundry")

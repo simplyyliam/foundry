@@ -274,7 +274,11 @@ export const commands = {
 	 *  `test_commands_changed`, confirming nothing, if `testCommands` no longer equals it.
 	 */
 	confirmTestCommands: (projectId: string, commands: string[]) => typedError<TestCommands, AppError>(__TAURI_INVOKE("confirm_test_commands", { projectId, commands })),
-	/**  `.foundry/reports/<sliceId>.json`, or null if the agent hasn't written it. */
+	/**
+	 *  The slice's first report (the legacy `.foundry/reports/<sliceId>.json`, else the first
+	 *  agent's `<sliceId>.<agentId>.json` by agent id), or null if there's none. Kept for its
+	 *  shape; `list_reports` returns every agent's.
+	 */
 	getReport: (projectId: string, sliceId: string) => typedError<{
 	sliceId: string,
 	/**  The agent id that did the work. */
@@ -285,13 +289,21 @@ export const commands = {
 	notes: string,
 } | null, AppError>(__TAURI_INVOKE("get_report", { projectId, sliceId })),
 	/**
-	 *  Verifies the slice's report and saves `.foundry/reviews/<sliceId>.json`. Progress arrives
+	 *  Every report of the slice, each with its file and agent: the legacy `<sliceId>.json`
+	 *  first, then one per agent by agent id. Empty if there's none.
+	 */
+	listReports: (projectId: string, sliceId: string) => typedError<AgentReport[], AppError>(__TAURI_INVOKE("list_reports", { projectId, sliceId })),
+	/**
+	 *  Verifies every report of the slice and saves `.foundry/reviews/<sliceId>.json`. Progress arrives
 	 *  as `verify:progress`.
 	 */
 	verifySlice: (projectId: string, sliceId: string) => typedError<Verification, AppError>(__TAURI_INVOKE("verify_slice", { projectId, sliceId })),
 	/**  The slice's last verification with `stale` worked out now, or null. */
 	getVerification: (projectId: string, sliceId: string) => typedError<({
-	/**  The report on disk no longer equals the one verified (or is gone). */
+	/**
+	 *  The slice's report files on disk no longer equal the ones verified: one changed, is
+	 *  gone, or a new one appeared.
+	 */
 	stale: boolean,
 }) & (Review) | null, AppError>(__TAURI_INVOKE("get_verification", { projectId, sliceId })),
 	/**
@@ -367,6 +379,14 @@ export type AgentOutput = {
 	/**  Base64 of the raw bytes (may split a UTF-8 sequence or an escape code). */
 	chunk: string,
 } & EventMeta;
+
+/**  A slice report with the file and agent it belongs to (`list_reports`). */
+export type AgentReport = {
+	path: string,
+	/**  From the file name; for a legacy `<sliceId>.json`, the report's `agent` field. */
+	agent: string,
+	report: SliceReport,
+};
 
 /**
  *  `agent_start`'s options. The launch message is built from these; no free text from the
@@ -728,6 +748,11 @@ export type Finding = {
 	requirementId: string | null,
 	/**  The repo-relative file a boundary finding is about. */
 	path: string | null,
+	/**
+	 *  The agent whose report a finding is about; `null` for findings about the slice as a
+	 *  whole (tests, boundary, coverage).
+	 */
+	agent: string | null,
 };
 
 /**  Ordered: `info < warn < danger`. */
@@ -1039,6 +1064,11 @@ export type ProposedAgent = {
 	relatedSliceIds: string[],
 };
 
+export type ReportedStatus = {
+	agent: string,
+	status: RequirementStatus,
+};
+
 export type Requirement = {
 	text: string,
 	kind: string,
@@ -1050,6 +1080,18 @@ export type Requirement = {
 };
 
 export type RequirementKind = "behavior" | "interaction" | "constraint";
+
+/**  One requirement across every report of the slice. */
+export type RequirementOutcome = {
+	id: string,
+	/**
+	 *  `not_met` if any report says so; else `met` if any report says so; else `partly`.
+	 *  `null` when no report lists it.
+	 */
+	status: RequirementStatus | null,
+	/**  What each report that lists it says, in report order. */
+	reportedBy: ReportedStatus[],
+};
 
 export type RequirementPatch = {
 	text: string | null,
@@ -1078,7 +1120,17 @@ export type Review = {
 	passed: boolean,
 	findings: Finding[],
 	testRuns: CommandRun[],
-	/**  The exact report that was verified, as it was on disk. */
+	/**
+	 *  Every report file that was verified (legacy first, then by agent). Empty in a review
+	 *  saved before per-agent reports, which verified only `report`.
+	 */
+	reports?: VerifiedReport[],
+	/**
+	 *  The slice's requirements (the plan's, then any others a report lists), with each one's
+	 *  status across the reports. Empty in a review saved before per-agent reports.
+	 */
+	requirements?: RequirementOutcome[],
+	/**  The first of `reports`, kept for the shape from before per-agent reports. */
 	report: SliceReport,
 	/**  Epoch ms. */
 	verifiedAt: number,
@@ -1215,6 +1267,7 @@ export type SliceDigest = {
 	name: string,
 	/**  The plan's status: `queued`, `in_progress` or `done`. */
 	status: string,
+	/**  At least one report file (any agent's, or the legacy one) exists for the slice. */
 	reportPresent: boolean,
 	verification: VerificationState,
 };
@@ -1224,7 +1277,7 @@ export type SlicePatch = {
 	delivers: string[] | null,
 };
 
-/**  `.foundry/reports/<sliceId>.json`. */
+/**  `.foundry/reports/<sliceId>.<agentId>.json` (or the legacy `<sliceId>.json`). */
 export type SliceReport = {
 	sliceId: string,
 	/**  The agent id that did the work. */
@@ -1328,15 +1381,27 @@ export type Theme = "light" | "dark" | "system";
 
 /**  What `verify_slice` and `get_verification` return. */
 export type Verification = {
-	/**  The report on disk no longer equals the one verified (or is gone). */
+	/**
+	 *  The slice's report files on disk no longer equal the ones verified: one changed, is
+	 *  gone, or a new one appeared.
+	 */
 	stale: boolean,
 } & Review;
 
 export type VerificationState = "passed" | "failed" | 
 /**  Never verified. */
 "none" | 
-/**  The report changed (or is gone) since it was verified. */
+/**  A report changed, is gone or appeared since it was verified. */
 "stale";
+
+/**  One report file a verification read, exactly as it was on disk. */
+export type VerifiedReport = {
+	/**  Repo-relative, e.g. `.foundry/reports/s-feed.qa.json`. */
+	path: string,
+	/**  From the file name; for a legacy `<sliceId>.json`, the report's `agent` field. */
+	agent: string,
+	report: SliceReport,
+};
 
 /**  How a finished slice is verified by default. */
 export type VerifyMode = "auto" | "manual";

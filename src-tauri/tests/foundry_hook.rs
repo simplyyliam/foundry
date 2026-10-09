@@ -100,10 +100,21 @@ fn run_with(mut cmd: Command, stdin: &str) -> (Output, Duration) {
     (out, started.elapsed())
 }
 
-/// Runs the helper as agent `agent` in `repo`.
+/// Runs the helper as agent `agent` in `repo`, launched on no slice.
 fn run_as(repo: &Path, agent: &str, payload: &Value) -> Output {
     let root = repo.to_string_lossy().into_owned();
     let cmd = helper(&[("FOUNDRY_AGENT_ID", agent), ("CLAUDE_PROJECT_DIR", &root)]);
+    run_with(cmd, &payload.to_string()).0
+}
+
+/// Runs the helper as agent `agent` in `repo`, launched on slice `slice`.
+fn run_on(repo: &Path, agent: &str, slice: &str, payload: &Value) -> Output {
+    let root = repo.to_string_lossy().into_owned();
+    let cmd = helper(&[
+        ("FOUNDRY_AGENT_ID", agent),
+        ("FOUNDRY_SLICE_ID", slice),
+        ("CLAUDE_PROJECT_DIR", &root),
+    ]);
     run_with(cmd, &payload.to_string()).0
 }
 
@@ -314,10 +325,15 @@ fn project_json_and_reviews_are_blocked_for_every_role_without_editing_roles_jso
         "outside_write_globs",
     );
     // The report carve-out next to them still works.
-    allowed(&run_as(
+    allowed(&run_on(
         repo.path(),
         "builder",
-        &write_payload(repo.path(), "Write", &file(".foundry/reports/s-1.json")),
+        "s-1",
+        &write_payload(
+            repo.path(),
+            "Write",
+            &file(".foundry/reports/s-1.builder.json"),
+        ),
     ));
 }
 
@@ -404,26 +420,65 @@ fn any_role_can_write_its_report_but_nothing_near_it() {
     let path = |rel: &str| repo.path().join(rel).to_string_lossy().into_owned();
     for agent in ["builder", "designer"] {
         // Neither role's writeGlobs mention .foundry/reports/.
-        allowed(&run_as(
+        allowed(&run_on(
             repo.path(),
             agent,
-            &write_payload(repo.path(), "Write", &path(".foundry/reports/s-feed.json")),
+            "s-feed",
+            &write_payload(
+                repo.path(),
+                "Write",
+                &path(&format!(".foundry/reports/s-feed.{agent}.json")),
+            ),
         ));
     }
     let report = |rel: &str| {
-        run_as(
+        run_on(
             repo.path(),
             AGENT,
+            "s-feed",
             &write_payload(repo.path(), "Write", rel),
         )
     };
+    // Another agent's report, its own on another slice, the legacy name, anything else
+    // in reports; and its own report when it wasn't launched on a slice.
+    for rel in [
+        ".foundry/reports/s-feed.designer.json",
+        ".foundry/reports/s-other.builder.json",
+        ".foundry/reports/s-feed.json",
+        ".foundry/reports/sub/x.json",
+        ".foundry/reports/s-feed.md",
+    ] {
+        blocked(&report(&path(rel)), "protected_path");
+    }
     blocked(
-        &report(&path(".foundry/reports/sub/x.json")),
-        "outside_write_globs",
+        &run_on(
+            repo.path(),
+            "anything",
+            "s-feed",
+            &write_payload(
+                repo.path(),
+                "Write",
+                &path(".foundry/reports/s-feed.builder.json"),
+            ),
+        ),
+        "protected_path",
     );
     blocked(
-        &report(&path(".foundry/reports/s-feed.md")),
-        "outside_write_globs",
+        &run_as(
+            repo.path(),
+            AGENT,
+            &write_payload(
+                repo.path(),
+                "Write",
+                &path(".foundry/reports/s-feed.builder.json"),
+            ),
+        ),
+        "protected_path",
+    );
+    // The reviews too.
+    blocked(
+        &report(&path(".foundry/reviews/s-feed.json")),
+        "protected_path",
     );
     blocked(&report(&path(".foundry/plan.json")), "protected_path");
     blocked(
@@ -447,7 +502,7 @@ fn any_role_can_write_its_report_but_nothing_near_it() {
         &repo.path().join(".foundry").join("reports"),
     );
     blocked(
-        &report(&path(".foundry/reports/s-feed.json")),
+        &report(&path(".foundry/reports/s-feed.builder.json")),
         "outside_repo",
     );
     assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0);
@@ -460,13 +515,14 @@ fn any_role_can_write_its_report_but_nothing_near_it() {
     );
     let file = strict
         .path()
-        .join(".foundry/reports/s.json")
+        .join(".foundry/reports/s.builder.json")
         .to_string_lossy()
         .into_owned();
     blocked(
-        &run_as(
+        &run_on(
             strict.path(),
             AGENT,
+            "s",
             &write_payload(strict.path(), "Write", &file),
         ),
         "protected_path",

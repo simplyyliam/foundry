@@ -61,6 +61,25 @@ fn met(id: &str, evidence: &str) -> Value {
     json!({ "id": id, "status": "met", "evidence": evidence })
 }
 
+fn status(id: &str, status: &str) -> Value {
+    json!({ "id": id, "status": status, "evidence": "" })
+}
+
+/// A report by `agent` (`ada` or `bo`, both on the team).
+fn report_by(agent: &str, requirements: Value) -> Value {
+    let mut value = report(requirements);
+    value["agent"] = json!(agent);
+    value
+}
+
+fn outcome<'a>(v: &'a Verification, id: &str) -> &'a RequirementOutcome {
+    v.review
+        .requirements
+        .iter()
+        .find(|o| o.id == id)
+        .unwrap_or_else(|| panic!("no {id} in {:?}", v.review.requirements))
+}
+
 fn codes(v: &Verification) -> Vec<&str> {
     v.review.findings.iter().map(|f| f.code.as_str()).collect()
 }
@@ -155,9 +174,18 @@ impl Env {
         );
     }
 
+    /// The legacy `<sliceId>.json`, as projects made before per-agent reports have it.
     fn write_report(&self, report: &Value) {
         self.repo
             .write(&format!(".foundry/reports/{S}.json"), &report.to_string());
+    }
+
+    /// `<sliceId>.<agent>.json`, the agent's own report.
+    fn write_agent_report(&self, agent: &str, report: &Value) {
+        self.repo.write(
+            &format!(".foundry/reports/{S}.{agent}.json"),
+            &report.to_string(),
+        );
     }
 
     /// Sets and confirms the test commands, commits `project.json`, and restarts the slice
@@ -872,6 +900,365 @@ fn editing_the_report_after_verifying_makes_the_verification_stale() {
         env.store.get_verification(P, S).unwrap().unwrap().stale,
         "a deleted report too"
     );
+}
+
+// ---------- several agents on one slice ----------
+
+#[test]
+fn two_agents_reports_on_one_slice_are_both_kept_and_both_verified() {
+    let env = Env::new();
+    env.commands(&[]);
+    let ada = report_by("ada", json!([met("r-1", "test feed_loads")]));
+    let bo = report_by("bo", json!([met("r-2", "test feed_renders")]));
+    env.write_agent_report("ada", &ada);
+    env.write_agent_report("bo", &bo);
+
+    // Neither overwrote the other.
+    let listed = env.store.list_reports(P, S).unwrap();
+    let summary: Vec<(&str, &str, &str)> = listed
+        .iter()
+        .map(|r| (r.path.as_str(), r.agent.as_str(), r.report.agent.as_str()))
+        .collect();
+    assert_eq!(
+        summary,
+        [
+            (".foundry/reports/s-feed.ada.json", "ada", "ada"),
+            (".foundry/reports/s-feed.bo.json", "bo", "bo")
+        ]
+    );
+    assert_eq!(listed[1].report.requirements[0].id, "r-2");
+    // The single-report command keeps its shape: the first of them.
+    assert_eq!(env.store.get_report(P, S).unwrap().unwrap().agent, "ada");
+
+    // Each covers half; together they cover the slice.
+    let v = env.verify().unwrap();
+    assert!(v.review.passed, "{:?}", v.review.findings);
+    assert!(!codes(&v).contains(&code::UNREPORTED_REQUIREMENT));
+    let read: Vec<(&str, &str)> = v
+        .review
+        .reports
+        .iter()
+        .map(|r| (r.path.as_str(), r.agent.as_str()))
+        .collect();
+    assert_eq!(
+        read,
+        [
+            (".foundry/reports/s-feed.ada.json", "ada"),
+            (".foundry/reports/s-feed.bo.json", "bo")
+        ],
+        "the result records which report files it read"
+    );
+    assert_eq!(v.review.reports[0].report, ada);
+    assert_eq!(v.review.reports[1].report, bo);
+    assert_eq!(v.review.report, ada, "`report` is the first of `reports`");
+    assert_eq!(outcome(&v, "r-1").status, Some(RequirementStatus::Met));
+    assert_eq!(outcome(&v, "r-2").reported_by[0].agent, "bo");
+    // Saved as returned.
+    let saved = env.store.get_verification(P, S).unwrap().unwrap();
+    assert_eq!(saved.review, v.review);
+    assert!(!saved.stale);
+}
+
+#[test]
+fn met_in_one_report_and_partly_in_another_is_met_with_an_info_finding() {
+    let env = Env::new();
+    env.commands(&[]);
+    env.write_agent_report(
+        "ada",
+        &report_by("ada", json!([met("r-1", "test a"), met("r-2", "test b")])),
+    );
+    env.write_agent_report("bo", &report_by("bo", json!([status("r-2", "partly")])));
+
+    let v = env.verify().unwrap();
+    let r2 = outcome(&v, "r-2");
+    assert_eq!(r2.status, Some(RequirementStatus::Met));
+    assert_eq!(
+        r2.reported_by,
+        [
+            ReportedStatus {
+                agent: "ada".into(),
+                status: RequirementStatus::Met
+            },
+            ReportedStatus {
+                agent: "bo".into(),
+                status: RequirementStatus::Partly
+            }
+        ]
+    );
+    let note = finding(&v, code::PARTLY_REPORTED);
+    assert_eq!(note.severity, FindingSeverity::Info);
+    assert_eq!(note.requirement_id.as_deref(), Some("r-2"));
+    assert_eq!(note.agent.as_deref(), Some("bo"));
+    assert!(note.message.contains("bo"), "{}", note.message);
+    assert!(v.review.passed, "{:?}", v.review.findings);
+    // Partly everywhere is partly, with no note.
+    env.write_agent_report(
+        "ada",
+        &report_by(
+            "ada",
+            json!([met("r-1", "test a"), status("r-2", "partly")]),
+        ),
+    );
+    let v = env.verify().unwrap();
+    assert_eq!(outcome(&v, "r-2").status, Some(RequirementStatus::Partly));
+    assert!(!codes(&v).contains(&code::PARTLY_REPORTED));
+}
+
+#[test]
+fn not_met_in_either_report_is_not_met() {
+    for (ada_says, bo_says) in [
+        ("met", "not_met"),
+        ("not_met", "met"),
+        ("partly", "not_met"),
+    ] {
+        let env = Env::new();
+        env.commands(&[]);
+        env.write_agent_report(
+            "ada",
+            &report_by(
+                "ada",
+                json!([met("r-1", "test a"), status("r-2", ada_says)]),
+            ),
+        );
+        env.write_agent_report("bo", &report_by("bo", json!([status("r-2", bo_says)])));
+        let v = env.verify().unwrap();
+        assert_eq!(
+            outcome(&v, "r-2").status,
+            Some(RequirementStatus::NotMet),
+            "ada {ada_says}, bo {bo_says}"
+        );
+        assert!(!codes(&v).contains(&code::PARTLY_REPORTED));
+    }
+}
+
+#[test]
+fn a_requirement_in_neither_report_is_unreported_and_an_unknown_one_names_its_agent() {
+    let env = Env::new();
+    env.commands(&[]);
+    env.write_agent_report("ada", &report_by("ada", json!([met("r-1", "test a")])));
+    env.write_agent_report(
+        "bo",
+        &report_by("bo", json!([met("r-1", "test a2"), met("r-7", "test x")])),
+    );
+
+    let v = env.verify().unwrap();
+    let missing: Vec<&Finding> = v
+        .review
+        .findings
+        .iter()
+        .filter(|f| f.code == code::UNREPORTED_REQUIREMENT)
+        .collect();
+    assert_eq!(missing.len(), 1, "{missing:?}");
+    assert_eq!(missing[0].requirement_id.as_deref(), Some("r-2"));
+    assert_eq!(missing[0].severity, FindingSeverity::Danger);
+    assert_eq!(outcome(&v, "r-2").status, None);
+    let extra = finding(&v, code::UNKNOWN_REQUIREMENT);
+    assert_eq!(
+        (extra.requirement_id.as_deref(), extra.agent.as_deref()),
+        (Some("r-7"), Some("bo"))
+    );
+    assert!(!v.review.passed);
+}
+
+#[test]
+fn every_reports_blockers_and_evidence_are_checked_and_labeled_with_the_agent() {
+    let env = Env::new();
+    env.commands(&[]);
+    let mut ada = report_by("ada", json!([met("r-1", "test a"), met("r-2", "test b")]));
+    ada["blockers"] = json!(["needs an API key", "  "]);
+    let mut bo = report_by("bo", json!([met("r-2", "looks fine")]));
+    bo["blockers"] = json!(["the design isn't final"]);
+    env.write_agent_report("ada", &ada);
+    env.write_agent_report("bo", &bo);
+
+    let v = env.verify().unwrap();
+    let blockers: Vec<(Option<&str>, FindingSeverity)> = v
+        .review
+        .findings
+        .iter()
+        .filter(|f| f.code == code::REPORTED_BLOCKER)
+        .map(|f| (f.agent.as_deref(), f.severity))
+        .collect();
+    assert_eq!(
+        blockers,
+        [
+            (Some("ada"), FindingSeverity::Warn),
+            (Some("bo"), FindingSeverity::Warn)
+        ],
+        "a blank blocker is none"
+    );
+    assert!(v
+        .review
+        .findings
+        .iter()
+        .any(|f| f.code == code::REPORTED_BLOCKER && f.message.contains("needs an API key")));
+    // r-2 is met in both; only bo's evidence names nothing, so only bo's is flagged.
+    let evidence: Vec<(Option<&str>, Option<&str>)> = v
+        .review
+        .findings
+        .iter()
+        .filter(|f| f.code == code::MISSING_EVIDENCE)
+        .map(|f| (f.requirement_id.as_deref(), f.agent.as_deref()))
+        .collect();
+    assert_eq!(evidence, [(Some("r-2"), Some("bo"))]);
+}
+
+#[test]
+fn a_legacy_report_is_still_read_with_its_agent_from_its_field() {
+    let env = Env::new();
+    env.commands(&[]);
+    env.write_report(&report_by("bo", json!([met("r-1", "test a")])));
+    env.write_agent_report("ada", &report_by("ada", json!([met("r-2", "test b")])));
+
+    let listed = env.store.list_reports(P, S).unwrap();
+    let agents: Vec<(&str, &str)> = listed
+        .iter()
+        .map(|r| (r.path.as_str(), r.agent.as_str()))
+        .collect();
+    assert_eq!(
+        agents,
+        [
+            (".foundry/reports/s-feed.json", "bo"),
+            (".foundry/reports/s-feed.ada.json", "ada")
+        ]
+    );
+    let v = env.verify().unwrap();
+    assert!(v.review.passed, "{:?}", v.review.findings);
+    assert_eq!(outcome(&v, "r-1").reported_by[0].agent, "bo");
+    assert_eq!(v.review.reports.len(), 2);
+}
+
+#[test]
+fn a_change_to_any_of_the_slices_reports_makes_the_verification_stale() {
+    let env = Env::new();
+    env.commands(&[]);
+    let ada = report_by("ada", json!([met("r-1", "test a"), met("r-2", "test b")]));
+    let bo = report_by("bo", json!([met("r-2", "test c")]));
+    let stale = || env.store.get_verification(P, S).unwrap().unwrap().stale;
+    let reset = || {
+        env.write_agent_report("ada", &ada);
+        env.write_agent_report("bo", &bo);
+        for extra in ["", ".zed"] {
+            let _ = fs::remove_file(
+                env.repo
+                    .path()
+                    .join(format!(".foundry/reports/{S}{extra}.json")),
+            );
+        }
+        assert!(!env.verify().unwrap().stale);
+        assert!(!stale());
+    };
+
+    for agent in ["ada", "bo"] {
+        reset();
+        let mut edited = if agent == "ada" {
+            ada.clone()
+        } else {
+            bo.clone()
+        };
+        edited["notes"] = json!("one more thing");
+        env.write_agent_report(agent, &edited);
+        assert!(stale(), "{agent}'s report changed");
+    }
+    reset();
+    fs::remove_file(
+        env.repo
+            .path()
+            .join(format!(".foundry/reports/{S}.bo.json")),
+    )
+    .unwrap();
+    assert!(stale(), "a report is gone");
+    reset();
+    env.write_report(&report(json!([met("r-1", "test a")])));
+    assert!(stale(), "a new (legacy) report appeared");
+    reset();
+    env.repo
+        .write(&format!(".foundry/reports/{S}.zed.json"), "{ not json");
+    assert!(
+        stale(),
+        "a new report appeared, even one that doesn't parse"
+    );
+    // Another slice's report, or a non-report file, is no change.
+    reset();
+    env.repo
+        .write(".foundry/reports/s-other.ada.json", &ada.to_string());
+    env.repo
+        .write(&format!(".foundry/reports/{S}.notes.md"), "x");
+    assert!(!stale());
+}
+
+#[test]
+fn a_review_saved_before_per_agent_reports_still_reads_and_compares_to_the_legacy_file() {
+    let env = Env::new();
+    let legacy = report(json!([met("r-1", "test a"), met("r-2", "test b")]));
+    env.write_report(&legacy);
+    env.repo.write(
+        &format!(".foundry/reviews/{S}.json"),
+        &json!({
+            "sliceId": S, "passed": true, "testRuns": [], "report": legacy, "verifiedAt": 1,
+            "findings": [{ "severity": "warn", "code": "no_test_command", "message": "m",
+                           "requirementId": null, "path": null }]
+        })
+        .to_string(),
+    );
+    let v = env.store.get_verification(P, S).unwrap().unwrap();
+    assert!(!v.stale);
+    assert!(v.review.reports.is_empty() && v.review.requirements.is_empty());
+    assert_eq!(v.review.findings[0].agent, None);
+    assert_eq!(
+        env.store.manager_digest(P).unwrap().slices[0].verification,
+        VerificationState::Passed
+    );
+    // A per-agent report added since is a change.
+    env.write_agent_report("ada", &legacy);
+    assert!(env.store.get_verification(P, S).unwrap().unwrap().stale);
+    assert_eq!(
+        env.store.manager_digest(P).unwrap().slices[0].verification,
+        VerificationState::Stale
+    );
+}
+
+#[test]
+fn the_boundary_check_allows_a_file_any_reporting_agent_may_write() {
+    let env = Env::new();
+    env.commands(&[]);
+    env.repo.write(
+        "src/feed.rs",
+        "// ada's
+",
+    );
+    env.repo.write("web/page.html", "<p>bo's</p>");
+    env.repo.write("docs/notes.md", "nobody's");
+    env.write_agent_report("ada", &report_by("ada", json!([met("r-1", "test a")])));
+    env.write_agent_report("bo", &report_by("bo", json!([met("r-2", "test b")])));
+
+    let v = env.verify().unwrap();
+    let by_path: BTreeMap<&str, &str> = v
+        .review
+        .findings
+        .iter()
+        .filter_map(|f| Some((f.path.as_deref()?, f.code.as_str())))
+        .filter(|(p, _)| !p.starts_with(".foundry/"))
+        .collect();
+    assert_eq!(
+        by_path,
+        BTreeMap::from([("docs/notes.md", code::OUTSIDE_WRITE_GLOBS)])
+    );
+    let outside = finding(&v, code::OUTSIDE_WRITE_GLOBS);
+    assert!(
+        outside.message.contains("ada and bo"),
+        "{}",
+        outside.message
+    );
+}
+
+#[test]
+fn a_digest_counts_any_agents_report_as_present() {
+    let env = Env::new();
+    env.write_agent_report("bo", &report_by("bo", json!([])));
+    let slice = &env.store.manager_digest(P).unwrap().slices[0];
+    assert!(slice.report_present);
+    assert_eq!(slice.verification, VerificationState::None);
 }
 
 // ---------- writes ----------

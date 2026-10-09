@@ -31,7 +31,7 @@ Open questions:
 You may write only files matching:
 - `src/server/**`
 - `src/features/feed/**`
-You may also always write `.foundry/reports/s-feed.json`.
+You may also always write `.foundry/reports/s-feed.ada.json`.
 
 ## Design pointers
 
@@ -41,7 +41,7 @@ For UI work, read `docs/bakery/manifest.md` and `docs/design/manifest.md` (where
 
 Every requirement above is met and proven the way its "Verified by" line says, the tests you ran pass, and every file you changed is inside your boundaries.
 
-Then write `.foundry/reports/s-feed.json` in exactly this shape, with one entry per requirement above (`status` is `met`, `partly` or `not_met`), and stop:
+Then write `.foundry/reports/s-feed.ada.json` in exactly this shape, with one entry per requirement above (`status` is `met`, `partly` or `not_met`), and stop:
 
 ```json
 {

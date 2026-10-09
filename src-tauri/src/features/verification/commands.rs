@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use tauri::State;
 
-use super::{ManagerDigest, TestCommands, Verification, VerificationStore};
+use super::{AgentReport, ManagerDigest, TestCommands, Verification, VerificationStore};
 use crate::core::report::SliceReport;
 use crate::core::AppError;
 
@@ -56,7 +56,9 @@ pub async fn confirm_test_commands(
     .await
 }
 
-/// `.foundry/reports/<sliceId>.json`, or null if the agent hasn't written it.
+/// The slice's first report (the legacy `.foundry/reports/<sliceId>.json`, else the first
+/// agent's `<sliceId>.<agentId>.json` by agent id), or null if there's none. Kept for its
+/// shape; `list_reports` returns every agent's.
 #[tauri::command]
 #[specta::specta]
 pub async fn get_report(
@@ -67,7 +69,19 @@ pub async fn get_report(
     blocking(&store, move |s| s.get_report(&project_id, &slice_id)).await
 }
 
-/// Verifies the slice's report and saves `.foundry/reviews/<sliceId>.json`. Progress arrives
+/// Every report of the slice, each with its file and agent: the legacy `<sliceId>.json`
+/// first, then one per agent by agent id. Empty if there's none.
+#[tauri::command]
+#[specta::specta]
+pub async fn list_reports(
+    store: Store<'_>,
+    project_id: String,
+    slice_id: String,
+) -> Result<Vec<AgentReport>, AppError> {
+    blocking(&store, move |s| s.list_reports(&project_id, &slice_id)).await
+}
+
+/// Verifies every report of the slice and saves `.foundry/reviews/<sliceId>.json`. Progress arrives
 /// as `verify:progress`.
 #[tauri::command]
 #[specta::specta]

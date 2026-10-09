@@ -21,7 +21,7 @@ use crate::core::events::EventMeta;
 use crate::core::git::{Git, GitRun};
 use crate::core::repos::RepoIndex;
 use crate::core::text::normalize_ws;
-use crate::core::{ids, repo_write, AppError, ErrorCode};
+use crate::core::{ids, repo_write, report, AppError, ErrorCode};
 
 pub use graph::Derived;
 
@@ -32,7 +32,6 @@ const BRAIN_DUMP: &str = "docs/brain-dump.md";
 const ROADMAP_FILE: &str = ".foundry/roadmap.json";
 /// Written by verification (P9) and by agents; read here, never written.
 const REVIEWS_DIR: &str = ".foundry/reviews";
-const REPORTS_DIR: &str = ".foundry/reports";
 /// Setup files that must be committed before a slice starts, or verification's boundary
 /// check (a diff against the slice's start commit) pins them on the agent.
 const SETUP_PATHS: &[&str] = &["AGENTS.md", "agents", "docs", "vsm_viewer.html"];
@@ -1166,28 +1165,39 @@ impl PlanStore {
 #[derive(Deserialize)]
 struct StoredReview {
     passed: bool,
-    /// The exact report that was verified.
+    /// The first report that was verified; the only one in a review saved before per-agent
+    /// reports, which has no `reports`.
+    report: serde_json::Value,
+    /// Every report file that was verified.
+    #[serde(default)]
+    reports: Vec<StoredReport>,
+}
+
+#[derive(Deserialize)]
+struct StoredReport {
+    path: String,
     report: serde_json::Value,
 }
 
-/// `Ok(())` when the slice has a passed verification whose report still equals the one on
-/// disk (compared as JSON values); otherwise why not, e.g. "has no verification".
+/// `Ok(())` when the slice has a passed verification whose reports still equal the slice's
+/// report files on disk (compared as JSON values, none added or gone); otherwise why not,
+/// e.g. "has no verification".
 fn verified(repo: &Path, slice_id: &str) -> Result<Result<(), &'static str>, AppError> {
-    let read = |dir: &str| -> Result<Option<serde_json::Value>, AppError> {
-        Ok(
-            repo_write::read_to_string(repo, &format!("{dir}/{slice_id}.json"))?
-                .and_then(|text| serde_json::from_str(text.trim_start_matches('\u{feff}')).ok()),
-        )
-    };
-    let Some(review) =
-        read(REVIEWS_DIR)?.and_then(|value| serde_json::from_value::<StoredReview>(value).ok())
+    let Some(review) = repo_write::read_to_string(repo, &format!("{REVIEWS_DIR}/{slice_id}.json"))?
+        .and_then(|text| serde_json::from_str(text.trim_start_matches('\u{feff}')).ok())
+        .and_then(|value| serde_json::from_value::<StoredReview>(value).ok())
     else {
         return Ok(Err("has no verification"));
     };
     if !review.passed {
         return Ok(Err("failed its last verification"));
     }
-    if read(REPORTS_DIR)?.as_ref() != Some(&review.report) {
+    let verified = report::verified_snapshot(
+        slice_id,
+        review.reports.into_iter().map(|r| (r.path, r.report)),
+        review.report,
+    );
+    if report::snapshot(repo, slice_id)? != verified {
         return Ok(Err(
             "has a stale verification (its report changed after it was verified)",
         ));

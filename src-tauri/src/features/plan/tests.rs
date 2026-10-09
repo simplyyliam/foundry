@@ -525,6 +525,59 @@ fn a_slice_cant_start_while_setup_files_are_uncommitted() {
 // ---------- P9: done needs a passed, current verification ----------
 
 #[test]
+fn done_needs_every_verified_report_unchanged_and_no_new_one() {
+    let env = Env::new();
+    let a = env.slice("A", &[]);
+    let report = |agent: &str| {
+        json!({
+            "sliceId": a, "agent": agent, "requirements": [],
+            "testsRun": [], "blockers": [], "notes": ""
+        })
+    };
+    let path = |agent: &str| format!(".foundry/reports/{a}.{agent}.json");
+    let write_all = || {
+        for agent in ["ada", "qa"] {
+            env.repo.write(&path(agent), &report(agent).to_string());
+        }
+        let _ = std::fs::remove_file(env.repo.path().join(path("zed")));
+        env.repo.write(
+            &format!(".foundry/reviews/{a}.json"),
+            &json!({
+                "sliceId": a, "passed": true, "findings": [], "testRuns": [],
+                "report": report("ada"), "verifiedAt": 1, "requirements": [],
+                "reports": [
+                    { "path": path("ada"), "agent": "ada", "report": report("ada") },
+                    { "path": path("qa"), "agent": "qa", "report": report("qa") }
+                ]
+            })
+            .to_string(),
+        );
+    };
+    let done = || {
+        env.store
+            .set_slice_status(P, &a, SliceStatus::Done, StatusOptions::default(), None)
+    };
+    for change in ["edit qa", "remove qa", "add zed"] {
+        write_all();
+        match change {
+            "edit qa" => {
+                env.repo.write(&path("qa"), r#"{ "changed": true }"#);
+            }
+            "remove qa" => std::fs::remove_file(env.repo.path().join(path("qa"))).unwrap(),
+            _ => {
+                env.repo.write(&path("zed"), &report("zed").to_string());
+            }
+        }
+        let err = done().unwrap_err();
+        assert_eq!(err.code, ErrorCode::NotVerified, "{change}");
+        assert!(err.message.contains("stale"), "{change}: {}", err.message);
+    }
+    write_all();
+    done().unwrap();
+    assert_eq!(env.slice_view(&a).slice.status, SliceStatus::Done);
+}
+
+#[test]
 fn done_needs_a_passed_current_verification_or_an_override_with_a_reason() {
     let env = Env::new();
     let a = env.slice("A", &[]);

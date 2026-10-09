@@ -6,7 +6,7 @@ use std::path::Path;
 
 use super::payload::{self, Hook, HookPost, Outcome, ToolCall};
 use super::{EventKind, Severity};
-use crate::core::glob;
+use crate::core::{glob, report};
 
 /// Longest `command` kept on an event (characters).
 pub const COMMAND_CAP: usize = 2000;
@@ -291,12 +291,10 @@ fn edit(call: &ToolCall, ctx: &Context<'_>, base: Draft) -> Draft {
     }
 }
 
-/// `.foundry/reports/<slice>.json` → `<slice>`.
+/// `.foundry/reports/<slice>.<agent>.json` (or the legacy `<slice>.json`) → `<slice>`.
 fn report_slice(path: &str) -> Option<&str> {
-    let slice = path
-        .strip_prefix(".foundry/reports/")?
-        .strip_suffix(".json")?;
-    (!slice.is_empty() && !slice.contains('/')).then_some(slice)
+    let name = path.strip_prefix(report::REPORTS_DIR)?.strip_prefix('/')?;
+    report::parse_report_name(name).map(|(slice, _)| slice)
 }
 
 fn next_streak(streak: Streak, command: &str, outcome: Outcome) -> Streak {

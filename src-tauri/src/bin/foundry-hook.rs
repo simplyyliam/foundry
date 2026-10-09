@@ -153,7 +153,15 @@ fn decide(payload: &Value, agent_id: &str, tool: &str) -> Verdict {
         .unwrap_or_else(|| cwd.clone());
     let roles = read_roles(&root);
     let target = text(input, "file_path").or_else(|| text(input, "notebook_path"));
-    hook_policy::check_edit(&root, roles.as_deref(), agent_id, target, &cwd)
+    let slice_id = env("FOUNDRY_SLICE_ID");
+    hook_policy::check_edit(
+        &root,
+        roles.as_deref(),
+        agent_id,
+        slice_id.as_deref(),
+        target,
+        &cwd,
+    )
 }
 
 /// `None` when `roles.json` is missing. Unreadable reads as empty, which doesn't parse.

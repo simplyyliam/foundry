@@ -1,9 +1,11 @@
 //! Slice reports, verification and the manager digest (P9).
 //!
-//! Agents only write `.foundry/reports/<sliceId>.json` (`core::report`). `verify_slice` checks
-//! that report against the plan, runs the project's confirmed test commands, compares the
-//! files changed since the slice started with the agent's globs, and saves the result to
-//! `.foundry/reviews/<sliceId>.json`. Everything else here only reads.
+//! Agents only write their own `.foundry/reports/<sliceId>.<agentId>.json` (`core::report`);
+//! a project made before per-agent reports may hold a legacy `<sliceId>.json` too, read the
+//! same way. `verify_slice` checks every report of the slice against the plan, runs the
+//! project's confirmed test commands, compares the files changed since the slice started
+//! with the reporting agents' globs, and saves the result to `.foundry/reviews/<sliceId>.json`.
+//! Everything else here only reads.
 //!
 //! Test commands come from `.foundry/project.json`, which an agent might edit, and run with
 //! the human's rights. So `verify_slice` runs them only when they equal, exactly, the list the
@@ -29,7 +31,7 @@ use tauri_specta::Event;
 
 use crate::core::events::EventMeta;
 use crate::core::git::{self, Git, GitRun};
-use crate::core::report::{report_path, RequirementStatus, SliceReport};
+use crate::core::report::{self, RequirementStatus, SliceReport};
 use crate::core::repos::RepoIndex;
 use crate::core::sessions::{now_ms, SessionRegistry};
 use crate::core::{glob, hook_policy, repo_write, AppError, ErrorCode};
@@ -72,6 +74,10 @@ pub mod code {
     pub const FOUNDRY_FILE_CHANGED: &str = "foundry_file_changed";
     pub const BOUNDARY_SKIPPED: &str = "boundary_skipped";
     pub const CONTRADICTION: &str = "contradiction";
+    /// One agent says `partly` where another says `met` (info; the requirement counts as met).
+    pub const PARTLY_REPORTED: &str = "partly_reported";
+    /// A blocker an agent listed in its report.
+    pub const REPORTED_BLOCKER: &str = "reported_blocker";
 }
 
 // ---------- types ----------
@@ -97,6 +103,9 @@ pub struct Finding {
     pub requirement_id: Option<String>,
     /// The repo-relative file a boundary finding is about.
     pub path: Option<String>,
+    /// The agent whose report a finding is about; `null` for findings about the slice as a
+    /// whole (tests, boundary, coverage).
+    pub agent: Option<String>,
 }
 
 impl Finding {
@@ -107,7 +116,13 @@ impl Finding {
             message: message.into(),
             requirement_id: None,
             path: None,
+            agent: None,
         }
+    }
+
+    fn agent(mut self, agent: &str) -> Self {
+        self.agent = Some(agent.into());
+        self
     }
 
     fn requirement(mut self, id: &str) -> Self {
@@ -136,6 +151,47 @@ pub struct CommandRun {
     pub timed_out: bool,
 }
 
+/// One report file a verification read, exactly as it was on disk.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct VerifiedReport {
+    /// Repo-relative, e.g. `.foundry/reports/s-feed.qa.json`.
+    pub path: String,
+    /// From the file name; for a legacy `<sliceId>.json`, the report's `agent` field.
+    pub agent: String,
+    #[specta(type = SliceReport)]
+    pub report: Value,
+}
+
+/// A slice report with the file and agent it belongs to (`list_reports`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentReport {
+    pub path: String,
+    /// From the file name; for a legacy `<sliceId>.json`, the report's `agent` field.
+    pub agent: String,
+    pub report: SliceReport,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ReportedStatus {
+    pub agent: String,
+    pub status: RequirementStatus,
+}
+
+/// One requirement across every report of the slice.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RequirementOutcome {
+    pub id: String,
+    /// `not_met` if any report says so; else `met` if any report says so; else `partly`.
+    /// `null` when no report lists it.
+    pub status: Option<RequirementStatus>,
+    /// What each report that lists it says, in report order.
+    pub reported_by: Vec<ReportedStatus>,
+}
+
 /// `.foundry/reviews/<sliceId>.json`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -145,7 +201,15 @@ pub struct Review {
     pub passed: bool,
     pub findings: Vec<Finding>,
     pub test_runs: Vec<CommandRun>,
-    /// The exact report that was verified, as it was on disk.
+    /// Every report file that was verified (legacy first, then by agent). Empty in a review
+    /// saved before per-agent reports, which verified only `report`.
+    #[serde(default)]
+    pub reports: Vec<VerifiedReport>,
+    /// The slice's requirements (the plan's, then any others a report lists), with each one's
+    /// status across the reports. Empty in a review saved before per-agent reports.
+    #[serde(default)]
+    pub requirements: Vec<RequirementOutcome>,
+    /// The first of `reports`, kept for the shape from before per-agent reports.
     #[specta(type = SliceReport)]
     pub report: Value,
     /// Epoch ms.
@@ -159,7 +223,8 @@ pub struct Review {
 pub struct Verification {
     #[serde(flatten)]
     pub review: Review,
-    /// The report on disk no longer equals the one verified (or is gone).
+    /// The slice's report files on disk no longer equal the ones verified: one changed, is
+    /// gone, or a new one appeared.
     pub stale: bool,
 }
 
@@ -238,7 +303,8 @@ fn millis(duration: Duration) -> u64 {
 }
 
 /// Evidence names a test or a command: it mentions a test or spec, quotes something in
-/// backticks, or contains one of the test commands (confirmed, or run by the agent).
+/// backticks, or contains one of the test commands (confirmed, or run by the agent whose
+/// report it is).
 fn names_test_or_command(evidence: &str, commands: &[String], report: &SliceReport) -> bool {
     let evidence = evidence.trim();
     if evidence.is_empty() {
@@ -260,9 +326,99 @@ fn is_commit_id(text: &str) -> bool {
     (7..=64).contains(&text.len()) && text.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-/// The report on disk as JSON, `None` when it's missing or doesn't parse.
-fn current_report(repo: &Path, slice_id: &str) -> Result<Option<Value>, AppError> {
-    disk::read_json_lenient(repo, &report_path(slice_id))
+/// One of the slice's report files, parsed.
+struct LoadedReport {
+    path: String,
+    agent: String,
+    value: Value,
+    report: SliceReport,
+}
+
+/// Every report of the slice, legacy first then by agent. `invalid_json` for one that isn't a
+/// report. A per-agent file's agent is its name's; a legacy file's is its `agent` field.
+fn load_reports(repo: &Path, slice_id: &str) -> Result<Vec<LoadedReport>, AppError> {
+    let mut out = Vec::new();
+    for path in report::slice_report_paths(repo, slice_id)? {
+        // Gone since it was listed: as if it never was.
+        let Some(value) = disk::read_json(repo, &path)? else {
+            continue;
+        };
+        let parsed = parse_report(&path, value.clone())?;
+        let agent = path
+            .rsplit('/')
+            .next()
+            .and_then(report::parse_report_name)
+            .and_then(|(_, agent)| agent)
+            .unwrap_or(&parsed.agent)
+            .to_string();
+        out.push(LoadedReport {
+            path,
+            agent,
+            value,
+            report: parsed,
+        });
+    }
+    Ok(out)
+}
+
+/// Whether the slice's report files on disk differ from the ones `review` verified.
+fn is_stale(repo: &Path, review: &Review) -> Result<bool, AppError> {
+    let verified = report::verified_snapshot(
+        &review.slice_id,
+        review
+            .reports
+            .iter()
+            .map(|r| (r.path.clone(), r.report.clone())),
+        review.report.clone(),
+    );
+    Ok(report::snapshot(repo, &review.slice_id)? != verified)
+}
+
+/// Each requirement's status across the reports: the plan's ids in plan order, then any
+/// others the reports list, in the order first listed.
+fn outcomes(expected: &[&str], reports: &[LoadedReport]) -> Vec<RequirementOutcome> {
+    let mut ids: Vec<&str> = Vec::new();
+    let listed = reports
+        .iter()
+        .flat_map(|l| &l.report.requirements)
+        .map(|r| r.id.as_str());
+    for id in expected.iter().copied().chain(listed) {
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    ids.into_iter()
+        .map(|id| {
+            let reported_by: Vec<ReportedStatus> = reports
+                .iter()
+                .flat_map(|l| {
+                    l.report
+                        .requirements
+                        .iter()
+                        .filter(|r| r.id == id)
+                        .map(|r| ReportedStatus {
+                            agent: l.agent.clone(),
+                            status: r.status,
+                        })
+                })
+                .collect();
+            let says = |status| reported_by.iter().any(|a| a.status == status);
+            let status = if reported_by.is_empty() {
+                None
+            } else if says(RequirementStatus::NotMet) {
+                Some(RequirementStatus::NotMet)
+            } else if says(RequirementStatus::Met) {
+                Some(RequirementStatus::Met)
+            } else {
+                Some(RequirementStatus::Partly)
+            };
+            RequirementOutcome {
+                id: id.to_string(),
+                status,
+                reported_by,
+            }
+        })
+        .collect()
 }
 
 /// Removes a project's entry from the running map however the verification ends.
@@ -396,19 +552,39 @@ impl VerificationStore {
 
     // ---------- reports and verifications ----------
 
-    /// The slice's report, or `None` if the agent hasn't written one. `invalid_json` when it
-    /// doesn't parse as a report.
+    /// The slice's first report (the legacy `<sliceId>.json`, else the first agent's by id),
+    /// or `None` if there's none. Kept for its old shape; [`Self::list_reports`] gives them
+    /// all. `invalid_json` when a report doesn't parse as one.
     pub fn get_report(
         &self,
         project_id: &str,
         slice_id: &str,
     ) -> Result<Option<SliceReport>, AppError> {
+        Ok(self
+            .list_reports(project_id, slice_id)?
+            .into_iter()
+            .next()
+            .map(|r| r.report))
+    }
+
+    /// Every report of the slice, each with its file and agent: the legacy `<sliceId>.json`
+    /// first, then one per agent by agent id. `invalid_json` when one doesn't parse as a
+    /// report.
+    pub fn list_reports(
+        &self,
+        project_id: &str,
+        slice_id: &str,
+    ) -> Result<Vec<AgentReport>, AppError> {
         check_slice_id(slice_id)?;
         let repo = self.repos.repo(project_id)?;
-        let rel = report_path(slice_id);
-        disk::read_json(&repo, &rel)?
-            .map(|value| parse_report(&rel, value))
-            .transpose()
+        Ok(load_reports(&repo, slice_id)?
+            .into_iter()
+            .map(|l| AgentReport {
+                path: l.path,
+                agent: l.agent,
+                report: l.report,
+            })
+            .collect())
     }
 
     /// The slice's last verification, with `stale` worked out now; `None` if never verified.
@@ -429,7 +605,7 @@ impl VerificationStore {
                 format!("{rel} is unreadable ({err})"),
             )
         })?;
-        let stale = current_report(&repo, slice_id)?.as_ref() != Some(&review.report);
+        let stale = is_stale(&repo, &review)?;
         Ok(Some(Verification { review, stale }))
     }
 
@@ -446,10 +622,11 @@ impl VerificationStore {
         }
     }
 
-    /// Verifies the slice's report and saves the result to `.foundry/reviews/<sliceId>.json`.
+    /// Verifies every report of the slice and saves the result to
+    /// `.foundry/reviews/<sliceId>.json`.
     ///
     /// Refused before anything runs: `test_commands_unconfirmed` (unless there are no test
-    /// commands, which need no confirmation), `not_found` (no report, or
+    /// commands, which need no confirmation), `not_found` (no report at all, or
     /// no such slice in the plan), `invalid_json` (a report that isn't one),
     /// `verification_running`.
     pub fn verify(&self, project_id: &str, slice_id: &str) -> Result<Verification, AppError> {
@@ -467,11 +644,13 @@ impl VerificationStore {
             }
             current.commands
         };
-        let rel = report_path(slice_id);
-        let report_value = disk::read_json(&repo, &rel)?.ok_or_else(|| {
-            AppError::not_found(format!("no report for slice {slice_id} ({rel})"))
-        })?;
-        let report = parse_report(&rel, report_value.clone())?;
+        let reports = load_reports(&repo, slice_id)?;
+        if reports.is_empty() {
+            return Err(AppError::not_found(format!(
+                "no report for slice {slice_id} in {}",
+                report::REPORTS_DIR
+            )));
+        }
         let plan = disk::plan(&repo)?;
         let slice = plan
             .slices
@@ -518,13 +697,13 @@ impl VerificationStore {
                 .filter(|r| r.slice_id.as_deref() == Some(slice_id))
                 .map(|r| r.id.as_str())
                 .collect(),
-            report: &report,
+            reports: &reports,
             commands: &commands,
             cancel: &cancel,
         };
         let result = self
             .run_checks(&checked, &emit)
-            .and_then(|(findings, runs)| {
+            .and_then(|(findings, runs, requirements)| {
                 if cancel.load(Ordering::SeqCst) {
                     return Err(AppError::new(
                         ErrorCode::Cancelled,
@@ -542,13 +721,22 @@ impl VerificationStore {
                             .all(|f| f.severity != FindingSeverity::Danger),
                     findings,
                     test_runs: runs,
-                    report: report_value,
+                    report: reports[0].value.clone(),
+                    reports: reports
+                        .iter()
+                        .map(|l| VerifiedReport {
+                            path: l.path.clone(),
+                            agent: l.agent.clone(),
+                            report: l.value.clone(),
+                        })
+                        .collect(),
+                    requirements,
                     verified_at: now_ms(),
                 };
                 let text = serde_json::to_string_pretty(&review)
                     .map_err(|err| AppError::internal(format!("serialize review: {err}")))?;
                 repo_write::write(&repo, &disk::review_path(slice_id), text + "\n")?;
-                let stale = current_report(&repo, slice_id)?.as_ref() != Some(&review.report);
+                let stale = is_stale(&repo, &review)?;
                 Ok(Verification { review, stale })
             });
         match &result {
@@ -558,6 +746,7 @@ impl VerificationStore {
                     project_id,
                     slice_id,
                     passed = done.review.passed,
+                    reports = done.review.reports.len(),
                     "verification saved"
                 );
             }
@@ -582,72 +771,149 @@ impl VerificationStore {
         &self,
         c: &Checked<'_>,
         emit: &dyn Fn(VerifyStage, Option<&str>),
-    ) -> Result<(Vec<Finding>, Vec<CommandRun>), AppError> {
-        use FindingSeverity::{Danger, Warn};
+    ) -> Result<(Vec<Finding>, Vec<CommandRun>, Vec<RequirementOutcome>), AppError> {
+        use FindingSeverity::{Danger, Info, Warn};
         emit(VerifyStage::Checking, None);
         let mut findings = Vec::new();
-        let report = c.report;
 
-        if report.slice_id != c.slice_id {
-            findings.push(Finding::new(
-                Warn,
-                code::SLICE_MISMATCH,
-                format!(
-                    "the report names slice {:?}, but it's the report file for {}",
-                    report.slice_id, c.slice_id
-                ),
-            ));
-        }
-
-        // 1. The report covers exactly the slice's requirements.
-        let reported: BTreeSet<&str> = report.requirements.iter().map(|r| r.id.as_str()).collect();
-        for id in c.expected.iter().filter(|id| !reported.contains(*id)) {
-            findings.push(
-                Finding::new(
-                    Danger,
-                    code::UNREPORTED_REQUIREMENT,
-                    format!("requirement {id} is in the plan for this slice but not in the report"),
-                )
-                .requirement(id),
-            );
-        }
-        for id in reported.iter().filter(|id| !c.expected.contains(*id)) {
-            findings.push(
-                Finding::new(
-                    Warn,
-                    code::UNKNOWN_REQUIREMENT,
-                    format!(
-                        "the report lists requirement {id}, which the plan doesn't give this slice"
-                    ),
-                )
-                .requirement(id),
-            );
-        }
-
-        // 2. Every met requirement names its proof.
-        for r in report
-            .requirements
-            .iter()
-            .filter(|r| r.status == RequirementStatus::Met)
-        {
-            if !names_test_or_command(&r.evidence, c.commands, report) {
-                let what = if r.evidence.trim().is_empty() {
-                    "no evidence"
-                } else {
-                    "evidence that names no test or command"
-                };
+        for l in c.reports {
+            if l.report.slice_id != c.slice_id {
                 findings.push(
                     Finding::new(
                         Warn,
-                        code::MISSING_EVIDENCE,
-                        format!("requirement {} is reported met with {what}", r.id),
+                        code::SLICE_MISMATCH,
+                        format!(
+                            "{}'s report names slice {:?}, but it's a report file for {} ({})",
+                            l.agent, l.report.slice_id, c.slice_id, l.path
+                        ),
                     )
-                    .requirement(&r.id),
+                    .agent(&l.agent)
+                    .path(&l.path),
                 );
             }
         }
 
-        // 3. Run the confirmed test commands.
+        // 1. Together, the reports cover exactly the slice's requirements.
+        let outcomes = outcomes(&c.expected, c.reports);
+        for o in &outcomes {
+            let expected = c.expected.contains(&o.id.as_str());
+            if expected && o.reported_by.is_empty() {
+                findings.push(
+                    Finding::new(
+                        Danger,
+                        code::UNREPORTED_REQUIREMENT,
+                        format!(
+                            "requirement {} is in the plan for this slice but in no report",
+                            o.id
+                        ),
+                    )
+                    .requirement(&o.id),
+                );
+            } else if !expected {
+                let mut agents: Vec<&str> =
+                    o.reported_by.iter().map(|a| a.agent.as_str()).collect();
+                agents.dedup();
+                let mut finding = Finding::new(
+                    Warn,
+                    code::UNKNOWN_REQUIREMENT,
+                    format!(
+                        "{}'s report lists requirement {}, which the plan doesn't give this slice",
+                        agents.join(" and "),
+                        o.id
+                    ),
+                )
+                .requirement(&o.id);
+                if let [agent] = agents[..] {
+                    finding = finding.agent(agent);
+                }
+                findings.push(finding);
+            }
+        }
+
+        // 2. Met in one report and partly in another: met, with a note naming who said partly.
+        for o in outcomes
+            .iter()
+            .filter(|o| o.status == Some(RequirementStatus::Met))
+        {
+            let met_by: Vec<&str> = o
+                .reported_by
+                .iter()
+                .filter(|a| a.status == RequirementStatus::Met)
+                .map(|a| a.agent.as_str())
+                .collect();
+            for partly in o
+                .reported_by
+                .iter()
+                .filter(|a| a.status == RequirementStatus::Partly)
+            {
+                findings.push(
+                    Finding::new(
+                        Info,
+                        code::PARTLY_REPORTED,
+                        format!(
+                            "requirement {} counts as met ({} says met), but {} says partly",
+                            o.id,
+                            met_by.join(" and "),
+                            partly.agent
+                        ),
+                    )
+                    .requirement(&o.id)
+                    .agent(&partly.agent),
+                );
+            }
+        }
+
+        // 3. Every met requirement names its proof, in the report that says met.
+        for l in c.reports {
+            for r in l
+                .report
+                .requirements
+                .iter()
+                .filter(|r| r.status == RequirementStatus::Met)
+            {
+                if !names_test_or_command(&r.evidence, c.commands, &l.report) {
+                    let what = if r.evidence.trim().is_empty() {
+                        "no evidence"
+                    } else {
+                        "evidence that names no test or command"
+                    };
+                    findings.push(
+                        Finding::new(
+                            Warn,
+                            code::MISSING_EVIDENCE,
+                            format!(
+                                "requirement {} is reported met by {} with {what}",
+                                r.id, l.agent
+                            ),
+                        )
+                        .requirement(&r.id)
+                        .agent(&l.agent),
+                    );
+                }
+            }
+        }
+
+        // 4. Every report's blockers.
+        for l in c.reports {
+            for blocker in l
+                .report
+                .blockers
+                .iter()
+                .map(|b| b.trim())
+                .filter(|b| !b.is_empty())
+            {
+                findings.push(
+                    Finding::new(
+                        Warn,
+                        code::REPORTED_BLOCKER,
+                        format!("{} reported a blocker: {blocker}", l.agent),
+                    )
+                    .agent(&l.agent),
+                );
+            }
+        }
+
+        // 5. Run the confirmed test commands.
         emit(VerifyStage::RunningTests, None);
         let mut runs = Vec::new();
         if c.commands.is_empty() {
@@ -688,30 +954,35 @@ impl VerificationStore {
             });
         }
 
-        // 4. Files changed since the slice started, against the agent's globs.
+        // 6. Files changed since the slice started, against the reporting agents' globs.
         emit(VerifyStage::Checking, None);
-        findings.extend(self.boundary(c.repo, c.start_commit, &report.agent));
+        let mut agents: Vec<&str> = c.reports.iter().map(|l| l.agent.as_str()).collect();
+        agents.sort_unstable();
+        agents.dedup();
+        findings.extend(self.boundary(c.repo, c.start_commit, &agents));
 
-        // 5. "Everything met" while a test failed.
-        let all_met = !report.requirements.is_empty()
-            && report
-                .requirements
+        // 7. "Everything met" while a test failed.
+        let all_met = outcomes.iter().any(|o| o.status.is_some())
+            && outcomes
                 .iter()
-                .all(|r| r.status == RequirementStatus::Met);
+                .filter(|o| o.status.is_some())
+                .all(|o| o.status == Some(RequirementStatus::Met));
         if all_met && runs.iter().any(|r| r.exit_code != Some(0) || r.timed_out) {
             findings.push(Finding::new(
                 Danger,
                 code::CONTRADICTION,
-                "the report says every requirement is met, but a test command failed",
+                "the reports say every requirement is met, but a test command failed",
             ));
         }
-        Ok((findings, runs))
+        Ok((findings, runs, outcomes))
     }
 
     /// Changed files since `start_commit`: committed, staged, unstaged and untracked (not
-    /// ignored). A protected one is `danger`; one outside the write globs only `warn`, since
-    /// others' edits in the same period look the same.
-    fn boundary(&self, repo: &Path, start_commit: Option<&str>, agent: &str) -> Vec<Finding> {
+    /// ignored). A file is fine when one of `agents` may write it (inside its write globs and
+    /// not protected for it). Otherwise one protected for any of them is `danger`, and one
+    /// outside every write glob only `warn`, since others' edits in the same period look the
+    /// same.
+    fn boundary(&self, repo: &Path, start_commit: Option<&str>, agents: &[&str]) -> Vec<Finding> {
         use FindingSeverity::{Danger, Info, Warn};
         let skipped = |why: String| {
             vec![Finding::new(
@@ -735,9 +1006,13 @@ impl VerificationStore {
             Ok(None) => return skipped(format!("{} is missing or unreadable", disk::ROLES_FILE)),
             Err(err) => return skipped(err.message),
         };
-        let Some(role) = roles.iter().find(|r| r.id == agent) else {
-            return skipped(format!("agent {agent:?} isn't in {}", disk::ROLES_FILE));
-        };
+        let mut team = Vec::new();
+        for agent in agents {
+            let Some(role) = roles.iter().find(|r| r.id == *agent) else {
+                return skipped(format!("agent {agent:?} isn't in {}", disk::ROLES_FILE));
+            };
+            team.push(role);
+        }
         let diff = [
             "--no-optional-locks",
             "diff",
@@ -775,17 +1050,27 @@ impl VerificationStore {
             }
         }
 
+        let who = agents.join(" and ");
         let mut findings = Vec::new();
         for path in changed
             .iter()
             .filter(|p| !IGNORED_DIRS.iter().any(|dir| p.starts_with(dir)))
             .filter(|p| !IGNORED_FILES.contains(&p.as_str()))
         {
-            let protected = hook_policy::PROTECTED_FLOOR
+            fn protected_for<'r>(role: &'r disk::Role, path: &str) -> Option<&'r str> {
+                hook_policy::PROTECTED_FLOOR
+                    .iter()
+                    .copied()
+                    .chain(role.protected_globs.iter().map(String::as_str))
+                    .find(|g| glob::matches(g, path))
+            }
+            let writable = team.iter().any(|role| {
+                protected_for(role, path).is_none()
+                    && role.write_globs.iter().any(|g| glob::matches(g, path))
+            });
+            let protected = team
                 .iter()
-                .copied()
-                .chain(role.protected_globs.iter().map(String::as_str))
-                .find(|g| glob::matches(g, path));
+                .find_map(|role| protected_for(role, path).map(|hit| (role.id.as_str(), hit)));
             let finding = if FOUNDRY_WRITTEN.contains(&path.as_str()) {
                 Finding::new(
                     Info,
@@ -794,23 +1079,23 @@ impl VerificationStore {
                         "{path} changed; Foundry rewrites it too, so this may not be the agent"
                     ),
                 )
-            } else if let Some(hit) = protected {
+            } else if writable {
+                continue;
+            } else if let Some((agent, hit)) = protected {
                 Finding::new(
                     Danger,
                     code::PROTECTED_FILE_CHANGED,
                     format!("{path} changed, and it's protected for {agent} (\"{hit}\")"),
                 )
-            } else if !role.write_globs.iter().any(|g| glob::matches(g, path)) {
+            } else {
                 Finding::new(
                     Warn,
                     code::OUTSIDE_WRITE_GLOBS,
                     format!(
-                        "{path} changed outside {agent}'s write globs (someone else may have \
+                        "{path} changed outside {who}'s write globs (someone else may have \
                          changed it)"
                     ),
                 )
-            } else {
-                continue;
             };
             findings.push(finding.path(path));
         }
@@ -839,9 +1124,10 @@ struct Checked<'a> {
     repo: &'a Path,
     slice_id: &'a str,
     start_commit: Option<&'a str>,
-    /// The slice's requirement ids, from the plan.
-    expected: BTreeSet<&'a str>,
-    report: &'a SliceReport,
+    /// The slice's requirement ids, from the plan, in plan order.
+    expected: Vec<&'a str>,
+    /// At least one.
+    reports: &'a [LoadedReport],
     commands: &'a [String],
     cancel: &'a AtomicBool,
 }
