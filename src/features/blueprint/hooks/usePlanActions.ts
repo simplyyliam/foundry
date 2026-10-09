@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { commands, type AppError, type SliceStatus } from "@/lib/bindings";
+import { call } from "./call";
 import type { PlanController } from "./usePlan";
 
 /**
@@ -27,6 +28,13 @@ export function usePlanActions(projectId: string, mutate: PlanController["mutate
         mutate((revision) =>
           commands.setSliceStatus(projectId, sliceId, status, { override: reason !== null, reason }, revision),
         ),
+      setWorkspaceAccess: (sliceId: string, value: boolean) =>
+        mutate((revision) => commands.setSliceWorkspaceAccess(projectId, sliceId, value, revision)),
+      /**
+       * Not a plan mutation (no revision, so not queued): commits Foundry's new or edited
+       * setup files, which `setup_not_committed` asks for before a slice can start.
+       */
+      commitSetup: () => call(() => commands.commitSetup(projectId)),
       addDecision: (sliceId: string, text: string) =>
         mutate((revision) => commands.addDecision(projectId, sliceId, text, revision)),
       addOpenQuestion: (sliceId: string, text: string) =>

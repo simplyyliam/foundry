@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -11,12 +11,14 @@ import {
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
-import type { Plan, SliceStatus, SliceView } from "@/lib/bindings";
+import type { CommitSetupResult, Plan, SliceStatus, SliceView } from "@/lib/bindings";
 import { NotVerifiedDialog, PressButton, usePressScale } from "@/shared";
 import { useAction } from "../hooks/useAction";
+import { useCommitSetup } from "../hooks/useCommitSetup";
 import type { PlanActions } from "../hooks/usePlanActions";
 import { STATUS_LABEL } from "../lib/order";
 import { ActionError } from "./Notices";
+import { CommittedSetup, SetupNotCommitted } from "./SetupCommit";
 
 const STATUSES: SliceStatus[] = ["queued", "in_progress", "done"];
 
@@ -30,9 +32,12 @@ interface SliceStatusControlProps {
  * queued / in progress / done. Starting a slice whose dependencies aren't done asks for a
  * reason first: that's the override, and the backend records the reason as a decision.
  * Marking done without a passed verification (`not_verified`) asks for a reason the same way.
+ * A start refused with `setup_not_committed` offers "Commit setup", which retries the start.
  */
 export function SliceStatusControl({ plan, slice, actions }: SliceStatusControlProps) {
   const { busy, error, run } = useAction();
+  const [committed, setCommitted] = useState<CommitSetupResult | null>(null);
+  const setup = useCommitSetup(actions.commitSetup, setCommitted);
   const [overrideOpen, setOverrideOpen] = useState(false);
   const [notVerifiedOpen, setNotVerifiedOpen] = useState(false);
   const unfinished = slice.dependsOn
@@ -41,7 +46,9 @@ export function SliceStatusControl({ plan, slice, actions }: SliceStatusControlP
     .map((dependency) => dependency!.name);
 
   const choose = async (status: SliceStatus) => {
-    if (status === slice.status || busy) return;
+    if (status === slice.status || busy || setup.committing) return;
+    setCommitted(null);
+    setup.clear();
     if (slice.status === "queued" && status === "in_progress" && unfinished.length > 0) {
       setOverrideOpen(true);
       return;
@@ -56,16 +63,34 @@ export function SliceStatusControl({ plan, slice, actions }: SliceStatusControlP
     <div className="flex flex-col gap-2">
       <div role="group" aria-label="Status" className="flex w-fit gap-0.5 rounded-full bg-muted p-0.5">
         {STATUSES.map((status) => (
-          <StatusOption key={status} status={status} active={status === slice.status} disabled={busy} onClick={() => void choose(status)} />
+          <StatusOption
+            key={status}
+            status={status}
+            active={status === slice.status}
+            disabled={busy || setup.committing}
+            onClick={() => void choose(status)}
+          />
         ))}
       </div>
-      {!overrideOpen && !notVerifiedOpen && error?.code !== "not_verified" && <ActionError error={error} />}
+      {error?.code === "setup_not_committed" && !overrideOpen ? (
+        <SetupNotCommitted
+          refusal={error}
+          committing={setup.committing}
+          commitError={setup.error}
+          onCommit={() => void setup.commitThen(() => run(() => actions.setStatus(slice.id, "in_progress")))}
+        />
+      ) : (
+        !overrideOpen && !notVerifiedOpen && error?.code !== "not_verified" && <ActionError error={error} />
+      )}
+      {committed && <CommittedSetup result={committed} onDismiss={() => setCommitted(null)} />}
       <OverrideDialog
         open={overrideOpen}
         onOpenChange={setOverrideOpen}
         sliceName={slice.name}
         unfinished={unfinished}
         onSubmit={(reason) => actions.setStatus(slice.id, "in_progress", reason)}
+        commitSetup={actions.commitSetup}
+        onCommitted={setCommitted}
       />
       <NotVerifiedDialog
         open={notVerifiedOpen}
@@ -99,6 +124,9 @@ interface OverrideDialogProps {
   sliceName: string;
   unfinished: string[];
   onSubmit: (reason: string) => ReturnType<PlanActions["setStatus"]>;
+  commitSetup: PlanActions["commitSetup"];
+  /** The commit outlives the dialog: the sheet shows it after "Start anyway" closes it. */
+  onCommitted: (result: CommitSetupResult) => void;
 }
 
 function OverrideDialog({ open, onOpenChange, ...form }: OverrideDialogProps) {
@@ -116,17 +144,20 @@ function OverrideForm({
   sliceName,
   unfinished,
   onSubmit,
+  commitSetup,
+  onCommitted,
   onClose,
 }: Omit<OverrideDialogProps, "open" | "onOpenChange"> & { onClose: () => void }) {
   const [reason, setReason] = useState("");
   const { busy, error, run } = useAction();
+  const setup = useCommitSetup(commitSetup, onCommitted);
   const empty = reason.trim() === "";
 
-  const submit = async () => {
+  const submit = useCallback(async () => {
     if (empty || busy) return;
     const outcome = await run(() => onSubmit(reason.trim()));
     if (outcome.ok) onClose();
-  };
+  }, [empty, busy, run, onSubmit, reason, onClose]);
 
   return (
     <form
@@ -163,13 +194,22 @@ function OverrideForm({
           placeholder="e.g. The API shape is agreed, so the UI can start against a stub."
           className="min-h-20 text-[13px]"
         />
-        <ActionError error={error} />
+        {error?.code === "setup_not_committed" ? (
+          <SetupNotCommitted
+            refusal={error}
+            committing={setup.committing}
+            commitError={setup.error}
+            onCommit={() => void setup.commitThen(submit)}
+          />
+        ) : (
+          <ActionError error={error} />
+        )}
       </div>
       <DialogFooter>
         <PressButton type="button" variant="ghost" onClick={onClose}>
           Cancel
         </PressButton>
-        <PressButton type="submit" disabled={empty || busy}>
+        <PressButton type="submit" disabled={empty || busy || setup.committing}>
           Start anyway
         </PressButton>
       </DialogFooter>

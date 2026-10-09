@@ -13,6 +13,7 @@ import { SliceDependencies } from "./SliceDependencies";
 import { SliceLaterItems } from "./SliceLaterItems";
 import { SliceDecisions, SliceQuestions } from "./SliceNotes";
 import { SliceStatusControl } from "./SliceStatusControl";
+import { SliceWorkspaceAccess } from "./SliceWorkspaceAccess";
 import { StatusChip } from "./StatusChip";
 
 interface SliceSheetProps {
@@ -62,6 +63,9 @@ function SliceDetails({ plan, slice, actions, onRemoved }: SliceDetailsProps) {
       <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-6 pb-6">
         <Section title="Status">
           <SliceStatusControl plan={plan} slice={slice} actions={actions} />
+        </Section>
+        <Section title="Workspace access">
+          <SliceWorkspaceAccess slice={slice} actions={actions} />
         </Section>
         <Section title="Delivers">
           {slice.delivers.length === 0 ? (
