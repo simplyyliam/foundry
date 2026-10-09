@@ -592,7 +592,10 @@ export type CreateRepositoryResult = {
 	project: Project,
 	/**  False if git isn't installed or `git init` failed. */
 	gitInitialized: boolean,
-	/**  False if the empty initial commit failed (usually: no git identity configured). */
+	/**
+	 *  False if the empty initial commit failed (usually: no git identity configured).
+	 *  When it succeeds, a second commit holds only the starter `.gitignore`.
+	 */
 	initialCommit: boolean,
 };
 
@@ -931,6 +934,12 @@ export type LinkRepositoryResult = {
 	isGitRepo: boolean,
 	/**  Foundry files that were missing and got added, e.g. `["vsm_viewer.html"]`. */
 	createdFiles: string[],
+	/**
+	 *  Files under the local git excludes (`.foundry/events/`, `.foundry/reviews/digest.md`)
+	 *  that git already tracks, sorted. Excluding doesn't untrack a file, so these still show
+	 *  as modified; Foundry leaves them alone (the user can `git rm --cached` them).
+	 */
+	alreadyTracked: string[],
 };
 
 export type LoadRoadmapOptions = {

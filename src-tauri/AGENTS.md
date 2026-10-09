@@ -8,8 +8,9 @@ The human writes the frontend. You write the Rust backend in `src-tauri/`.
 - Edit only `src-tauri/`, plus root Cargo/tooling files when a prompt requires it.
 - Never edit `src/` (the frontend). The one exception is the generated bindings file (path set in P0): it is produced by the export step and never hand-edited.
 - Never add or upgrade a dependency unless the prompt lists it or the human approves. Anything not listed: ask first.
-- Writes into a user's linked repo are limited to this allowlist: `.foundry/`, `docs/bakery/`, `docs/design/`, `docs/brain-dump.md`, `agents/`, `AGENTS.md`, `vsm_data.js`, `vsm_viewer.html`, and `.claude/settings.local.json` (merge only, never overwrite). Everything else in a linked repo is read-only to you. There are two exceptions: `create_repository` (P1), which may create the new repo folder, run `git init`, and make one empty initial commit in it; and `delete_repository`, which may move a project's entire folder to the Recycle Bin, and only when the project has already been archived.
+- Writes into a user's linked repo are limited to this allowlist: `.foundry/`, `docs/bakery/`, `docs/design/`, `docs/brain-dump.md`, `agents/`, `AGENTS.md`, `vsm_data.js`, `vsm_viewer.html`, and `.claude/settings.local.json` (merge only, never overwrite). Everything else in a linked repo is read-only to you. There are two exceptions: `create_repository` (P1), which may create the new repo folder, run `git init`, make an empty initial commit in it, and make a second commit containing only the starter `.gitignore`; and `delete_repository`, which may move a project's entire folder to the Recycle Bin, and only when the project has already been archived.
 - Write files atomically (temp file + rename). Reject any input path that escapes the linked repo (`..`, symlinks, absolute paths).
+- Exception (git hygiene): `core::repo_write::add_git_excludes` may append lines to `.git/info/exclude`. It can only add lines, never remove or rewrite. `create_repository` may also write a starter `.gitignore` in a new repo and commit it. Any other write to `.gitignore` or `.git/info/exclude` is still refused.
 
 ## 2. Stack
 

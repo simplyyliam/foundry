@@ -1,5 +1,6 @@
 //! The only way to write into a user's project repo. Enforces the AGENTS.md allowlist on top
 //! of [`paths::resolve`] (no `..`, no absolute paths, no symlink escapes), and writes atomically.
+//! One more narrow writer, [`add_git_excludes`], only ever adds lines to `.git/info/exclude`.
 //!
 //! Not covered here, by design: creating the repo folder itself and running `git` in it, which
 //! only `create_repository` does (see the AGENTS.md exception).
@@ -239,6 +240,53 @@ fn back_up(repo: &Path, rel: &Path, bytes: &[u8]) -> Result<String, AppError> {
         }
     }
     Err(AppError::internal("could not pick a backup file name"))
+}
+
+/// The repo's local, uncommitted ignore list. Never a plain write: only [`add_git_excludes`]
+/// touches it, and only by adding lines.
+pub const GIT_EXCLUDE: &str = ".git/info/exclude";
+
+/// Adds each of `lines` that isn't already a line of `.git/info/exclude`, creating the file
+/// if needed. Existing lines stay byte-identical (and keep their CRLF endings, which new
+/// lines then follow). Returns the lines added. A folder whose `.git` isn't a directory (no
+/// git, or a worktree's `.git` file) is left alone: nothing is added.
+pub fn add_git_excludes(repo: &Path, lines: &[&str]) -> Result<Vec<String>, AppError> {
+    if !repo
+        .join(".git")
+        .symlink_metadata()
+        .is_ok_and(|m| m.is_dir())
+    {
+        return Ok(Vec::new());
+    }
+    let target = paths::resolve(repo, GIT_EXCLUDE)?;
+    let mut text = match fs::read(&target) {
+        Ok(bytes) => String::from_utf8(bytes).map_err(|_| {
+            AppError::invalid_input(format!("{GIT_EXCLUDE} isn't UTF-8 text; left untouched"))
+        })?,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(err) => return Err(err.into()),
+    };
+    let missing: Vec<String> = lines
+        .iter()
+        .filter(|line| !text.lines().any(|have| have.trim_end() == **line))
+        .map(|line| line.to_string())
+        .collect();
+    if missing.is_empty() {
+        return Ok(missing);
+    }
+    let eol = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    if !text.is_empty() && !text.ends_with('\n') {
+        text.push_str(eol);
+    }
+    for line in &missing {
+        text.push_str(line);
+        text.push_str(eol);
+    }
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fsx::write_atomic(&target, text)?;
+    Ok(missing)
 }
 
 /// Reads an allowlisted file through the same path checks as writes.
@@ -501,6 +549,64 @@ mod tests {
         assert!(write_if_missing(repo.path(), "vsm_viewer.html", "a").unwrap());
         assert!(!write_if_missing(repo.path(), "vsm_viewer.html", "b").unwrap());
         assert_eq!(repo.read("vsm_viewer.html"), "a");
+    }
+
+    const EXCLUDES: &[&str] = &[".foundry/events/", ".foundry/reviews/digest.md"];
+
+    #[test]
+    fn git_excludes_are_added_once_and_idempotent() {
+        let repo = TestRepo::with_git();
+        fs::remove_file(repo.path().join(GIT_EXCLUDE)).ok();
+        fs::remove_dir(repo.path().join(".git/info")).ok();
+
+        assert_eq!(add_git_excludes(repo.path(), EXCLUDES).unwrap(), EXCLUDES);
+        assert_eq!(
+            repo.read(GIT_EXCLUDE),
+            ".foundry/events/\n.foundry/reviews/digest.md\n"
+        );
+        assert!(add_git_excludes(repo.path(), EXCLUDES).unwrap().is_empty());
+        assert_eq!(
+            repo.read(GIT_EXCLUDE),
+            ".foundry/events/\n.foundry/reviews/digest.md\n"
+        );
+        // git honors it.
+        repo.write(".foundry/events/a.jsonl", "{}\n");
+        assert_eq!(
+            repo.git(&["status", "--porcelain", "--untracked-files=all"]),
+            ""
+        );
+        // Still never a plain write.
+        assert_not_allowed(write(repo.path(), GIT_EXCLUDE, "x"));
+    }
+
+    #[test]
+    fn git_excludes_keep_existing_lines() {
+        let repo = TestRepo::with_git();
+        let before = "# mine\r\n*.swp\r\n.foundry/events/\r\nbuild";
+        repo.write(GIT_EXCLUDE, before);
+
+        assert_eq!(
+            add_git_excludes(repo.path(), EXCLUDES).unwrap(),
+            [".foundry/reviews/digest.md"]
+        );
+        assert_eq!(
+            repo.read(GIT_EXCLUDE),
+            format!("{before}\r\n.foundry/reviews/digest.md\r\n")
+        );
+    }
+
+    #[test]
+    fn git_excludes_skip_folders_without_a_git_dir() {
+        let plain = TestRepo::new();
+        assert!(add_git_excludes(plain.path(), EXCLUDES).unwrap().is_empty());
+        assert!(!plain.path().join(".git").exists());
+
+        let worktree = TestRepo::new();
+        worktree.write(".git", "gitdir: elsewhere\n");
+        assert!(add_git_excludes(worktree.path(), EXCLUDES)
+            .unwrap()
+            .is_empty());
+        assert_eq!(worktree.read(".git"), "gitdir: elsewhere\n");
     }
 
     #[test]

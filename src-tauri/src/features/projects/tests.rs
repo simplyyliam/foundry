@@ -198,6 +198,12 @@ fn link_leaves_every_existing_file_byte_identical_and_adds_only_missing_foundry_
 
     let after = snapshot(repo.path());
     for (rel, contents) in &before {
+        if rel == ".git/info/exclude" {
+            // Only gains Foundry's lines (see the git noise tests).
+            let old = contents.as_deref().unwrap();
+            assert!(after[rel].as_deref().unwrap().starts_with(old));
+            continue;
+        }
         assert_eq!(after.get(rel), Some(contents), "{rel} changed");
     }
     let added: Vec<&str> = after
@@ -987,7 +993,7 @@ fn link_refuses_to_write_through_an_escaping_foundry_link() {
 // ---------- R-1-8 ----------
 
 #[test]
-fn create_makes_only_foundry_files_and_one_empty_initial_commit() {
+fn create_makes_foundry_files_an_empty_first_commit_and_a_gitignore_commit() {
     let env = Env::new();
     let parent = TestRepo::new();
     let created = create(&env.store(), parent.path(), "Fresh");
@@ -1000,19 +1006,41 @@ fn create_makes_only_foundry_files_and_one_empty_initial_commit() {
         [
             ".foundry",
             ".foundry/project.json",
+            ".gitignore",
             "docs",
             "docs/brain-dump.md",
             "vsm_viewer.html"
         ]
     );
+    assert_eq!(
+        fs::read_to_string(repo.join(".gitignore")).unwrap(),
+        "node_modules/\ndist/\n.env\n*.db\ntest-results/\nplaywright-report/\n*.log\n"
+    );
     assert!(repo.join(".git").is_dir());
-    assert!(git_in(repo, &["rev-parse", "--verify", "HEAD"])
-        .status
-        .success());
+    // One root commit, and it's empty; the one follow-up commit holds only .gitignore.
     let commits = git_in(repo, &["rev-list", "--count", "HEAD"]);
-    assert_eq!(String::from_utf8_lossy(&commits.stdout).trim(), "1");
-    let tree = git_in(repo, &["ls-tree", "-r", "HEAD"]);
+    assert_eq!(String::from_utf8_lossy(&commits.stdout).trim(), "2");
+    let root = git_in(repo, &["rev-list", "--max-parents=0", "HEAD"]);
+    let root = String::from_utf8_lossy(&root.stdout).trim().to_string();
+    assert_eq!(root.lines().count(), 1);
+    let tree = git_in(repo, &["ls-tree", "-r", "--name-only", &root]);
     assert!(tree.stdout.is_empty(), "initial commit must be empty");
+    let tree = git_in(repo, &["ls-tree", "-r", "--name-only", "HEAD"]);
+    assert_eq!(String::from_utf8_lossy(&tree.stdout), ".gitignore\n");
+
+    // The Foundry files stay untracked, and the runtime files are excluded locally.
+    assert_eq!(
+        fs::read_to_string(repo.join(".git/info/exclude"))
+            .unwrap()
+            .lines()
+            .filter(|line| GIT_EXCLUDES.contains(line))
+            .count(),
+        GIT_EXCLUDES.len()
+    );
+    let status = git_in(repo, &["status", "--porcelain", "--untracked-files=all"]);
+    let status = String::from_utf8_lossy(&status.stdout);
+    assert!(status.contains(".foundry/project.json"), "{status}");
+    assert!(!status.contains(".gitignore"), "{status}");
 }
 
 #[test]
@@ -1031,6 +1059,7 @@ fn create_without_git_succeeds_and_reports_it() {
         [
             ".foundry",
             ".foundry/project.json",
+            ".gitignore",
             "docs",
             "docs/brain-dump.md",
             "vsm_viewer.html"
@@ -1054,6 +1083,94 @@ fn create_without_git_identity_succeeds_without_a_commit() {
     assert!(!git_in(repo, &["rev-parse", "--verify", "HEAD"])
         .status
         .success());
+}
+
+// ---------- git noise ----------
+
+#[test]
+fn link_adds_git_excludes_once_and_never_touches_the_gitignore() {
+    let env = Env::new();
+    let repo = TestRepo::with_git();
+    repo.write(".gitignore", "target/\n");
+    repo.write(".git/info/exclude", "# mine\n*.swp\n");
+    let gitignore = fs::read(repo.path().join(".gitignore")).unwrap();
+    let expected = "# mine\n*.swp\n.foundry/events/\n.foundry/reviews/digest.md\n";
+
+    let store = env.store();
+    let linked = link(&store, repo.path()).unwrap();
+    assert!(linked.already_tracked.is_empty());
+    assert_eq!(repo.read(".git/info/exclude"), expected);
+    assert_eq!(fs::read(repo.path().join(".gitignore")).unwrap(), gitignore);
+
+    // Linking the same repo again adds nothing twice.
+    store.archive_project(&linked.project.id).unwrap();
+    store.remove_project(&linked.project.id).unwrap();
+    link(&store, repo.path()).unwrap();
+    assert_eq!(repo.read(".git/info/exclude"), expected);
+    assert_eq!(fs::read(repo.path().join(".gitignore")).unwrap(), gitignore);
+
+    // The runtime files go quiet; the verdict files stay visible to git.
+    repo.write(".foundry/events/ada.jsonl", "{}\n");
+    repo.write(".foundry/reviews/digest.md", "# digest\n");
+    repo.write(".foundry/reviews/s-1.json", "{}\n");
+    repo.write(".foundry/reports/s-1.json", "{}\n");
+    let others = repo.git(&["ls-files", "--others", "--exclude-standard"]);
+    assert!(!others.contains(".foundry/events/"), "{others}");
+    assert!(!others.contains("digest.md"), "{others}");
+    assert!(others.contains(".foundry/reviews/s-1.json"), "{others}");
+    assert!(others.contains(".foundry/reports/s-1.json"), "{others}");
+}
+
+#[test]
+fn link_creates_info_exclude_when_missing() {
+    let env = Env::new();
+    let repo = TestRepo::with_git();
+    fs::remove_dir_all(repo.path().join(".git/info")).ok();
+
+    link(&env.store(), repo.path()).unwrap();
+    assert_eq!(
+        repo.read(".git/info/exclude"),
+        ".foundry/events/\n.foundry/reviews/digest.md\n"
+    );
+}
+
+#[test]
+fn link_leaves_already_tracked_event_files_tracked_and_reports_them() {
+    let env = Env::new();
+    let repo = TestRepo::with_git();
+    let runtime = [
+        ".foundry/events/ada.jsonl",
+        ".foundry/events/read.json",
+        ".foundry/reviews/digest.md",
+    ];
+    for rel in runtime {
+        repo.write(rel, "{}\n");
+    }
+    repo.write(".foundry/reviews/s-1.json", "{}\n");
+    repo.git(&["add", "."]);
+    repo.git(&["commit", "--quiet", "-m", "runtime files"]);
+
+    let linked = link(&env.store(), repo.path()).unwrap();
+    assert_eq!(linked.already_tracked, runtime);
+    let tracked = repo.git(&["ls-files"]);
+    for rel in runtime {
+        assert!(tracked.contains(rel), "{rel} untracked: {tracked}");
+    }
+    // Excluding doesn't hide a change to a tracked file.
+    repo.write(".foundry/events/ada.jsonl", "{}\n{}\n");
+    let status = repo.git(&["status", "--porcelain"]);
+    assert!(status.contains(".foundry/events/ada.jsonl"), "{status}");
+}
+
+#[test]
+fn link_of_a_folder_without_git_adds_no_git_files() {
+    let env = Env::new();
+    let folder = TestRepo::new();
+    let linked = link(&env.store(), folder.path()).unwrap();
+    assert!(!linked.is_git_repo);
+    assert!(linked.already_tracked.is_empty());
+    assert!(!folder.path().join(".git").exists());
+    assert!(!folder.path().join(".gitignore").exists());
 }
 
 #[test]

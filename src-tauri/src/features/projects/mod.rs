@@ -1,7 +1,8 @@
 //! Projects: the app-level registry, settings, and the Foundry files inside each repo.
 //!
 //! Repo writes go through `core::repo_write` (allowlist + safe paths + atomic). The only
-//! writes outside it are `create_repository` making the new folder and running git in it.
+//! writes outside it are `create_repository` making the new folder, running git in it and
+//! writing its starter `.gitignore`.
 
 pub mod commands;
 mod scaffold;
@@ -18,11 +19,20 @@ use crate::core::git::{self, Git, GitRun};
 use crate::core::paths::{self, PathKind};
 use crate::core::repos::RepoIndex;
 use crate::core::sessions::SessionRegistry;
-use crate::core::{ids, repo_write, trash, AppError, ErrorCode};
+use crate::core::{fsx, ids, repo_write, trash, AppError, ErrorCode};
 use scaffold::ProjectFile;
 use storage::{now_ms, RegistryEntry, RegistryFile};
 
 pub use scaffold::VSM_VIEWER;
+
+/// Foundry's runtime files, kept out of `git status` through `.git/info/exclude` (local,
+/// never committed). The verdict files (`.foundry/reports/`, the rest of `.foundry/reviews/`)
+/// stay visible: the boundary check needs git to see them.
+pub const GIT_EXCLUDES: &[&str] = &[".foundry/events/", ".foundry/reviews/digest.md"];
+
+/// A new repo's root `.gitignore`. A linked repo's own `.gitignore` is never touched.
+pub const STARTER_GITIGNORE: &str =
+    "node_modules/\ndist/\n.env\n*.db\ntest-results/\nplaywright-report/\n*.log\n";
 
 /// A registered project, as the frontend sees it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -176,6 +186,7 @@ pub struct CreateRepositoryResult {
     /// False if git isn't installed or `git init` failed.
     pub git_initialized: bool,
     /// False if the empty initial commit failed (usually: no git identity configured).
+    /// When it succeeds, a second commit holds only the starter `.gitignore`.
     pub initial_commit: bool,
 }
 
@@ -192,6 +203,10 @@ pub struct LinkRepositoryResult {
     pub is_git_repo: bool,
     /// Foundry files that were missing and got added, e.g. `["vsm_viewer.html"]`.
     pub created_files: Vec<String>,
+    /// Files under the local git excludes (`.foundry/events/`, `.foundry/reviews/digest.md`)
+    /// that git already tracks, sorted. Excluding doesn't untrack a file, so these still show
+    /// as modified; Foundry leaves them alone (the user can `git rm --cached` them).
+    pub already_tracked: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, Type)]
@@ -393,8 +408,9 @@ impl ProjectsStore {
         Ok(self.lock()?.registry.iter().map(to_project).collect())
     }
 
-    /// Makes `<parentDir>/<slug(name)>`, runs `git init` and an empty initial commit, adds the
-    /// Foundry files, and registers it. Doesn't open it.
+    /// Makes `<parentDir>/<slug(name)>`, runs `git init` and an empty initial commit, commits a
+    /// starter `.gitignore` on top, adds the Foundry files and the local git excludes, and
+    /// registers it. Doesn't open it.
     pub fn create_repository(
         &self,
         input: CreateRepositoryInput,
@@ -455,6 +471,30 @@ impl ProjectsStore {
                 &["commit", "--allow-empty", "--quiet", "-m", "Initial commit"],
                 "initial commit",
             );
+        // The starter .gitignore gets its own commit: left untracked, the boundary check
+        // would count it as a slice's change. Its own commit keeps the first one empty.
+        if !fsx::write_atomic_new(&paths::resolve(folder, ".gitignore")?, STARTER_GITIGNORE)? {
+            return Err(AppError::internal(
+                "a .gitignore appeared in the new folder",
+            ));
+        }
+        if initial_commit && self.git_ok(folder, &["add", "--", ".gitignore"], "stage .gitignore") {
+            self.git_ok(
+                folder,
+                &[
+                    "commit",
+                    "--quiet",
+                    "-m",
+                    "Add .gitignore",
+                    "--",
+                    ".gitignore",
+                ],
+                "commit .gitignore",
+            );
+        }
+        if git_initialized {
+            self.add_excludes(folder);
+        }
 
         let file = ProjectFile {
             id: ids::new_id(),
@@ -505,8 +545,34 @@ impl ProjectsStore {
         }
     }
 
-    /// Registers a folder the user set up themselves. Adds only missing Foundry files; never
-    /// runs git. A folder that already has a `.foundry/project.json` keeps its id and name.
+    /// Adds [`GIT_EXCLUDES`] to the repo's `.git/info/exclude`. Best effort: a failure only
+    /// costs git noise, so it's logged, not returned.
+    fn add_excludes(&self, folder: &Path) {
+        match repo_write::add_git_excludes(folder, GIT_EXCLUDES) {
+            Ok(added) => tracing::info!(added = added.len(), "git excludes ensured"),
+            Err(err) => tracing::warn!(error = %err, "could not add git excludes"),
+        }
+    }
+
+    /// Files under [`GIT_EXCLUDES`] that git tracks. Not a git repo, or git failing: none.
+    fn tracked_excluded(&self, folder: &Path) -> Vec<String> {
+        let mut args = vec!["--no-optional-locks", "ls-files", "-z", "--"];
+        args.extend(GIT_EXCLUDES);
+        let mut files: Vec<String> = match self.git.run(folder, &args) {
+            Ok(GitRun::Ok(output)) => String::from_utf8_lossy(&output.stdout)
+                .split('\0')
+                .filter(|p| !p.is_empty())
+                .map(str::to_string)
+                .collect(),
+            _ => Vec::new(),
+        };
+        files.sort();
+        files
+    }
+
+    /// Registers a folder the user set up themselves. Adds only missing Foundry files and the
+    /// local git excludes; the only git it runs is a read (`ls-files`). A folder that already
+    /// has a `.foundry/project.json` keeps its id and name.
     pub fn link_repository(
         &self,
         input: LinkRepositoryInput,
@@ -541,6 +607,13 @@ impl ProjectsStore {
             },
         };
         let created_files = scaffold::ensure(&folder, &file)?;
+        let is_git_repo = folder.join(".git").exists();
+        let already_tracked = if is_git_repo {
+            self.add_excludes(&folder);
+            self.tracked_excluded(&folder)
+        } else {
+            Vec::new()
+        };
 
         let entry = RegistryEntry {
             id: file.id,
@@ -555,11 +628,17 @@ impl ProjectsStore {
             state.registry.pop();
             return Err(err);
         }
-        tracing::info!(id = %entry.id, created = created_files.len(), "repository linked");
+        tracing::info!(
+            id = %entry.id,
+            created = created_files.len(),
+            already_tracked = already_tracked.len(),
+            "repository linked"
+        );
         Ok(LinkRepositoryResult {
             project: to_project(&entry),
-            is_git_repo: folder.join(".git").exists(),
+            is_git_repo,
             created_files,
+            already_tracked,
         })
     }
 
