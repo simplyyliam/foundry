@@ -17,17 +17,45 @@ const S: &str = "s-feed";
 // ---------- fixtures ----------
 
 #[derive(Default)]
-struct Recorded(Mutex<Vec<VerifyProgress>>);
+struct Recorded {
+    progress: Mutex<Vec<VerifyProgress>>,
+    /// `verify:skipped` as `(sliceId, reason)` and `verify:skip_cleared` as `(sliceId, None)`,
+    /// in order.
+    skips: Mutex<Vec<(String, Option<SkipReason>)>>,
+}
 
 impl VerifyEvents for Recorded {
     fn progress(&self, event: VerifyProgress) {
-        self.0.lock().unwrap().push(event);
+        self.progress.lock().unwrap().push(event);
+    }
+
+    fn skipped(&self, event: VerifySkipped) {
+        assert_eq!(event.project_id, P);
+        self.skips
+            .lock()
+            .unwrap()
+            .push((event.skip.slice_id, Some(event.skip.reason)));
+    }
+
+    fn skip_cleared(&self, event: VerifySkipCleared) {
+        assert_eq!(event.project_id, P);
+        self.skips.lock().unwrap().push((event.slice_id, None));
     }
 }
 
 impl Recorded {
     fn stages(&self) -> Vec<VerifyStage> {
-        self.0.lock().unwrap().iter().map(|e| e.stage).collect()
+        self.progress
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|e| e.stage)
+            .collect()
+    }
+
+    /// The skip events since the last call.
+    fn take_skips(&self) -> Vec<(String, Option<SkipReason>)> {
+        std::mem::take(&mut *self.skips.lock().unwrap())
     }
 }
 
@@ -413,7 +441,7 @@ fn a_failing_test_command_fails_the_verification_and_a_passing_one_is_recorded()
     );
     let with_command: Vec<Option<String>> = env
         .events
-        .0
+        .progress
         .lock()
         .unwrap()
         .iter()
@@ -834,21 +862,220 @@ fn missing_git_or_start_commit_is_a_warning_not_a_crash() {
     );
     assert!(v.review.passed);
 
+    // No start commit, or one that isn't one (never passed to git as an option): refused.
     let env = Env::new();
     env.commands(&[]);
+    env.repo.git(&["add", "-A"]);
+    env.repo.git(&["commit", "--quiet", "-m", "setup"]);
+    env.write_report(&report(json!([met("r-1", "test a"), met("r-2", "test b")])));
+    for start in [None, Some("--output=x")] {
+        env.plan(start);
+        let err = env.verify().unwrap_err();
+        assert_eq!(
+            err.code,
+            ErrorCode::NoStartCommit,
+            "{start:?}: {}",
+            err.message
+        );
+        assert!(err.message.contains("\"Feed\""), "{}", err.message);
+    }
+    assert!(!env.repo.path().join(".foundry/output=x").exists());
+}
+
+// ---------- skipped verifications ----------
+
+/// The slice's recorded skip reason, and what `check_verify_slice` says now.
+fn skip_now(env: &Env) -> (Option<SkipReason>, Option<SkipReason>) {
+    (
+        env.store.verify_skip(P, S).map(|s| s.reason),
+        env.store.check_verify(P, S).unwrap().map(|s| s.reason),
+    )
+}
+
+#[test]
+fn every_skip_reason_is_produced_returned_as_its_error_and_recorded() {
+    let env = Env::new();
+    let refused = |code: ErrorCode, reason: SkipReason| {
+        let err = env.verify().unwrap_err();
+        assert_eq!(
+            (err.code, err.message.is_empty()),
+            (code, false),
+            "{reason:?}"
+        );
+        let skip = env.store.verify_skip(P, S).expect("recorded");
+        assert_eq!((skip.reason, skip.code), (reason, code));
+        assert_eq!(skip.message, err.message, "the error's message as-is");
+        assert_eq!(
+            env.store.check_verify(P, S).unwrap().map(|s| s.reason),
+            Some(reason)
+        );
+        assert_eq!(env.events.take_skips(), [(S.to_string(), Some(reason))]);
+        let digest = env.store.manager_digest(P).unwrap();
+        if let Some(slice) = digest.slices.first() {
+            assert_eq!(slice.skip.as_ref().map(|s| s.reason), Some(reason));
+        }
+        assert!(env.events.stages().is_empty(), "nothing ran");
+    };
+
+    // Commands never confirmed.
+    env.store
+        .set_test_commands(P, vec![fake("--exit 0")])
+        .unwrap();
+    env.repo.git(&["add", "-A"]);
+    env.repo.git(&["commit", "--quiet", "-m", "commands"]);
+    env.plan(Some(&env.repo.git(&["rev-parse", "HEAD"])));
+    env.events.take_skips();
+    refused(
+        ErrorCode::TestCommandsUnconfirmed,
+        SkipReason::TestCommandsUnconfirmed,
+    );
+    env.commands(&[]);
+    // Confirming them is the cause going away, but the next cause (no report) replaces it.
+    assert_eq!(
+        skip_now(&env),
+        (Some(SkipReason::NoReport), Some(SkipReason::NoReport))
+    );
+    env.events.take_skips();
+
+    refused(ErrorCode::NotFound, SkipReason::NoReport);
+    env.repo.write(
+        &format!(".foundry/reports/{S}.ada.json"),
+        r#"{ "sliceId": "s-feed" }"#,
+    );
+    refused(ErrorCode::InvalidJson, SkipReason::ReportIncomplete);
+    env.write_agent_report(
+        "ada",
+        &report(json!([met("r-1", "test a"), met("r-2", "b test")])),
+    );
+
+    // No start commit while the setup is committed; then while it isn't.
+    let head = env.repo.git(&["rev-parse", "HEAD"]);
     env.plan(None);
+    refused(ErrorCode::NoStartCommit, SkipReason::NoStartCommit);
+    env.repo.write("agents/roles/ada.md", "# Ada\n");
+    refused(ErrorCode::SetupNotCommitted, SkipReason::SetupNotCommitted);
+    let skip = env.store.verify_skip(P, S).unwrap();
+    assert!(
+        skip.message.contains("agents/roles/ada.md"),
+        "{}",
+        skip.message
+    );
+    fs::remove_file(env.repo.path().join("agents/roles/ada.md")).unwrap();
+
+    // Another verification running for the project.
+    env.plan(Some(&head));
+    env.events.take_skips();
+    lock(&env.store.running).insert(P.to_string(), Arc::new(AtomicBool::new(false)));
+    refused(
+        ErrorCode::VerificationRunning,
+        SkipReason::AnotherVerificationRunning,
+    );
+    lock(&env.store.running).remove(P);
+
+    // Anything else: no such slice in the plan.
+    env.repo.write(
+        ".foundry/plan.json",
+        &json!({ "version": 1, "slices": [], "requirements": [] }).to_string(),
+    );
+    refused(ErrorCode::NotFound, SkipReason::Other);
+    assert!(env
+        .store
+        .verify_skip(P, S)
+        .unwrap()
+        .message
+        .contains("no slice"));
+
+    // A bad slice id has nothing to record against.
+    assert_eq!(
+        env.store.verify(P, "a/b").unwrap_err().code,
+        ErrorCode::InvalidInput
+    );
+    assert!(env.events.take_skips().is_empty());
+}
+
+#[test]
+fn a_skip_clears_when_the_slice_is_verified() {
+    let env = Env::new();
+    env.commands(&[]);
+    env.verify().unwrap_err();
+    assert_eq!(
+        env.store.verify_skip(P, S).unwrap().reason,
+        SkipReason::NoReport
+    );
+    env.events.take_skips();
+
+    // The report arrives and auto mode (or a click) verifies: the skip is gone.
     env.write_report(&report(json!([met("r-1", "test a"), met("r-2", "test b")])));
     let v = env.verify().unwrap();
-    assert!(finding(&v, code::BOUNDARY_SKIPPED)
-        .message
-        .contains("no start commit"));
+    assert!(v.review.passed, "{:?}", v.review.findings);
+    assert_eq!(skip_now(&env), (None, None));
+    assert_eq!(env.events.take_skips(), [(S.to_string(), None)]);
+    assert_eq!(env.store.manager_digest(P).unwrap().slices[0].skip, None);
 
-    // A start commit that isn't one never reaches git as an option.
-    env.plan(Some("--output=x"));
-    let v = env.verify().unwrap();
-    assert!(finding(&v, code::BOUNDARY_SKIPPED)
-        .message
-        .contains("isn't a commit id"));
+    // A verification that runs and fails still ran, so it clears one too.
+    env.commands(&[fake("--exit 1")]);
+    lock(&env.store.running).insert(P.to_string(), Arc::new(AtomicBool::new(false)));
+    env.verify().unwrap_err();
+    lock(&env.store.running).remove(P);
+    env.events.take_skips();
+    assert!(!env.verify().unwrap().review.passed);
+    assert_eq!(env.events.take_skips(), [(S.to_string(), None)]);
+    assert_eq!(env.store.verify_skip(P, S), None);
+}
+
+#[test]
+fn a_skip_clears_when_its_cause_goes_away_without_a_verification() {
+    let env = Env::new();
+    env.write_report(&report(json!([met("r-1", "test a"), met("r-2", "test b")])));
+    // The setup (plan.json too) is committed, so a missing start commit is just that.
+    env.repo.git(&["add", "-A"]);
+    env.repo.git(&["commit", "--quiet", "-m", "setup"]);
+    env.store
+        .set_test_commands(P, vec![fake("--exit 0")])
+        .unwrap();
+    env.events.take_skips();
+    env.verify().unwrap_err();
+    assert_eq!(
+        env.events.take_skips(),
+        [(S.to_string(), Some(SkipReason::TestCommandsUnconfirmed))]
+    );
+
+    // Confirming the commands is the cause going away: cleared at once, with the event.
+    let shown = env.store.get_test_commands(P).unwrap().commands;
+    env.store.confirm_test_commands(P, shown).unwrap();
+    assert_eq!(env.store.verify_skip(P, S), None);
+    assert_eq!(env.events.take_skips(), [(S.to_string(), None)]);
+    assert!(env.events.stages().is_empty(), "clearing runs nothing");
+
+    // Another run ending clears one that waited on it.
+    lock(&env.store.running).insert(P.to_string(), Arc::new(AtomicBool::new(false)));
+    env.verify().unwrap_err();
+    assert_eq!(
+        env.store.verify_skip(P, S).unwrap().reason,
+        SkipReason::AnotherVerificationRunning
+    );
+    lock(&env.store.running).remove(P);
+    // Read lazily: the digest looks again.
+    assert_eq!(env.store.manager_digest(P).unwrap().slices[0].skip, None);
+    env.events.take_skips();
+
+    // A cause that changes is recorded again with the new reason.
+    env.plan(None);
+    env.verify().unwrap_err();
+    fs::remove_file(env.repo.path().join(format!(".foundry/reports/{S}.json"))).unwrap();
+    env.store.manager_digest(P).unwrap();
+    assert_eq!(
+        env.store.verify_skip(P, S).unwrap().reason,
+        SkipReason::NoReport,
+        "no report comes before no start commit"
+    );
+    assert_eq!(
+        env.events.take_skips(),
+        [
+            (S.to_string(), Some(SkipReason::NoStartCommit)),
+            (S.to_string(), Some(SkipReason::NoReport))
+        ]
+    );
 }
 
 // ---------- 5. contradiction ----------

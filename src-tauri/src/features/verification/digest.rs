@@ -1,7 +1,7 @@
 //! The manager digest: per agent, per slice, and what needs the human's attention. Built from
 //! files on disk (events, read markers, plan, reports, reviews) and the live sessions.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::Path;
 
@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use specta::Type;
 
-use super::{disk, FindingSeverity};
+use super::{disk, FindingSeverity, VerifySkip};
 use crate::core::report;
 use crate::core::sessions::{SessionRegistry, SessionStatus};
 use crate::core::AppError;
@@ -48,6 +48,9 @@ pub struct SliceDigest {
     /// At least one report file (any agent's, or the legacy one) exists for the slice.
     pub report_present: bool,
     pub verification: VerificationState,
+    /// Why the latest wanted verification of this slice couldn't run, while that still holds;
+    /// `null` otherwise.
+    pub skip: Option<VerifySkip>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -130,6 +133,7 @@ pub fn build(
     repo: &Path,
     project_id: &str,
     sessions: &SessionRegistry,
+    skips: &BTreeMap<String, VerifySkip>,
     now: u64,
 ) -> Result<ManagerDigest, AppError> {
     let running: BTreeSet<String> = sessions
@@ -215,12 +219,14 @@ pub fn build(
                 event_id: None,
             });
         }
+        let skip = skips.get(&slice.id).cloned();
         slices.push(SliceDigest {
             slice_id: slice.id,
             name: slice.name,
             status: slice.status,
             report_present,
             verification,
+            skip,
         });
     }
     attention.extend(event_items);

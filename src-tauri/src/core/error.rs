@@ -107,6 +107,9 @@ pub enum ErrorCode {
     /// A slice can't start while Foundry's setup files (AGENTS.md, `agents/`, `docs/`, the
     /// VSM files, `plan.json`) are uncommitted: they'd count as the agent's changes.
     SetupNotCommitted,
+    /// A slice can't be verified without a valid start commit: its changes can't be told
+    /// from what was there before.
+    NoStartCommit,
 }
 
 impl ErrorCode {
@@ -158,6 +161,7 @@ impl ErrorCode {
             Self::VerificationRunning => "verification_running",
             Self::TestCommandsChanged => "test_commands_changed",
             Self::SetupNotCommitted => "setup_not_committed",
+            Self::NoStartCommit => "no_start_commit",
         }
     }
 }
@@ -280,6 +284,7 @@ mod tests {
             ErrorCode::VerificationRunning,
             ErrorCode::TestCommandsChanged,
             ErrorCode::SetupNotCommitted,
+            ErrorCode::NoStartCommit,
         ] {
             assert_eq!(serde_json::to_value(code).unwrap(), json!(code.as_str()));
         }

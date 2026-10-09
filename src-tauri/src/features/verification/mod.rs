@@ -18,7 +18,7 @@ mod run;
 #[cfg(test)]
 mod tests;
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -34,7 +34,7 @@ use crate::core::git::{self, Git, GitRun};
 use crate::core::report::{self, RequirementStatus, SliceReport};
 use crate::core::repos::RepoIndex;
 use crate::core::sessions::{now_ms, SessionRegistry};
-use crate::core::{glob, hook_policy, repo_write, AppError, ErrorCode};
+use crate::core::{glob, hook_policy, repo_write, setup, AppError, ErrorCode};
 
 pub use digest::{
     AgentDigest, AttentionItem, AttentionKind, ManagerDigest, SliceDigest, VerificationState,
@@ -269,9 +269,95 @@ pub struct VerifyProgress {
     pub elapsed_ms: u64,
 }
 
-/// Where progress events go: the app emits them, tests record them.
+/// Why a wanted verification couldn't run. One per refusal of `verify_slice` (auto mode's or
+/// a click's), next to the error code it returned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum SkipReason {
+    /// `test_commands_unconfirmed`.
+    TestCommandsUnconfirmed,
+    /// `not_found`: the slice has no report.
+    NoReport,
+    /// `invalid_json`: a report doesn't parse as one.
+    ReportIncomplete,
+    /// `no_start_commit`: the slice has no valid start commit.
+    NoStartCommit,
+    /// `verification_running`.
+    AnotherVerificationRunning,
+    /// `setup_not_committed`: no valid start commit, and the setup files aren't committed.
+    SetupNotCommitted,
+    /// Anything else (e.g. no such slice, an unreadable plan); `message` says what.
+    Other,
+}
+
+impl SkipReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::TestCommandsUnconfirmed => "test_commands_unconfirmed",
+            Self::NoReport => "no_report",
+            Self::ReportIncomplete => "report_incomplete",
+            Self::NoStartCommit => "no_start_commit",
+            Self::AnotherVerificationRunning => "another_verification_running",
+            Self::SetupNotCommitted => "setup_not_committed",
+            Self::Other => "other",
+        }
+    }
+}
+
+/// The latest time verifying a slice was wanted but refused, kept while its cause holds.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct VerifySkip {
+    pub slice_id: String,
+    pub reason: SkipReason,
+    /// The error code `verify_slice` returned.
+    pub code: ErrorCode,
+    /// Its message, as-is.
+    pub message: String,
+    /// Epoch ms.
+    #[specta(type = u32)]
+    pub at: u64,
+}
+
+impl VerifySkip {
+    fn new(slice_id: &str, reason: SkipReason, error: &AppError) -> Self {
+        Self {
+            slice_id: slice_id.to_string(),
+            reason,
+            code: error.code,
+            message: error.message.clone(),
+            at: now_ms(),
+        }
+    }
+}
+
+/// `verify:skipped`: a verification was wanted but refused; the slice's skip is now `skip`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type, Event)]
+#[serde(rename_all = "camelCase")]
+#[tauri_specta(event_name = "verify:skipped")]
+pub struct VerifySkipped {
+    #[serde(flatten)]
+    pub meta: EventMeta,
+    pub project_id: String,
+    pub skip: VerifySkip,
+}
+
+/// `verify:skip_cleared`: the slice's skip is gone (it was verified, or the cause went away).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type, Event)]
+#[serde(rename_all = "camelCase")]
+#[tauri_specta(event_name = "verify:skip_cleared")]
+pub struct VerifySkipCleared {
+    #[serde(flatten)]
+    pub meta: EventMeta,
+    pub project_id: String,
+    pub slice_id: String,
+}
+
+/// Where verification events go: the app emits them, tests record them.
 pub trait VerifyEvents: Send + Sync + 'static {
     fn progress(&self, event: VerifyProgress);
+    fn skipped(&self, event: VerifySkipped);
+    fn skip_cleared(&self, event: VerifySkipCleared);
 }
 
 // ---------- helpers ----------
@@ -421,6 +507,48 @@ fn outcomes(expected: &[&str], reports: &[LoadedReport]) -> Vec<RequirementOutco
         .collect()
 }
 
+/// What a verification needs, gathered and checked before it starts.
+struct Ready {
+    repo: PathBuf,
+    commands: Vec<String>,
+    /// At least one.
+    reports: Vec<LoadedReport>,
+    /// A commit id.
+    start_commit: String,
+    /// The slice's requirement ids, in plan order.
+    expected: Vec<String>,
+}
+
+/// Why `verify_slice` didn't run, or failed: the error it returns, and the skip reason to
+/// record (`None`: nothing to record, e.g. a bad slice id, or a run that started and failed).
+struct Refusal {
+    reason: Option<SkipReason>,
+    error: AppError,
+}
+
+impl Refusal {
+    fn skip(reason: SkipReason, error: AppError) -> Self {
+        Self {
+            reason: Some(reason),
+            error,
+        }
+    }
+
+    fn unrecorded(error: AppError) -> Self {
+        Self {
+            reason: None,
+            error,
+        }
+    }
+}
+
+fn running_error() -> AppError {
+    AppError::new(
+        ErrorCode::VerificationRunning,
+        "a verification is already running for this project",
+    )
+}
+
 /// Removes a project's entry from the running map however the verification ends.
 struct Running<'a> {
     map: &'a Mutex<HashMap<String, Arc<AtomicBool>>>,
@@ -448,6 +576,9 @@ pub struct VerificationStore {
     running: Mutex<HashMap<String, Arc<AtomicBool>>>,
     /// Serializes setting, confirming and checking test commands.
     commands_lock: Mutex<()>,
+    /// Project id → slice id → its latest skip. In memory: after a restart the next refusal
+    /// records it again.
+    skips: Mutex<HashMap<String, BTreeMap<String, VerifySkip>>>,
 }
 
 impl VerificationStore {
@@ -467,6 +598,7 @@ impl VerificationStore {
             timeout: TEST_TIMEOUT,
             running: Mutex::new(HashMap::new()),
             commands_lock: Mutex::new(()),
+            skips: Mutex::new(HashMap::new()),
         }
     }
 
@@ -523,7 +655,10 @@ impl VerificationStore {
         }
         disk::set_test_commands(&repo, &commands)?;
         tracing::info!(project_id, count = commands.len(), "test commands set");
-        self.test_commands_locked(project_id, &repo)
+        let result = self.test_commands_locked(project_id, &repo);
+        drop(_guard);
+        self.recheck_skips(project_id);
+        result
     }
 
     /// Confirms `shown`, the list the human reviewed, verbatim. If `testCommands` on disk no
@@ -547,7 +682,10 @@ impl VerificationStore {
         confirmed.insert(project_id.to_string(), commands);
         disk::write_confirmed(&self.data_dir, &confirmed)?;
         tracing::info!(project_id, "test commands confirmed");
-        self.test_commands_locked(project_id, &repo)
+        let result = self.test_commands_locked(project_id, &repo);
+        drop(_guard);
+        self.recheck_skips(project_id);
+        result
     }
 
     // ---------- reports and verifications ----------
@@ -622,49 +760,260 @@ impl VerificationStore {
         }
     }
 
-    /// Verifies every report of the slice and saves the result to
-    /// `.foundry/reviews/<sliceId>.json`.
-    ///
-    /// Refused before anything runs: `test_commands_unconfirmed` (unless there are no test
-    /// commands, which need no confirmation), `not_found` (no report at all, or
-    /// no such slice in the plan), `invalid_json` (a report that isn't one),
-    /// `verification_running`.
-    pub fn verify(&self, project_id: &str, slice_id: &str) -> Result<Verification, AppError> {
-        check_slice_id(slice_id)?;
-        let repo = self.repos.repo(project_id)?;
+    /// What verifying the slice would hit right now, without recording or running anything:
+    /// `None` when it would run. Errors only for a bad slice id or an unknown project.
+    pub fn check_verify(
+        &self,
+        project_id: &str,
+        slice_id: &str,
+    ) -> Result<Option<VerifySkip>, AppError> {
+        match self.current_refusal(project_id, slice_id) {
+            Ok(None) => Ok(None),
+            Ok(Some((reason, error))) => Ok(Some(VerifySkip::new(slice_id, reason, &error))),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// The slice's recorded skip: the latest time verifying it was refused, while that cause
+    /// still holds.
+    pub fn verify_skip(&self, project_id: &str, slice_id: &str) -> Option<VerifySkip> {
+        lock(&self.skips)
+            .get(project_id)
+            .and_then(|slices| slices.get(slice_id))
+            .cloned()
+    }
+
+    /// `preflight` plus the running check, for a slice that isn't being verified by us.
+    fn current_refusal(
+        &self,
+        project_id: &str,
+        slice_id: &str,
+    ) -> Result<Option<(SkipReason, AppError)>, AppError> {
+        match self.preflight(project_id, slice_id) {
+            Ok(_) if lock(&self.running).contains_key(project_id) => Ok(Some((
+                SkipReason::AnotherVerificationRunning,
+                running_error(),
+            ))),
+            Ok(_) => Ok(None),
+            Err(Refusal {
+                reason: Some(reason),
+                error,
+            }) => Ok(Some((reason, error))),
+            Err(Refusal { error, .. }) => Err(error),
+        }
+    }
+
+    /// Everything a verification needs, or why it can't run. Refusals carry the skip reason,
+    /// except a bad slice id or an unknown project (nothing to record it against).
+    fn preflight(&self, project_id: &str, slice_id: &str) -> Result<Ready, Refusal> {
+        check_slice_id(slice_id).map_err(Refusal::unrecorded)?;
+        let repo = self.repos.repo(project_id).map_err(Refusal::unrecorded)?;
+        let other = |error: AppError| Refusal::skip(SkipReason::Other, error);
         let commands = {
             let _guard = lock(&self.commands_lock);
-            let current = self.test_commands_locked(project_id, &repo)?;
+            let current = self
+                .test_commands_locked(project_id, &repo)
+                .map_err(other)?;
             if !current.confirmed {
-                return Err(AppError::new(
-                    ErrorCode::TestCommandsUnconfirmed,
-                    "the project's test commands changed or were never confirmed: review and \
-                     confirm them before verifying",
+                return Err(Refusal::skip(
+                    SkipReason::TestCommandsUnconfirmed,
+                    AppError::new(
+                        ErrorCode::TestCommandsUnconfirmed,
+                        "the project's test commands changed or were never confirmed: review \
+                         and confirm them before verifying",
+                    ),
                 ));
             }
             current.commands
         };
-        let reports = load_reports(&repo, slice_id)?;
+        let reports = load_reports(&repo, slice_id).map_err(|error| {
+            if error.code == ErrorCode::InvalidJson {
+                Refusal::skip(SkipReason::ReportIncomplete, error)
+            } else {
+                other(error)
+            }
+        })?;
         if reports.is_empty() {
-            return Err(AppError::not_found(format!(
-                "no report for slice {slice_id} in {}",
-                report::REPORTS_DIR
-            )));
+            return Err(Refusal::skip(
+                SkipReason::NoReport,
+                AppError::not_found(format!(
+                    "no report for slice {slice_id} in {}",
+                    report::REPORTS_DIR
+                )),
+            ));
         }
-        let plan = disk::plan(&repo)?;
+        let plan = disk::plan(&repo).map_err(other)?;
         let slice = plan
             .slices
             .iter()
             .find(|s| s.id == slice_id)
-            .ok_or_else(|| AppError::not_found(format!("no slice with id {slice_id}")))?;
+            .ok_or_else(|| other(AppError::not_found(format!("no slice with id {slice_id}"))))?;
+        let start_commit = slice
+            .start_commit
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| is_commit_id(s))
+            .map(str::to_string);
+        let Some(start_commit) = start_commit else {
+            return Err(self.no_start_commit(&repo, slice));
+        };
+        let expected = plan
+            .requirements
+            .iter()
+            .filter(|r| r.slice_id.as_deref() == Some(slice_id))
+            .map(|r| r.id.clone())
+            .collect();
+        Ok(Ready {
+            repo,
+            commands,
+            reports,
+            start_commit,
+            expected,
+        })
+    }
+
+    /// The slice has no start commit, or one that isn't a commit id: `setup_not_committed`
+    /// when Foundry's setup files aren't committed (the usual reason none was recorded),
+    /// otherwise `no_start_commit`.
+    fn no_start_commit(&self, repo: &Path, slice: &disk::PlanSlice) -> Refusal {
+        let name = &slice.name;
+        let what = match slice.start_commit.as_deref().map(str::trim) {
+            None | Some("") => "has no start commit".to_string(),
+            Some(bad) => format!("has a start commit that isn't one ({bad:?})"),
+        };
+        let again = "move it back to queued and start it again";
+        let uncommitted = setup::uncommitted(&self.git, repo);
+        if uncommitted.is_empty() {
+            Refusal::skip(
+                SkipReason::NoStartCommit,
+                AppError::new(
+                    ErrorCode::NoStartCommit,
+                    format!(
+                        "\"{name}\" {what}, so its changes can't be told from what was there \
+                         before. It needs a git repo with at least one commit: {again}."
+                    ),
+                ),
+            )
+        } else {
+            Refusal::skip(
+                SkipReason::SetupNotCommitted,
+                AppError::new(
+                    ErrorCode::SetupNotCommitted,
+                    format!(
+                        "\"{name}\" {what}, and Foundry's setup isn't committed: {} {} not \
+                         committed. Commit your setup, then {again}.",
+                        setup::list_some(&uncommitted),
+                        if uncommitted.len() == 1 { "is" } else { "are" }
+                    ),
+                ),
+            )
+        }
+    }
+
+    fn record_skip(&self, project_id: &str, slice_id: &str, reason: SkipReason, error: &AppError) {
+        let skip = VerifySkip::new(slice_id, reason, error);
+        lock(&self.skips)
+            .entry(project_id.to_string())
+            .or_default()
+            .insert(slice_id.to_string(), skip.clone());
+        tracing::info!(
+            project_id,
+            slice_id,
+            reason = reason.as_str(),
+            "verification skipped"
+        );
+        self.events.skipped(VerifySkipped {
+            meta: EventMeta::new(),
+            project_id: project_id.to_string(),
+            skip,
+        });
+    }
+
+    fn clear_skip(&self, project_id: &str, slice_id: &str) {
+        let removed = lock(&self.skips)
+            .get_mut(project_id)
+            .and_then(|slices| slices.remove(slice_id))
+            .is_some();
+        if removed {
+            tracing::info!(project_id, slice_id, "verification skip cleared");
+            self.events.skip_cleared(VerifySkipCleared {
+                meta: EventMeta::new(),
+                project_id: project_id.to_string(),
+                slice_id: slice_id.to_string(),
+            });
+        }
+    }
+
+    /// Looks again at every recorded skip of the project: one whose cause is gone is cleared,
+    /// one whose cause changed is recorded again with the new reason.
+    fn recheck_skips(&self, project_id: &str) {
+        let recorded: Vec<(String, SkipReason, String)> = lock(&self.skips)
+            .get(project_id)
+            .map(|slices| {
+                slices
+                    .values()
+                    .map(|s| (s.slice_id.clone(), s.reason, s.message.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        for (slice_id, reason, message) in recorded {
+            match self.current_refusal(project_id, &slice_id) {
+                Ok(Some((now, error))) if now == reason && error.message == message => {}
+                Ok(Some((now, error))) => self.record_skip(project_id, &slice_id, now, &error),
+                Ok(None) | Err(_) => self.clear_skip(project_id, &slice_id),
+            }
+        }
+    }
+
+    /// Verifies every report of the slice and saves the result to
+    /// `.foundry/reviews/<sliceId>.json`.
+    ///
+    /// Refused before anything runs, each refusal recorded as the slice's skip (see
+    /// [`SkipReason`]) and sent as `verify:skipped`: `test_commands_unconfirmed` (unless there
+    /// are no test commands, which need no confirmation), `not_found` (no report at all, or no
+    /// such slice in the plan), `invalid_json` (a report that isn't one), `no_start_commit` or
+    /// `setup_not_committed` (no valid start commit), `verification_running`. A bad slice id
+    /// (`invalid_input`) or unknown project isn't recorded. A verification that runs clears
+    /// the slice's skip; when one ends, the project's other skips are looked at again.
+    pub fn verify(&self, project_id: &str, slice_id: &str) -> Result<Verification, AppError> {
+        let result = self.verify_once(project_id, slice_id);
+        match &result {
+            Ok(_) => self.clear_skip(project_id, slice_id),
+            Err(Refusal {
+                reason: Some(reason),
+                error,
+            }) => self.record_skip(project_id, slice_id, *reason, error),
+            Err(_) => {}
+        }
+        let busy = matches!(
+            &result,
+            Err(Refusal {
+                reason: Some(SkipReason::AnotherVerificationRunning),
+                ..
+            })
+        );
+        if !busy {
+            self.recheck_skips(project_id);
+        }
+        result.map_err(|refusal| refusal.error)
+    }
+
+    fn verify_once(&self, project_id: &str, slice_id: &str) -> Result<Verification, Refusal> {
+        let Ready {
+            repo,
+            commands,
+            reports,
+            start_commit,
+            expected,
+        } = self.preflight(project_id, slice_id)?;
 
         let cancel = Arc::new(AtomicBool::new(false));
         {
             let mut running = lock(&self.running);
             if running.contains_key(project_id) {
-                return Err(AppError::new(
-                    ErrorCode::VerificationRunning,
-                    "a verification is already running for this project",
+                return Err(Refusal::skip(
+                    SkipReason::AnotherVerificationRunning,
+                    running_error(),
                 ));
             }
             running.insert(project_id.to_string(), Arc::clone(&cancel));
@@ -690,13 +1039,8 @@ impl VerificationStore {
         let checked = Checked {
             repo: &repo,
             slice_id,
-            start_commit: slice.start_commit.as_deref(),
-            expected: plan
-                .requirements
-                .iter()
-                .filter(|r| r.slice_id.as_deref() == Some(slice_id))
-                .map(|r| r.id.as_str())
-                .collect(),
+            start_commit: Some(&start_commit),
+            expected: expected.iter().map(String::as_str).collect(),
             reports: &reports,
             commands: &commands,
             cancel: &cancel,
@@ -764,7 +1108,7 @@ impl VerificationStore {
                 );
             }
         }
-        result
+        result.map_err(Refusal::unrecorded)
     }
 
     fn run_checks(
@@ -1104,15 +1448,37 @@ impl VerificationStore {
 
     // ---------- digest ----------
 
+    /// The digest. Recorded skips are looked at again first, so each slice's `skip` is current.
     pub fn manager_digest(&self, project_id: &str) -> Result<ManagerDigest, AppError> {
         let repo = self.repos.repo(project_id)?;
-        digest::build(&repo, project_id, &self.sessions, now_ms())
+        self.recheck_skips(project_id);
+        digest::build(
+            &repo,
+            project_id,
+            &self.sessions,
+            &self.skips_of(project_id),
+            now_ms(),
+        )
+    }
+
+    fn skips_of(&self, project_id: &str) -> BTreeMap<String, VerifySkip> {
+        lock(&self.skips)
+            .get(project_id)
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// Writes the digest to `.foundry/reviews/digest.md` as markdown and returns it.
     pub fn write_digest_file(&self, project_id: &str) -> Result<ManagerDigest, AppError> {
         let repo = self.repos.repo(project_id)?;
-        let digest = digest::build(&repo, project_id, &self.sessions, now_ms())?;
+        self.recheck_skips(project_id);
+        let digest = digest::build(
+            &repo,
+            project_id,
+            &self.sessions,
+            &self.skips_of(project_id),
+            now_ms(),
+        )?;
         repo_write::write(&repo, disk::DIGEST_FILE, digest::markdown(&digest))?;
         tracing::info!(project_id, "digest written");
         Ok(digest)

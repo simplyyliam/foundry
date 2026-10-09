@@ -124,6 +124,7 @@ pub fn specta_builder<R: Runtime>() -> tauri_specta::Builder<R> {
             verification::commands::get_report,
             verification::commands::list_reports,
             verification::commands::verify_slice,
+            verification::commands::check_verify_slice,
             verification::commands::get_verification,
             verification::commands::cancel_verification,
             verification::commands::manager_digest,
@@ -136,7 +137,9 @@ pub fn specta_builder<R: Runtime>() -> tauri_specta::Builder<R> {
             roadmap::RoadmapProgress,
             plan::PlanChanged,
             agent_events::AgentEvent,
-            verification::VerifyProgress
+            verification::VerifyProgress,
+            verification::VerifySkipped,
+            verification::VerifySkipCleared
         ])
 }
 
@@ -343,6 +346,14 @@ pub fn hooks_store(
 
 impl<R: Runtime> verification::VerifyEvents for TauriSessionEvents<R> {
     fn progress(&self, event: verification::VerifyProgress) {
+        let _ = events::emit(&self.app, &event);
+    }
+
+    fn skipped(&self, event: verification::VerifySkipped) {
+        let _ = events::emit(&self.app, &event);
+    }
+
+    fn skip_cleared(&self, event: verification::VerifySkipCleared) {
         let _ = events::emit(&self.app, &event);
     }
 }
@@ -1957,6 +1968,12 @@ opus-test"
             "managerDigest",
             "writeDigestFile",
             "\"verify:progress\"",
+            "\"verify:skipped\"",
+            "\"verify:skip_cleared\"",
+            "checkVerifySlice",
+            "export type VerifySkip",
+            "export type SkipReason",
+            "\"no_start_commit\"",
             "export type Verification",
             "export type SliceReport",
             "export type ManagerDigest",

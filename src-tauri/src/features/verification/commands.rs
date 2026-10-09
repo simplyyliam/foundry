@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use tauri::State;
 
-use super::{AgentReport, ManagerDigest, TestCommands, Verification, VerificationStore};
+use super::{
+    AgentReport, ManagerDigest, TestCommands, Verification, VerificationStore, VerifySkip,
+};
 use crate::core::report::SliceReport;
 use crate::core::AppError;
 
@@ -102,6 +104,18 @@ pub async fn get_verification(
     slice_id: String,
 ) -> Result<Option<Verification>, AppError> {
     blocking(&store, move |s| s.get_verification(&project_id, &slice_id)).await
+}
+
+/// What verifying the slice would hit right now (`null`: it would run), without recording
+/// or running anything. Same reasons as the skips `verify_slice` records.
+#[tauri::command]
+#[specta::specta]
+pub async fn check_verify_slice(
+    store: Store<'_>,
+    project_id: String,
+    slice_id: String,
+) -> Result<Option<VerifySkip>, AppError> {
+    blocking(&store, move |s| s.check_verify(&project_id, &slice_id)).await
 }
 
 /// Stops the project's running verification (it fails with `cancelled`, nothing saved).

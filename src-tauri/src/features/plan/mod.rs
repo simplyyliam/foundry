@@ -20,6 +20,7 @@ use tauri_specta::Event;
 use crate::core::events::EventMeta;
 use crate::core::git::{Git, GitRun};
 use crate::core::repos::RepoIndex;
+use crate::core::setup::{self, list_some};
 use crate::core::text::normalize_ws;
 use crate::core::{ids, repo_write, report, AppError, ErrorCode};
 
@@ -32,12 +33,6 @@ const BRAIN_DUMP: &str = "docs/brain-dump.md";
 const ROADMAP_FILE: &str = ".foundry/roadmap.json";
 /// Written by verification (P9) and by agents; read here, never written.
 const REVIEWS_DIR: &str = ".foundry/reviews";
-/// Setup files that must be committed before a slice starts, or verification's boundary
-/// check (a diff against the slice's start commit) pins them on the agent.
-const SETUP_PATHS: &[&str] = &["AGENTS.md", "agents", "docs", "vsm_viewer.html"];
-/// Setup files Foundry rewrites on every plan change: they must be committed once, but
-/// later edits don't block a start.
-const REWRITTEN_SETUP: &[&str] = &[PLAN_FILE, mirror::FILE];
 const PLAN_VERSION: u32 = 1;
 const MAX_NAME_CHARS: usize = 200;
 
@@ -296,21 +291,6 @@ fn required(what: &str, text: &str) -> Result<String, AppError> {
         )));
     }
     Ok(text.to_string())
-}
-
-/// "a, b and c", or the first few and "N more".
-fn list_some(items: &[String]) -> String {
-    const SHOWN: usize = 5;
-    match items {
-        [] => String::new(),
-        [only] => only.clone(),
-        _ if items.len() > SHOWN => format!(
-            "{} and {} more",
-            items[..SHOWN].join(", "),
-            items.len() - SHOWN
-        ),
-        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
-    }
 }
 
 fn clean_list(values: Vec<String>) -> Vec<String> {
@@ -579,31 +559,11 @@ impl PlanStore {
         }
     }
 
-    /// Setup files that are untracked or differ from HEAD. `plan.json` and `vsm_data.js` only
-    /// count while untracked: every plan change rewrites them, and the boundary check reports
-    /// them as `info` anyway. Not a git repo, or git failing: none (there's no start commit to
-    /// compare against, and the boundary check says so).
+    /// Setup files that are untracked or differ from HEAD (`core::setup`). Not a git repo,
+    /// or git failing: none (there's no start commit to compare against, and verification
+    /// refuses the slice for that).
     fn uncommitted_setup(&self, repo: &Path) -> Vec<String> {
-        let mut args = vec![
-            "--no-optional-locks",
-            "status",
-            "--porcelain=v1",
-            "-z",
-            "--no-renames",
-            "--untracked-files=all",
-            "--",
-        ];
-        args.extend(SETUP_PATHS.iter().chain(REWRITTEN_SETUP));
-        let output = match self.git.run(repo, &args) {
-            Ok(GitRun::Ok(output)) => output,
-            _ => return Vec::new(),
-        };
-        String::from_utf8_lossy(&output.stdout)
-            .split('\0')
-            .filter_map(|entry| Some((entry.get(..2)?, entry.get(3..)?)))
-            .filter(|(state, path)| *state == "??" || !REWRITTEN_SETUP.contains(path))
-            .map(|(_, path)| path.to_string())
-            .collect()
+        setup::uncommitted(&self.git, repo)
     }
 
     // ---------- slices ----------

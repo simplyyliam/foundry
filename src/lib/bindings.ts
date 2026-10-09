@@ -298,6 +298,20 @@ export const commands = {
 	 *  as `verify:progress`.
 	 */
 	verifySlice: (projectId: string, sliceId: string) => typedError<Verification, AppError>(__TAURI_INVOKE("verify_slice", { projectId, sliceId })),
+	/**
+	 *  What verifying the slice would hit right now (`null`: it would run), without recording
+	 *  or running anything. Same reasons as the skips `verify_slice` records.
+	 */
+	checkVerifySlice: (projectId: string, sliceId: string) => typedError<{
+	sliceId: string,
+	reason: SkipReason,
+	/**  The error code `verify_slice` returned. */
+	code: ErrorCode,
+	/**  Its message, as-is. */
+	message: string,
+	/**  Epoch ms. */
+	at: number,
+} | null, AppError>(__TAURI_INVOKE("check_verify_slice", { projectId, sliceId })),
 	/**  The slice's last verification with `stale` worked out now, or null. */
 	getVerification: (projectId: string, sliceId: string) => typedError<({
 	/**
@@ -325,6 +339,8 @@ export const events = {
 	planChanged: makeEvent<PlanChanged>("plan:changed"),
 	roadmapProgress: makeEvent<RoadmapProgress>("roadmap:progress"),
 	verifyProgress: makeEvent<VerifyProgress>("verify:progress"),
+	verifySkipCleared: makeEvent<VerifySkipCleared>("verify:skip_cleared"),
+	verifySkipped: makeEvent<VerifySkipped>("verify:skipped"),
 };
 
 /* Types */
@@ -721,7 +737,12 @@ export type ErrorCode =
  *  A slice can't start while Foundry's setup files (AGENTS.md, `agents/`, `docs/`, the
  *  VSM files, `plan.json`) are uncommitted: they'd count as the agent's changes.
  */
-"setup_not_committed";
+"setup_not_committed" | 
+/**
+ *  A slice can't be verified without a valid start commit: its changes can't be told
+ *  from what was there before.
+ */
+"no_start_commit";
 
 export type EventKind = "session_started" | "edit" | "command" | "tests_ran" | "blocked" | "needs_attention" | "turn_complete" | "session_ended" | "stuck" | "quiet" | "danger" | "report_ready";
 
@@ -1255,6 +1276,26 @@ export type Settings = {
 /**  Ordered: `info < warn < danger` (`minSeverity` filters on it). */
 export type Severity = "info" | "warn" | "danger";
 
+/**
+ *  Why a wanted verification couldn't run. One per refusal of `verify_slice` (auto mode's or
+ *  a click's), next to the error code it returned.
+ */
+export type SkipReason = 
+/**  `test_commands_unconfirmed`. */
+"test_commands_unconfirmed" | 
+/**  `not_found`: the slice has no report. */
+"no_report" | 
+/**  `invalid_json`: a report doesn't parse as one. */
+"report_incomplete" | 
+/**  `no_start_commit`: the slice has no valid start commit. */
+"no_start_commit" | 
+/**  `verification_running`. */
+"another_verification_running" | 
+/**  `setup_not_committed`: no valid start commit, and the setup files aren't committed. */
+"setup_not_committed" | 
+/**  Anything else (e.g. no such slice, an unreadable plan); `message` says what. */
+"other";
+
 export type Slice = {
 	name: string,
 	delivers: string[],
@@ -1270,6 +1311,11 @@ export type SliceDigest = {
 	/**  At least one report file (any agent's, or the legacy one) exists for the slice. */
 	reportPresent: boolean,
 	verification: VerificationState,
+	/**
+	 *  Why the latest wanted verification of this slice couldn't run, while that still holds;
+	 *  `null` otherwise.
+	 */
+	skip: VerifySkip | null,
 };
 
 export type SlicePatch = {
@@ -1415,6 +1461,30 @@ export type VerifyProgress = {
 	command: string | null,
 	/**  Since `verify_slice` started. */
 	elapsedMs: number,
+} & EventMeta;
+
+/**  The latest time verifying a slice was wanted but refused, kept while its cause holds. */
+export type VerifySkip = {
+	sliceId: string,
+	reason: SkipReason,
+	/**  The error code `verify_slice` returned. */
+	code: ErrorCode,
+	/**  Its message, as-is. */
+	message: string,
+	/**  Epoch ms. */
+	at: number,
+};
+
+/**  `verify:skip_cleared`: the slice's skip is gone (it was verified, or the cause went away). */
+export type VerifySkipCleared = {
+	projectId: string,
+	sliceId: string,
+} & EventMeta;
+
+/**  `verify:skipped`: a verification was wanted but refused; the slice's skip is now `skip`. */
+export type VerifySkipped = {
+	projectId: string,
+	skip: VerifySkip,
 } & EventMeta;
 
 export type VerifyStage = "starting" | "checking" | "running_tests" | 

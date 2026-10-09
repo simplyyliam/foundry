@@ -18,6 +18,7 @@ pub mod repo_write;
 pub mod report;
 pub mod repos;
 pub mod sessions;
+pub mod setup;
 pub mod slug;
 pub mod subscription;
 pub mod text;
