@@ -13,6 +13,9 @@ export function useRequirementActions(projectId: string, mutate: PlanController[
       /** `sliceId: null` unassigns (which also makes it proposed). */
       assign: (requirementId: string, sliceId: string | null) =>
         mutate((revision) => commands.assignRequirement(projectId, requirementId, sliceId, revision)),
+      /** Constraints only. On clears the slice; off leaves it unassigned. The state is kept. */
+      setProjectWide: (requirementId: string, value: boolean) =>
+        mutate((revision) => commands.setRequirementProjectWide(projectId, requirementId, value, revision)),
       remove: (requirementId: string) =>
         mutate((revision) => commands.removeRequirement(projectId, requirementId, revision)),
       confirm: (requirementId: string) =>

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Check, ChevronRight, MoreHorizontal, Pencil, Trash2, Undo2 } from "lucide-react";
+import { Check, ChevronRight, Globe, MoreHorizontal, Pencil, Rows3, Trash2, Undo2 } from "lucide-react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
   Dialog,
@@ -21,6 +21,7 @@ import { useAction } from "../hooks/useAction";
 import type { RequirementActions } from "../hooks/useRequirementActions";
 import { KindChip, StateChip, UnsourcedBadge } from "./Chips";
 import { ActionError } from "./Notices";
+import { isProjectWide } from "../lib/order";
 import { RequirementDialog } from "./RequirementDialog";
 import { SliceMenu } from "./SliceMenu";
 
@@ -36,6 +37,9 @@ export function RequirementRow({ requirement, slices, actions }: RequirementRowP
   const [deleting, setDeleting] = useState(false);
   const { busy, error, run } = useAction();
   const assigned = requirement.sliceId !== null && slices.some((slice) => slice.id === requirement.sliceId);
+  const projectWide = isProjectWide(requirement);
+  // The backend confirms a requirement once it has a slice or is project-wide.
+  const handled = assigned || projectWide;
   const confirmed = requirement.state === "confirmed";
 
   return (
@@ -61,16 +65,24 @@ export function RequirementRow({ requirement, slices, actions }: RequirementRowP
               <KindChip kind={requirement.kind} />
               <StateChip state={requirement.state} />
               {requirement.unsourced && <UnsourcedBadge />}
-              {!assigned && <span className="text-[11px] text-muted-foreground">Needs a slice before it can be confirmed</span>}
+              {!handled && <span className="text-[11px] text-muted-foreground">Needs a slice before it can be confirmed</span>}
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-1">
             <SliceMenu
               slices={slices}
               value={assigned ? requirement.sliceId : null}
+              projectWide={projectWide}
               disabled={busy}
-              unassignResets={confirmed}
-              onChange={(sliceId) => void run(() => actions.assign(requirement.id, sliceId))}
+              unassignResets={confirmed && !projectWide}
+              onChange={(sliceId) =>
+                // Assigning to a slice turns project-wide off by itself; unassigning doesn't.
+                void run(() =>
+                  projectWide && sliceId === null
+                    ? actions.setProjectWide(requirement.id, false)
+                    : actions.assign(requirement.id, sliceId),
+                )
+              }
             />
             {confirmed ? (
               <PressButton
@@ -87,7 +99,7 @@ export function RequirementRow({ requirement, slices, actions }: RequirementRowP
               <PressButton
                 variant="secondary"
                 size="xs"
-                disabled={busy || !assigned}
+                disabled={busy || !handled}
                 onClick={() => void run(() => actions.confirm(requirement.id))}
                 className="w-24"
               >
@@ -103,11 +115,24 @@ export function RequirementRow({ requirement, slices, actions }: RequirementRowP
                   </PressButton>
                 }
               />
-              <DropdownMenuContent align="end" className="w-40 min-w-40">
+              <DropdownMenuContent align="end" className="w-48 min-w-48">
                 <DropdownMenuItem onClick={() => setEditing(true)}>
                   <Pencil aria-hidden />
                   Edit…
                 </DropdownMenuItem>
+                {projectWide ? (
+                  <DropdownMenuItem disabled={busy} onClick={() => void run(() => actions.setProjectWide(requirement.id, false))}>
+                    <Rows3 aria-hidden />
+                    Assign to a slice
+                  </DropdownMenuItem>
+                ) : (
+                  requirement.kind === "constraint" && (
+                    <DropdownMenuItem disabled={busy} onClick={() => void run(() => actions.setProjectWide(requirement.id, true))}>
+                      <Globe aria-hidden />
+                      Make project-wide
+                    </DropdownMenuItem>
+                  )
+                )}
                 <DropdownMenuItem variant="destructive" onClick={() => setDeleting(true)}>
                   <Trash2 aria-hidden />
                   Delete…

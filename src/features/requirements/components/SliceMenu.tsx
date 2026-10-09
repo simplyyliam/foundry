@@ -12,6 +12,7 @@ import type { SliceView } from "@/lib/bindings";
 import { PressButton } from "@/shared";
 
 const NONE = "__unassigned__";
+const PROJECT = "__project_wide__";
 
 interface SliceMenuProps {
   /** In Blueprint order. */
@@ -21,12 +22,15 @@ interface SliceMenuProps {
   disabled?: boolean;
   /** Unassigning a confirmed requirement makes it proposed again: say so in the menu. */
   unassignResets?: boolean;
+  /** A project rule: the menu reads "Project-wide", and any other pick turns that off. */
+  projectWide?: boolean;
   className?: string;
 }
 
 /** Pick a requirement's slice, or Unassigned. */
-export function SliceMenu({ slices, value, onChange, disabled, unassignResets, className }: SliceMenuProps) {
-  const current = slices.find((slice) => slice.id === value);
+export function SliceMenu({ slices, value, onChange, disabled, unassignResets, projectWide, className }: SliceMenuProps) {
+  const current = projectWide ? undefined : slices.find((slice) => slice.id === value);
+  const label = current?.name ?? (projectWide ? "Project-wide" : "Unassigned");
 
   return (
     <DropdownMenu>
@@ -36,20 +40,21 @@ export function SliceMenu({ slices, value, onChange, disabled, unassignResets, c
             variant="outline"
             size="xs"
             disabled={disabled}
-            aria-label={`Slice: ${current?.name ?? "Unassigned"}`}
-            className={cn("w-44 justify-between", !current && "text-muted-foreground", className)}
+            aria-label={`Slice: ${label}`}
+            className={cn("w-44 justify-between", !current && !projectWide && "text-muted-foreground", className)}
           >
-            <span className="truncate">{current?.name ?? "Unassigned"}</span>
+            <span className="truncate">{label}</span>
             <ChevronDown aria-hidden data-icon="inline-end" />
           </PressButton>
         }
       />
       <DropdownMenuContent align="end" className="w-64">
         <DropdownMenuRadioGroup
-          value={current ? current.id : NONE}
+          value={current ? current.id : projectWide ? PROJECT : NONE}
           onValueChange={(next: string) => {
+            if (next === PROJECT) return;
             const sliceId = next === NONE ? null : next;
-            if (sliceId !== (current?.id ?? null)) onChange(sliceId);
+            if (projectWide || sliceId !== (current?.id ?? null)) onChange(sliceId);
           }}
         >
           {slices.map((slice) => (
@@ -58,6 +63,11 @@ export function SliceMenu({ slices, value, onChange, disabled, unassignResets, c
             </DropdownMenuRadioItem>
           ))}
           {slices.length > 0 && <DropdownMenuSeparator />}
+          {projectWide && (
+            <DropdownMenuRadioItem value={PROJECT}>
+              <span>Project-wide</span>
+            </DropdownMenuRadioItem>
+          )}
           <DropdownMenuRadioItem value={NONE}>
             <span className="flex flex-col">
               <span>Unassigned</span>

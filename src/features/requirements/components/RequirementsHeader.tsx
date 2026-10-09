@@ -1,10 +1,10 @@
 import { useState } from "react";
 import { CheckCheck, CircleCheck, CircleDashed, Plus } from "lucide-react";
-import type { Plan, PlanSummary } from "@/lib/bindings";
+import type { Plan, PlanRequirement, PlanSummary } from "@/lib/bindings";
 import { PressButton } from "@/shared";
 import { useAction } from "../hooks/useAction";
 import type { RequirementActions } from "../hooks/useRequirementActions";
-import { orderSlices, plural } from "../lib/order";
+import { orderSlices, placement, plural } from "../lib/order";
 import { ActionError } from "./Notices";
 import { RequirementDialog } from "./RequirementDialog";
 
@@ -13,16 +13,16 @@ interface RequirementsHeaderProps {
   actions: RequirementActions;
 }
 
-/** Counts, Confirm all (which skips unassigned requirements) and Add requirement. */
+/** Counts, Confirm all (which skips unassigned requirements, not project-wide ones) and Add requirement. */
 export function RequirementsHeader({ plan, actions }: RequirementsHeaderProps) {
   const [adding, setAdding] = useState(false);
   const { busy, error, run } = useAction();
   const known = new Set(plan.slices.map((slice) => slice.id));
-  const assigned = (sliceId: string | null) => sliceId !== null && known.has(sliceId);
+  const unhandled = (requirement: PlanRequirement) => placement(requirement, known) === "unassigned";
   const confirmed = plan.requirements.filter((requirement) => requirement.state === "confirmed").length;
-  const unassigned = plan.requirements.filter((requirement) => !assigned(requirement.sliceId)).length;
+  const unassigned = plan.requirements.filter(unhandled).length;
   const confirmable = plan.requirements.filter(
-    (requirement) => requirement.state === "proposed" && assigned(requirement.sliceId),
+    (requirement) => requirement.state === "proposed" && !unhandled(requirement),
   ).length;
 
   return (
@@ -66,7 +66,7 @@ export function SummaryBanner({ plan, summary }: { plan: Plan; summary: PlanSumm
     return (
       <div role="status" className="flex items-center gap-2 rounded-2xl bg-muted px-4 py-3 text-[13px]">
         <CircleCheck aria-hidden className="size-4 shrink-0 text-foreground" />
-        The plan is confirmed: every requirement has a slice and is confirmed.
+        The plan is confirmed: every requirement has a slice or is project-wide, and is confirmed.
       </div>
     );
   }

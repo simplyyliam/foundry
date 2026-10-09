@@ -1,5 +1,6 @@
 import { memo, useMemo } from "react";
 import type { Node, NodeProps } from "@xyflow/react";
+import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { HEADER_HEIGHT, LOOK_ACROSS_WIDTH, ROW_HEIGHT, type BlueprintLayout } from "../lib/layout";
 import { roughRect } from "../lib/rough";
@@ -56,9 +57,14 @@ export const LanesNode = memo(function LanesNode({ data }: NodeProps<LanesNodeTy
         row.text ? (
           <div
             key={row.key}
-            className="absolute left-0 flex items-center pr-4 pl-5"
+            className="absolute left-0 flex items-center gap-2 pr-4 pl-5"
             style={{ top: row.y, width: LOOK_ACROSS_WIDTH, height: ROW_HEIGHT }}
           >
+            {row.requirement?.projectWide && (
+              <Badge variant="outline" className="h-4 shrink-0 px-1.5 text-[10px]" title="A project rule: applies to every slice">
+                rule
+              </Badge>
+            )}
             <p
               className={cn(
                 "line-clamp-3 text-[12px] leading-4 text-pretty",

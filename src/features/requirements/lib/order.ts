@@ -7,23 +7,42 @@ export function orderSlices(slices: readonly SliceView[]): SliceView[] {
   );
 }
 
-export interface RequirementGroup {
-  /** Null for the unassigned group. */
-  slice: SliceView | null;
-  requirements: PlanRequirement[];
+/** A rule for the whole project. Older plans have no flag, which reads as `false`. */
+export const isProjectWide = (requirement: PlanRequirement) => requirement.projectWide === true;
+
+/**
+ * Where a requirement stands for confirming: in a known slice, project-wide (the backend
+ * counts both as handled), or unassigned. A `sliceId` pointing at a missing slice is unassigned.
+ */
+export function placement(requirement: PlanRequirement, known: ReadonlySet<string>): "slice" | "project" | "unassigned" {
+  if (isProjectWide(requirement)) return "project";
+  return requirement.sliceId !== null && known.has(requirement.sliceId) ? "slice" : "unassigned";
 }
 
-/** Unassigned first (only when there are any), then every slice in Blueprint order. */
+export type RequirementGroup =
+  | { kind: "project"; requirements: PlanRequirement[] }
+  | { kind: "unassigned"; requirements: PlanRequirement[] }
+  | { kind: "slice"; slice: SliceView; requirements: PlanRequirement[] };
+
+/**
+ * Project rules first, then Unassigned (each only when there are any), then every slice in
+ * Blueprint order.
+ */
 export function groupRequirements(plan: Plan): RequirementGroup[] {
   const known = new Set(plan.slices.map((slice) => slice.id));
-  const isUnassigned = (requirement: PlanRequirement) =>
-    requirement.sliceId === null || !known.has(requirement.sliceId);
-  const unassigned = plan.requirements.filter(isUnassigned);
+  const where = (kind: "project" | "unassigned") =>
+    plan.requirements.filter((requirement) => placement(requirement, known) === kind);
+  const project = where("project");
+  const unassigned = where("unassigned");
   return [
-    ...(unassigned.length > 0 ? [{ slice: null, requirements: unassigned }] : []),
+    ...(project.length > 0 ? [{ kind: "project" as const, requirements: project }] : []),
+    ...(unassigned.length > 0 ? [{ kind: "unassigned" as const, requirements: unassigned }] : []),
     ...orderSlices(plan.slices).map((slice) => ({
+      kind: "slice" as const,
       slice,
-      requirements: plan.requirements.filter((requirement) => requirement.sliceId === slice.id),
+      requirements: plan.requirements.filter(
+        (requirement) => !isProjectWide(requirement) && requirement.sliceId === slice.id,
+      ),
     })),
   ];
 }
