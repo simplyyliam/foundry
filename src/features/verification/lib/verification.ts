@@ -1,4 +1,4 @@
-import type { FindingSeverity, SliceStatus, SliceView, VerifyStage } from "@/lib/bindings";
+import type { FindingSeverity, SkipReason, SliceStatus, SliceView, TeamAgent, VerifySkip, VerifyStage } from "@/lib/bindings";
 
 /** Slices by layer, then name (ids break ties so the order never flickers), like the Blueprint. */
 export function orderSlices(slices: readonly SliceView[]): SliceView[] {
@@ -50,3 +50,35 @@ export function formatWhen(ms: number): string {
 }
 
 export const plural = (count: number, one: string, many = `${one}s`) => `${count} ${count === 1 ? one : many}`;
+
+/** Why a wanted verification couldn't run, in plain words. `other` has no fixed words. */
+const SKIP_TEXT: Record<Exclude<SkipReason, "other">, string> = {
+  test_commands_unconfirmed: "Confirm your test commands to verify",
+  no_report: "No report yet",
+  report_incomplete: "The report couldn't be read",
+  no_start_commit: "Move the slice to In progress first",
+  another_verification_running: "Another verification is running",
+  setup_not_committed: "Commit your setup files first",
+};
+
+/** The skip in plain words; for `other`, the backend's own message. */
+export function skipText(skip: VerifySkip): string {
+  return skip.reason === "other" ? skip.message : SKIP_TEXT[skip.reason];
+}
+
+/** The backend's message is worth showing too, unless it's already the text shown. */
+export function skipDetail(skip: VerifySkip): string | null {
+  return skip.reason === "other" ? null : skip.message;
+}
+
+export interface AgentLabel {
+  /** The display name, or the id when the agent isn't in the team. */
+  name: string;
+  /** The agent's title; null when it isn't in the team. */
+  role: string | null;
+}
+
+export function agentLabel(team: ReadonlyMap<string, TeamAgent>, agentId: string): AgentLabel {
+  const agent = team.get(agentId);
+  return agent ? { name: agent.displayName, role: agent.title.trim() || null } : { name: agentId, role: null };
+}

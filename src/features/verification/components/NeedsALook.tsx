@@ -1,18 +1,23 @@
-import { ChevronRight, CircleAlert, TriangleAlert } from "lucide-react";
-import type { AttentionItem, SliceView } from "@/lib/bindings";
+import { ChevronRight, CircleAlert, CircleSlash, TriangleAlert } from "lucide-react";
+import type { AttentionItem, SliceView, VerifySkip } from "@/lib/bindings";
 import { cn } from "@/lib/utils";
 import { PressButton } from "@/shared";
-import { bySeverity } from "../lib/verification";
+import { bySeverity, skipText } from "../lib/verification";
 
 interface NeedsALookProps {
   items: readonly AttentionItem[];
+  /** Slices whose wanted verification was skipped or can't run, in plan order. */
+  skips: readonly VerifySkip[];
   slices: readonly SliceView[];
   onOpenSlice: (sliceId: string) => void;
 }
 
-/** The digest's attention items, most severe first. Renders nothing when there are none. */
-export function NeedsALook({ items, slices, onOpenSlice }: NeedsALookProps) {
-  if (items.length === 0) return null;
+/**
+ * The digest's attention items, most severe first, then the skipped slices. Renders nothing
+ * when there are none.
+ */
+export function NeedsALook({ items, skips, slices, onOpenSlice }: NeedsALookProps) {
+  if (items.length === 0 && skips.length === 0) return null;
   return (
     <section aria-labelledby="needs-a-look-title" className="flex flex-col gap-1.5 rounded-2xl bg-muted px-2 pt-3 pb-2">
       <h2 id="needs-a-look-title" className="px-2 text-[13px] leading-snug font-medium">
@@ -27,20 +32,38 @@ export function NeedsALook({ items, slices, onOpenSlice }: NeedsALookProps) {
             </li>
           );
         })}
+        {skips.map((skip) => {
+          const slice = slices.find((candidate) => candidate.id === skip.sliceId);
+          return (
+            <li key={`skip-${skip.sliceId}`}>
+              <AttentionRow
+                skip={skip}
+                sliceName={slice?.name ?? skip.sliceId}
+                onOpen={slice ? () => onOpenSlice(slice.id) : undefined}
+              />
+            </li>
+          );
+        })}
       </ul>
     </section>
   );
 }
 
-function AttentionRow({ item, sliceName, onOpen }: { item: AttentionItem; sliceName: string | null; onOpen?: () => void }) {
-  const danger = item.severity === "danger";
-  const Icon = danger ? TriangleAlert : CircleAlert;
+type AttentionRowProps = ({ item: AttentionItem; skip?: never } | { skip: VerifySkip; item?: never }) & {
+  sliceName: string | null;
+  onOpen?: () => void;
+};
+
+/** An attention item, or a skipped verification (its reason in plain words). */
+function AttentionRow({ item, skip, sliceName, onOpen }: AttentionRowProps) {
+  const danger = item?.severity === "danger";
+  const Icon = skip ? CircleSlash : danger ? TriangleAlert : CircleAlert;
   const content = (
     <>
       <Icon aria-hidden className={cn("mt-0.5 size-3.5 shrink-0", danger ? "text-destructive" : "text-warning")} />
-      <span className="sr-only">{danger ? "Danger:" : "Warning:"}</span>
+      <span className="sr-only">{skip ? "Not verified:" : danger ? "Danger:" : "Warning:"}</span>
       <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <span className="text-[13px] leading-snug text-pretty whitespace-normal">{item.message}</span>
+        <span className="text-[13px] leading-snug text-pretty whitespace-normal">{skip ? skipText(skip) : item.message}</span>
         {sliceName && <span className="truncate text-[12px] text-muted-foreground">{sliceName}</span>}
       </span>
     </>

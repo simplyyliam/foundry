@@ -19,11 +19,21 @@ export function SliceStatusChip({ status }: { status: SliceStatus }) {
   );
 }
 
-export function ReportChip({ present }: { present: boolean }) {
+/** "Report", with the number of reports when there's more than one. */
+export function ReportChip({ present, count }: { present: boolean; count?: number }) {
+  const many = count !== undefined && count > 1;
   return present ? (
     <Badge variant="secondary" className={CHIP}>
       <FileCheck2 aria-hidden data-icon="inline-start" />
       Report
+      {many && (
+        <>
+          <span aria-hidden className="-mr-0.5 rounded-full bg-background/70 px-1.5 text-[10.5px] leading-4 tabular-nums">
+            {count}
+          </span>
+          <span className="sr-only">s: {count}</span>
+        </>
+      )}
     </Badge>
   ) : (
     <Badge variant="outline" className={cn(CHIP, "text-muted-foreground")}>

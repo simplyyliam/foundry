@@ -1,10 +1,10 @@
 import { useEffect, useSyncExternalStore } from "react";
-import { commands, events, type AppError, type Verification, type VerifyStage } from "@/lib/bindings";
+import { commands, events, type AppError, type ErrorCode, type Verification, type VerifyStage } from "@/lib/bindings";
 import { call, type Outcome } from "./call";
 
 /**
  * Verification runs, one state per project, kept outside React so a run survives leaving the
- * page. `verify:progress` and `agent:event` are listened to from app start
+ * page. `verify:progress`, `verify:skip_cleared` and `agent:event` are listened to from app start
  * (`useVerificationListeners`, mounted by the `AutoVerify` widget in the app layout).
  *
  * Auto mode: when `defaultVerifyMode` is `auto` and an agent reports `report_ready`, that slice
@@ -43,6 +43,15 @@ export interface AutoNotice {
 
 const IDLE: ProjectRuns = { running: null, errors: {}, finished: 0 };
 const TERMINAL: ReadonlySet<VerifyStage> = new Set(["done", "failed", "cancelled"]);
+/** Refusals the backend records as the slice's skip (`SkipReason`), so `verify:skip_cleared` ends them. */
+const SKIP_CODES: ReadonlySet<ErrorCode> = new Set([
+  "test_commands_unconfirmed",
+  "not_found",
+  "invalid_json",
+  "no_start_commit",
+  "verification_running",
+  "setup_not_committed",
+]);
 
 const states = new Map<string, ProjectRuns>();
 const listeners = new Set<() => void>();
@@ -212,6 +221,13 @@ export function useVerificationListeners() {
         }));
       })
       .catch((error: unknown) => console.error("verify:progress listener failed", error));
+    events.verifySkipCleared
+      .listen(({ payload }) => {
+        // The refusal no longer holds: the row shouldn't keep saying it does.
+        const error = get(payload.projectId).errors[payload.sliceId];
+        if (error && SKIP_CODES.has(error.code)) clearVerifyError(payload.projectId, payload.sliceId);
+      })
+      .catch((error: unknown) => console.error("verify:skip_cleared listener failed", error));
     events.agentEvent
       .listen(({ payload }) => {
         if (payload.kind === "report_ready" && payload.sliceId) void onReportReady(payload.projectId, payload.sliceId);

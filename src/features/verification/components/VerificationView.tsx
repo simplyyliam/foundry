@@ -1,11 +1,14 @@
 import { FileClock, LoaderCircle } from "lucide-react";
 import { useCallback, useMemo, useRef, useState } from "react";
-import type { SliceDigest } from "@/lib/bindings";
+import type { SliceDigest, VerifySkip } from "@/lib/bindings";
 import { PressButton } from "@/shared";
 import { useDigest } from "../hooks/useDigest";
+import { useReportCounts } from "../hooks/useReportCounts";
 import { useTestCommands } from "../hooks/useTestCommands";
 import { useVerifyPlan } from "../hooks/useVerifyPlan";
+import { useVerifyTeam } from "../hooks/useVerifyTeam";
 import { useVerifyRuns } from "../hooks/verifyRuns";
+import { orderSlices } from "../lib/verification";
 import { NeedsALook } from "./NeedsALook";
 import { ErrorLine } from "./Notices";
 import { SliceList } from "./SliceList";
@@ -23,6 +26,7 @@ export function VerificationView({ projectId }: { projectId: string }) {
   const runs = useVerifyRuns(projectId);
   const digest = useDigest(projectId, runs.finished);
   const testCommands = useTestCommands(projectId);
+  const team = useVerifyTeam(projectId);
   const [openSlice, setOpenSlice] = useState<string | null>(null);
   const commandsRef = useRef<HTMLElement>(null);
 
@@ -33,6 +37,15 @@ export function VerificationView({ projectId }: { projectId: string }) {
         : null,
     [digest.load],
   );
+
+  const withReports = useMemo(
+    () =>
+      digest.load.status === "ready"
+        ? digest.load.digest.slices.filter((slice) => slice.reportPresent).map((slice) => slice.sliceId)
+        : [],
+    [digest.load],
+  );
+  const reportCounts = useReportCounts(projectId, withReports);
 
   const reloadCommands = testCommands.reload;
   const reviewCommands = useCallback(() => {
@@ -72,6 +85,12 @@ export function VerificationView({ projectId }: { projectId: string }) {
     : 0;
   const noReports =
     digestMap !== null && slices.length > 0 && slices.every((slice) => !digestMap.get(slice.id)?.reportPresent);
+  const skips = digestMap
+    ? orderSlices(slices).flatMap((slice): VerifySkip[] => {
+        const skip = digestMap.get(slice.id)?.skip;
+        return skip ? [skip] : [];
+      })
+    : [];
 
   return (
     <div className="flex flex-col gap-8">
@@ -93,7 +112,7 @@ export function VerificationView({ projectId }: { projectId: string }) {
           </ErrorLine>
         )}
         {digest.load.status === "ready" && (
-          <NeedsALook items={digest.load.digest.attention} slices={slices} onOpenSlice={setOpenSlice} />
+          <NeedsALook items={digest.load.digest.attention} skips={skips} slices={slices} onOpenSlice={setOpenSlice} />
         )}
 
         {noReports && (
@@ -112,6 +131,7 @@ export function VerificationView({ projectId }: { projectId: string }) {
           projectId={projectId}
           slices={slices}
           digest={digestMap}
+          reportCounts={reportCounts}
           runs={runs}
           onOpen={setOpenSlice}
           onReviewCommands={reviewCommands}
@@ -123,6 +143,7 @@ export function VerificationView({ projectId }: { projectId: string }) {
         sliceId={openSlice}
         plan={plan.load.plan}
         digest={digestMap}
+        team={team}
         runs={runs}
         markDone={plan.markDone}
         onClose={() => setOpenSlice(null)}

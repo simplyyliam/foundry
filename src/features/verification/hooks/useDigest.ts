@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { commands, events, type AppError, type ManagerDigest } from "@/lib/bindings";
+import { commands, events, type AppError, type ManagerDigest, type VerifySkip } from "@/lib/bindings";
 import { call, type Outcome } from "./call";
 
 export type DigestLoad =
@@ -14,6 +14,10 @@ const EVENT_DEBOUNCE_MS = 400;
  * `managerDigest`: per slice whether a report exists and its verification state, plus the
  * attention items. Read again on `plan:changed`, on any `agent:event` for the project
  * (reports and unread warnings live there) and whenever a verification ends (`finished`).
+ *
+ * Each slice's `skip` is the backend's skip store, the only record of it: `verify:skipped` and
+ * `verify:skip_cleared` patch that slice's `skip` at once, then the digest is read again. A read
+ * already in flight is dropped, so its older answer can't bring a cleared skip back.
  */
 export function useDigest(projectId: string, finished: number) {
   const [load, setLoad] = useState<DigestLoad>({ status: "loading" });
@@ -39,6 +43,25 @@ export function useDigest(projectId: string, finished: number) {
     reload();
   }, [reload, finished]);
 
+  const setSkip = useCallback(
+    (sliceId: string, skip: VerifySkip | null) => {
+      latestFetch.current++;
+      setLoad((previous) =>
+        previous.status === "ready"
+          ? {
+              status: "ready",
+              digest: {
+                ...previous.digest,
+                slices: previous.digest.slices.map((slice) => (slice.sliceId === sliceId ? { ...slice, skip } : slice)),
+              },
+            }
+          : previous,
+      );
+      reload();
+    },
+    [reload],
+  );
+
   useEffect(() => {
     let disposed = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -56,6 +79,14 @@ export function useDigest(projectId: string, finished: number) {
       .listen(({ payload }) => payload.projectId === projectId && later())
       .then(keep)
       .catch(() => {});
+    events.verifySkipped
+      .listen(({ payload }) => payload.projectId === projectId && setSkip(payload.skip.sliceId, payload.skip))
+      .then(keep)
+      .catch(() => {});
+    events.verifySkipCleared
+      .listen(({ payload }) => payload.projectId === projectId && setSkip(payload.sliceId, null))
+      .then(keep)
+      .catch(() => {});
     const fetches = latestFetch;
     return () => {
       disposed = true;
@@ -63,7 +94,7 @@ export function useDigest(projectId: string, finished: number) {
       fetches.current++;
       stops.forEach((stop) => stop());
     };
-  }, [projectId, reload]);
+  }, [projectId, reload, setSkip]);
 
   /** Writes `.foundry/reviews/digest.md` and shows the digest it returns. */
   const writeFile = useCallback(async (): Promise<Outcome<ManagerDigest>> => {
