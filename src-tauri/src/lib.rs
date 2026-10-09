@@ -22,7 +22,7 @@ use crate::core::AppError;
 use crate::core::ErrorCode;
 use crate::features::{
     agent_events, agent_sessions, app, bakery, design, folders, hooks, plan, projects, prompts,
-    roadmap, team, verification,
+    roadmap, setup_commit, team, verification,
 };
 
 /// Where the generated TypeScript bindings live. Never hand-edit that file.
@@ -130,6 +130,7 @@ pub fn specta_builder<R: Runtime>() -> tauri_specta::Builder<R> {
             verification::commands::cancel_verification,
             verification::commands::manager_digest,
             verification::commands::write_digest_file,
+            setup_commit::commands::commit_setup,
         ])
         .events(collect_events![
             app::AppReady,
@@ -477,6 +478,11 @@ pub fn app_builder<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> 
             app.manage(Arc::new(hooks_store(
                 Arc::clone(&repos),
                 Arc::clone(&projects),
+            )));
+            app.manage(Arc::new(setup_commit::SetupCommitter::new(
+                Arc::clone(&repos),
+                Arc::clone(&sessions),
+                Git::system(),
             )));
             app.manage(Arc::new(session_manager(
                 app.handle(),
@@ -1910,6 +1916,75 @@ opus-test"
         assert!(!team::PROTECTED_FLOOR.contains(&".foundry/reviews/**"));
     }
 
+    // commit_setup, end to end with the plan's start gate.
+    #[test]
+    fn the_start_gate_refuses_before_commit_setup_and_passes_after() {
+        let repo = crate::testing::TestRepo::with_git();
+        repo.git(&["commit", "--quiet", "--allow-empty", "-m", "initial"]);
+        repo.write(".foundry/project.json", r#"{ "id": "p", "name": "Orbit" }"#);
+        repo.write(
+            "AGENTS.md",
+            "# rules
+",
+        );
+        repo.write("agents/roles.json", "{}");
+        repo.write("docs/brain-dump.md", "ideas");
+        repo.write("vsm_viewer.html", "<html></html>");
+        repo.write("src/app.ts", "unrelated");
+        let repos = Arc::new(RepoIndex::default());
+        repos.replace_all([("p", repo.path())]);
+        let plan = plan::PlanStore::new(
+            Arc::clone(&repos),
+            Git::system(),
+            Arc::new(Recorded::default()) as Arc<dyn plan::PlanEvents>,
+        );
+        let committer = setup_commit::SetupCommitter::new(
+            repos,
+            Arc::new(SessionRegistry::default()),
+            Git::system(),
+        );
+        let slice = plan
+            .add_slice(
+                "p",
+                plan::NewSlice {
+                    name: "Core".into(),
+                    delivers: vec!["Core works".into()],
+                    depends_on: vec![],
+                },
+                None,
+            )
+            .unwrap()
+            .id;
+        let start = || {
+            plan.set_slice_status(
+                "p",
+                &slice,
+                plan::SliceStatus::InProgress,
+                plan::StatusOptions::default(),
+                None,
+            )
+        };
+
+        let err = start().unwrap_err();
+        assert_eq!(err.code, ErrorCode::SetupNotCommitted);
+
+        let result = committer.commit_setup("p").unwrap();
+        assert!(result.files.contains(&".foundry/plan.json".to_string()));
+        assert!(result.files.contains(&"vsm_data.js".to_string()));
+        assert!(!result.files.contains(&"src/app.ts".to_string()));
+
+        let started = start().unwrap();
+        let view = started.slices.iter().find(|s| s.slice.id == slice).unwrap();
+        assert_eq!(view.slice.status, plan::SliceStatus::InProgress);
+        assert_eq!(
+            view.slice.start_commit.as_deref(),
+            Some(result.commit.as_str())
+        );
+        assert!(repo
+            .git(&["status", "--porcelain", "--untracked-files=all"])
+            .contains("?? src/app.ts"));
+    }
+
     /// Regenerates the real bindings file, then checks the contract is in it.
     #[test]
     fn export_bindings_regenerates_file_with_app_info() {
@@ -2029,6 +2104,12 @@ opus-test"
             "\"not_verified\"",
             "\"verification_running\"",
             "\"test_commands_changed\"",
+            "commitSetup",
+            "export type CommitSetupResult",
+            "\"not_a_git_repo\"",
+            "\"git_identity_missing\"",
+            "\"commit_failed\"",
+            "\"git_not_found\"",
         ] {
             assert!(ts.contains(name), "{name} missing from bindings");
         }

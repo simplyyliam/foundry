@@ -490,3 +490,13 @@ An agent couldn't build a pnpm monorepo's foundation slice: its write globs stop
 **Hook policy** (not a Tauri contract change): `core::hook_policy::check_edit` takes a new `workspace_access: bool` parameter. The `foundry-hook` helper sets it from `FOUNDRY_WORKSPACE_ACCESS=1`. With it on, an edit to a listed root file passes after the floor and `protectedGlobs` checks. Everything else is unchanged.
 
 **AGENTS.md template** (`resources/templates/AGENTS.template.md`, section 5): one line added after "Strict Dependency Lock": pnpm may ignore install-time build scripts; if a package like Prisma or esbuild needs one, the foundation slice sets `pnpm.onlyBuiltDependencies` in the root package.json.
+
+## Feature: commit Foundry's setup files
+
+The start gate (`setup_not_committed`) refused to start a slice until the user committed Foundry's setup files by hand. `commit_setup` does that commit. All additive.
+
+| Kind | Name | Before → After | Why |
+| --- | --- | --- | --- |
+| command | `commit_setup` | — → `commitSetup(projectId: string): Result<CommitSetupResult, AppError>` | Stages and commits only the new or modified files under `AGENTS.md`, `agents/`, `docs/`, `vsm_viewer.html`, `vsm_data.js`, `.foundry/plan.json`, `.foundry/project.json`, `.foundry/prompts/`, with literal pathspecs on both `git add` and `git commit`, so other staged or unstaged changes are left as they were. Message `foundry setup`. Never pushes, branches or amends. Deleted, ignored and conflicted setup files are left out. Runs under the session registry's lock: `session_running` while the project has a starting or running agent session, and no session can start for it during the commit. Errors: `not_found`, `folder_missing`, `session_running`, `git_not_found`, `not_a_git_repo`, `git_identity_missing` (never sets it; the message gives the `git config --global` commands), `commit_failed` (git's message, e.g. a failing pre-commit hook). |
+| type | `CommitSetupResult` | — → `{ commit: string, files: string[] }` | `commit`: HEAD after the call. Nothing to commit is not an error: `files` is `[]` and `commit` is the current HEAD (`""` in a repo with no commits yet). `files` is sorted. |
+| type | `ErrorCode` | adds `"git_not_found" \| "not_a_git_repo" \| "git_identity_missing" \| "commit_failed"` | Returned by `commit_setup`. |

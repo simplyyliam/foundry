@@ -334,6 +334,11 @@ export const commands = {
 	managerDigest: (projectId: string) => typedError<ManagerDigest, AppError>(__TAURI_INVOKE("manager_digest", { projectId })),
 	/**  Writes the digest to `.foundry/reviews/digest.md` and returns it. */
 	writeDigestFile: (projectId: string) => typedError<ManagerDigest, AppError>(__TAURI_INVOKE("write_digest_file", { projectId })),
+	/**
+	 *  Stages and commits Foundry's new or modified setup files ("foundry setup"), and nothing
+	 *  else. Nothing to commit: `files` is empty and `commit` is the current HEAD.
+	 */
+	commitSetup: (projectId: string) => typedError<CommitSetupResult, AppError>(__TAURI_INVOKE("commit_setup", { projectId })),
 };
 
 /** Events */
@@ -561,6 +566,16 @@ export type CommandRun = {
 	timedOut: boolean,
 };
 
+export type CommitSetupResult = {
+	/**
+	 *  HEAD after the call: the new commit, or the current HEAD when there was nothing to
+	 *  commit (empty in a repo with no commits yet).
+	 */
+	commit: string,
+	/**  Repo-relative paths that were committed, sorted. Empty: nothing to commit. */
+	files: string[],
+};
+
 /**
  *  A canvas coordinate or size. Always finite (commands reject NaN and infinities), so it
  *  exports as a plain TS `number`; a bare `f64` would export as `number | null`.
@@ -748,7 +763,15 @@ export type ErrorCode =
  *  A slice can't be verified without a valid start commit: its changes can't be told
  *  from what was there before.
  */
-"no_start_commit";
+"no_start_commit" | 
+/**  git isn't installed, or isn't on PATH. */
+"git_not_found" | 
+/**  The project folder isn't inside a git work tree. */
+"not_a_git_repo" | 
+/**  git `user.name` or `user.email` isn't set; the message says how to set them. */
+"git_identity_missing" | 
+/**  git refused to stage or commit; the message holds git's own. */
+"commit_failed";
 
 export type EventKind = "session_started" | "edit" | "command" | "tests_ran" | "blocked" | "needs_attention" | "turn_complete" | "session_ended" | "stuck" | "quiet" | "danger" | "report_ready";
 

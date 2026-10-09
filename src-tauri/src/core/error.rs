@@ -110,6 +110,14 @@ pub enum ErrorCode {
     /// A slice can't be verified without a valid start commit: its changes can't be told
     /// from what was there before.
     NoStartCommit,
+    /// git isn't installed, or isn't on PATH.
+    GitNotFound,
+    /// The project folder isn't inside a git work tree.
+    NotAGitRepo,
+    /// git `user.name` or `user.email` isn't set; the message says how to set them.
+    GitIdentityMissing,
+    /// git refused to stage or commit; the message holds git's own.
+    CommitFailed,
 }
 
 impl ErrorCode {
@@ -162,6 +170,10 @@ impl ErrorCode {
             Self::TestCommandsChanged => "test_commands_changed",
             Self::SetupNotCommitted => "setup_not_committed",
             Self::NoStartCommit => "no_start_commit",
+            Self::GitNotFound => "git_not_found",
+            Self::NotAGitRepo => "not_a_git_repo",
+            Self::GitIdentityMissing => "git_identity_missing",
+            Self::CommitFailed => "commit_failed",
         }
     }
 }
@@ -285,6 +297,10 @@ mod tests {
             ErrorCode::TestCommandsChanged,
             ErrorCode::SetupNotCommitted,
             ErrorCode::NoStartCommit,
+            ErrorCode::GitNotFound,
+            ErrorCode::NotAGitRepo,
+            ErrorCode::GitIdentityMissing,
+            ErrorCode::CommitFailed,
         ] {
             assert_eq!(serde_json::to_value(code).unwrap(), json!(code.as_str()));
         }
