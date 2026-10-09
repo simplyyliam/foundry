@@ -1063,9 +1063,12 @@ impl VerificationStore {
             commands: &commands,
             cancel: &cancel,
         };
-        let result = self
-            .run_checks(&checked, &emit)
-            .and_then(|(findings, runs, requirements)| {
+        let result = self.run_checks(&checked, &emit).and_then(
+            |CheckOutcome {
+                 findings,
+                 runs,
+                 requirements,
+             }| {
                 if cancel.load(Ordering::SeqCst) {
                     return Err(AppError::new(
                         ErrorCode::Cancelled,
@@ -1100,7 +1103,8 @@ impl VerificationStore {
                 repo_write::write(&repo, &disk::review_path(slice_id), text + "\n")?;
                 let stale = is_stale(&repo, &review)?;
                 Ok(Verification { review, stale })
-            });
+            },
+        );
         match &result {
             Ok(done) => {
                 emit(VerifyStage::Done, None);
@@ -1133,7 +1137,7 @@ impl VerificationStore {
         &self,
         c: &Checked<'_>,
         emit: &dyn Fn(VerifyStage, Option<&str>),
-    ) -> Result<(Vec<Finding>, Vec<CommandRun>, Vec<RequirementOutcome>), AppError> {
+    ) -> Result<CheckOutcome, AppError> {
         use FindingSeverity::{Danger, Info, Warn};
         emit(VerifyStage::Checking, None);
         let mut findings = Vec::new();
@@ -1336,7 +1340,11 @@ impl VerificationStore {
                 "the reports say every requirement is met, but a test command failed",
             ));
         }
-        Ok((findings, runs, outcomes))
+        Ok(CheckOutcome {
+            findings,
+            runs,
+            requirements: outcomes,
+        })
     }
 
     /// Changed files since `start_commit`: committed, staged, unstaged and untracked (not
@@ -1510,6 +1518,14 @@ impl VerificationStore {
         tracing::info!(project_id, "digest written");
         Ok(digest)
     }
+}
+
+/// What `run_checks` found: the findings, the test command runs, and each requirement's
+/// status across the reports.
+struct CheckOutcome {
+    findings: Vec<Finding>,
+    runs: Vec<CommandRun>,
+    requirements: Vec<RequirementOutcome>,
 }
 
 /// What one verification checks, gathered before it starts.
