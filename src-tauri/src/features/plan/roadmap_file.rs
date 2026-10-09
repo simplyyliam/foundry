@@ -109,6 +109,8 @@ pub fn to_plan(file: RoadmapFile) -> Result<(PlanFile, Vec<String>), AppError> {
             decisions: Vec::new(),
             open_questions: Vec::new(),
             start_commit: None,
+            // Never from a proposal: only the human turns it on.
+            workspace_access: false,
         });
     }
     for (slice, source) in slices.iter_mut().zip(&file.roadmap.slices) {

@@ -9,8 +9,10 @@
 //!   the agent's `protectedGlobs`, and must match its `writeGlobs`, except for the report
 //!   carve-out: the agent's own report for the slice it was launched on
 //!   (`.foundry/reports/<sliceId>.<agentId>.json`) is always writable, and nothing else in
-//!   `.foundry/reports/` is (another agent's report, a legacy `<sliceId>.json`). No
-//!   `roles.json`, one that doesn't parse, or no entry for the agent: blocked (fail closed).
+//!   `.foundry/reports/` is (another agent's report, a legacy `<sliceId>.json`). A session
+//!   launched on a slice with `workspaceAccess` may also write the [`WORKSPACE_FILES`] (never
+//!   over the floor or its `protectedGlobs`). No `roles.json`, one that doesn't parse, or no
+//!   entry for the agent: blocked (fail closed).
 //! - Command tools (`Bash`, `PowerShell`): clearly destructive commands are blocked; `git
 //!   push` and dependency installs are allowed with a warning.
 
@@ -39,6 +41,25 @@ pub const PROTECTED_FLOOR: &[&str] = &[
     ".foundry/reviews/digest.md",
     ".claude/**",
 ];
+
+/// Root files an agent launched on a slice with `workspaceAccess` may also write, on top of
+/// its role's `writeGlobs`: what a monorepo's foundation slice needs at the root (pnpm
+/// installs rewrite the lockfile). The one list: the hook, the task prompt and verification
+/// all read it here. Exact repo-relative paths, never globs. None is in the protected floor,
+/// and the floor wins anyway.
+pub const WORKSPACE_FILES: &[&str] = &[
+    "package.json",
+    "pnpm-workspace.yaml",
+    "pnpm-lock.yaml",
+    "tsconfig.base.json",
+    ".gitignore",
+    ".npmrc",
+];
+
+/// Set to `1` by the launch when the session's slice had `workspaceAccess` at launch time;
+/// absent otherwise. Read by the helper, so a later change to the flag doesn't reach a
+/// running session.
+pub const WORKSPACE_ACCESS_ENV: &str = "FOUNDRY_WORKSPACE_ACCESS";
 
 /// Rule ids, as sent in the event's `decision.rule` and named in the agent's message.
 pub mod rule {
@@ -115,12 +136,15 @@ struct RoleEntry {
 
 /// Checks an edit tool's target. `roles_json` is the text of `agents/roles.json`, `None`
 /// when it's missing. `slice_id` is the slice the session was launched on
-/// (`FOUNDRY_SLICE_ID`), whose report the agent may write. `cwd` resolves a relative `target`.
+/// (`FOUNDRY_SLICE_ID`), whose report the agent may write. `workspace_access`: that slice had
+/// `workspaceAccess` at launch ([`WORKSPACE_ACCESS_ENV`]), so the [`WORKSPACE_FILES`] are
+/// writable too. `cwd` resolves a relative `target`.
 pub fn check_edit(
     repo_root: &Path,
     roles_json: Option<&str>,
     agent_id: &str,
     slice_id: Option<&str>,
+    workspace_access: bool,
     target: Option<&str>,
     cwd: &Path,
 ) -> Verdict {
@@ -180,7 +204,9 @@ pub fn check_edit(
             ),
         };
     }
-    if role.write_globs.iter().any(|g| glob::matches(g, &rel)) {
+    if role.write_globs.iter().any(|g| glob::matches(g, &rel))
+        || (workspace_access && WORKSPACE_FILES.contains(&rel.as_str()))
+    {
         return Verdict::Allow;
     }
     block(
@@ -562,7 +588,94 @@ mod tests {
 
     fn edit(repo: &Path, agent: &str, slice: Option<&str>, rel: &str) -> Option<&'static str> {
         let roles = roles();
-        check_edit(repo, Some(&roles), agent, slice, Some(rel), repo).rule()
+        check_edit(repo, Some(&roles), agent, slice, false, Some(rel), repo).rule()
+    }
+
+    /// As agent `fs` (writeGlobs `src/**`) on slice `s-1`, with or without workspace access.
+    fn edit_ws(repo: &Path, access: bool, rel: &str) -> Option<&'static str> {
+        let roles = roles();
+        check_edit(
+            repo,
+            Some(&roles),
+            "fs",
+            Some("s-1"),
+            access,
+            Some(rel),
+            repo,
+        )
+        .rule()
+    }
+
+    #[test]
+    fn workspace_access_allows_exactly_the_listed_root_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        for file in WORKSPACE_FILES {
+            assert_eq!(edit_ws(repo, true, file), None, "{file} with access");
+            assert_eq!(
+                edit_ws(repo, false, file),
+                Some(rule::OUTSIDE_WRITE_GLOBS),
+                "{file} without access"
+            );
+        }
+        // Nothing else at the root, nor a listed name anywhere but the root.
+        for rel in [
+            "tsconfig.json",
+            "README.md",
+            "turbo.json",
+            "packages/web/package.json",
+            "docs/package.json",
+            ".npmrc.bak",
+        ] {
+            assert_eq!(
+                edit_ws(repo, true, rel),
+                Some(rule::OUTSIDE_WRITE_GLOBS),
+                "{rel}"
+            );
+        }
+        // The role's own globs still work with it on.
+        assert_eq!(edit_ws(repo, true, "src/main.ts"), None);
+        // The floor still blocks, flag or not.
+        for rel in [
+            "AGENTS.md",
+            "agents/roles.json",
+            "docs/design/tokens.md",
+            ".foundry/plan.json",
+            ".foundry/project.json",
+            ".foundry/reviews/s-1.json",
+            ".foundry/reviews/digest.md",
+            ".claude/settings.local.json",
+        ] {
+            assert_eq!(edit_ws(repo, true, rel), Some(rule::PROTECTED), "{rel}");
+        }
+        // And so do the role's protectedGlobs.
+        let roles = serde_json::json!({ "agents": [
+            { "id": "fs", "writeGlobs": ["src/**"], "protectedGlobs": ["package.json"] }
+        ]})
+        .to_string();
+        assert_eq!(
+            check_edit(
+                repo,
+                Some(&roles),
+                "fs",
+                Some("s-1"),
+                true,
+                Some("package.json"),
+                repo
+            )
+            .rule(),
+            Some(rule::PROTECTED)
+        );
+    }
+
+    #[test]
+    fn no_workspace_file_is_in_the_floor() {
+        for file in WORKSPACE_FILES {
+            assert!(
+                !PROTECTED_FLOOR.iter().any(|g| glob::matches(g, file)),
+                "{file}"
+            );
+        }
     }
 
     #[test]

@@ -154,11 +154,13 @@ fn decide(payload: &Value, agent_id: &str, tool: &str) -> Verdict {
     let roles = read_roles(&root);
     let target = text(input, "file_path").or_else(|| text(input, "notebook_path"));
     let slice_id = env("FOUNDRY_SLICE_ID");
+    let workspace_access = env(hook_policy::WORKSPACE_ACCESS_ENV).as_deref() == Some("1");
     hook_policy::check_edit(
         &root,
         roles.as_deref(),
         agent_id,
         slice_id.as_deref(),
+        workspace_access,
         target,
         &cwd,
     )

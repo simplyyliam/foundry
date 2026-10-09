@@ -64,6 +64,7 @@ To maintain production-grade compliance and eliminate stylistic drift, you must 
 * **Fail Fast:** If you discover a missing type definition, broken runtime flag, or schema mismatch while reading a target slice, suspend code generation immediately. Do not guess parameters or write placeholder workarounds. Flag the structural database issue to the user.
 * **Isolated Self-Correction Loop:** When a test fails (✕ failed), you are permitted to use local read/write tools *only* inside that active feature sandbox folder to apply corrections. If you cannot fix the bug within **2 iterative refactor steps**, stop execution, output the specific error log, and request developer guidance.
 * **Strict Dependency Lock:** Do not attempt to upgrade, install, or alter workspace root package.json configurations or external npm modules unless explicitly ordered via a direct user prompt.
+* **Install-Time Build Scripts:** pnpm may ignore install-time build scripts; if a package like Prisma or esbuild needs one, the foundation slice sets `pnpm.onlyBuiltDependencies` in the root package.json.
 * **Cross-Slice Integration Check:** Per-slice tests are black-box and isolated under Law 6, so they cannot catch a contract mismatch between slices. Before the MVP is considered complete, write and run one integration test outside any single feature folder that exercises [[ FILL IN: your critical end-to-end path, e.g. "signup → checkout → confirmation" ]].
 
 ### 6. DESIGN REFERENCE

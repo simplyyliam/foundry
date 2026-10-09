@@ -119,6 +119,24 @@ pub async fn set_slice_status(
     .await
 }
 
+/// Turns the slice's `workspaceAccess` on or off: an agent launched on it afterwards may
+/// also write the root workspace files (`package.json`, `pnpm-workspace.yaml`,
+/// `pnpm-lock.yaml`, `tsconfig.base.json`, `.gitignore`, `.npmrc`).
+#[tauri::command]
+#[specta::specta]
+pub async fn set_slice_workspace_access(
+    store: Store<'_>,
+    project_id: String,
+    slice_id: String,
+    value: bool,
+    expected_revision: Option<u32>,
+) -> Result<Plan, AppError> {
+    blocking(&store, move |s| {
+        s.set_slice_workspace_access(&project_id, &slice_id, value, expected_revision)
+    })
+    .await
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn add_decision(

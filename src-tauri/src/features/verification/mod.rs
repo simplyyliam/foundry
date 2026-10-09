@@ -517,6 +517,7 @@ struct Ready {
     start_commit: String,
     /// The slice's requirement ids, in plan order.
     expected: Vec<String>,
+    workspace_access: bool,
 }
 
 /// Why `verify_slice` didn't run, or failed: the error it returns, and the skip reason to
@@ -869,6 +870,7 @@ impl VerificationStore {
             reports,
             start_commit,
             expected,
+            workspace_access: slice.workspace_access,
         })
     }
 
@@ -1005,6 +1007,7 @@ impl VerificationStore {
             reports,
             start_commit,
             expected,
+            workspace_access,
         } = self.preflight(project_id, slice_id)?;
 
         let cancel = Arc::new(AtomicBool::new(false));
@@ -1040,6 +1043,7 @@ impl VerificationStore {
             repo: &repo,
             slice_id,
             start_commit: Some(&start_commit),
+            workspace_access,
             expected: expected.iter().map(String::as_str).collect(),
             reports: &reports,
             commands: &commands,
@@ -1303,7 +1307,7 @@ impl VerificationStore {
         let mut agents: Vec<&str> = c.reports.iter().map(|l| l.agent.as_str()).collect();
         agents.sort_unstable();
         agents.dedup();
-        findings.extend(self.boundary(c.repo, c.start_commit, &agents));
+        findings.extend(self.boundary(c.repo, c.start_commit, &agents, c.workspace_access));
 
         // 7. "Everything met" while a test failed.
         let all_met = outcomes.iter().any(|o| o.status.is_some())
@@ -1323,10 +1327,17 @@ impl VerificationStore {
 
     /// Changed files since `start_commit`: committed, staged, unstaged and untracked (not
     /// ignored). A file is fine when one of `agents` may write it (inside its write globs and
-    /// not protected for it). Otherwise one protected for any of them is `danger`, and one
-    /// outside every write glob only `warn`, since others' edits in the same period look the
-    /// same.
-    fn boundary(&self, repo: &Path, start_commit: Option<&str>, agents: &[&str]) -> Vec<Finding> {
+    /// not protected for it), or, with `workspace_access`, when it's one of the
+    /// `hook_policy::WORKSPACE_FILES` not protected for one of them. Otherwise one protected
+    /// for any of them is `danger`, and one outside every write glob only `warn`, since
+    /// others' edits in the same period look the same.
+    fn boundary(
+        &self,
+        repo: &Path,
+        start_commit: Option<&str>,
+        agents: &[&str],
+        workspace_access: bool,
+    ) -> Vec<Finding> {
         use FindingSeverity::{Danger, Info, Warn};
         let skipped = |why: String| {
             vec![Finding::new(
@@ -1408,9 +1419,11 @@ impl VerificationStore {
                     .chain(role.protected_globs.iter().map(String::as_str))
                     .find(|g| glob::matches(g, path))
             }
+            let workspace_file =
+                workspace_access && hook_policy::WORKSPACE_FILES.contains(&path.as_str());
             let writable = team.iter().any(|role| {
                 protected_for(role, path).is_none()
-                    && role.write_globs.iter().any(|g| glob::matches(g, path))
+                    && (workspace_file || role.write_globs.iter().any(|g| glob::matches(g, path)))
             });
             let protected = team
                 .iter()
@@ -1490,6 +1503,8 @@ struct Checked<'a> {
     repo: &'a Path,
     slice_id: &'a str,
     start_commit: Option<&'a str>,
+    /// The slice has `workspaceAccess`: the root workspace files are writable too.
+    workspace_access: bool,
     /// The slice's requirement ids, from the plan, in plan order.
     expected: Vec<&'a str>,
     /// At least one.

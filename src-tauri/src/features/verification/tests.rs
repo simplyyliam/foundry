@@ -687,6 +687,55 @@ fn a_diff_touching_a_protected_file_gives_danger() {
 }
 
 #[test]
+fn workspace_access_lets_the_boundary_check_accept_exactly_the_root_files() {
+    let env = Env::new();
+    env.commands(&[]);
+    for file in hook_policy::WORKSPACE_FILES {
+        env.repo.write(file, "{}\n");
+    }
+    env.repo.write("turbo.json", "{}\n"); // a root file not on the list
+    env.repo.write("AGENTS.md", "# rewritten\n"); // the floor
+    env.write_report(&report(json!([met("r-1", "test a"), met("r-2", "test b")])));
+    let flagged = |v: &Verification| -> BTreeMap<String, String> {
+        v.review
+            .findings
+            .iter()
+            .filter_map(|f| Some((f.path.clone()?, f.code.clone())))
+            .filter(|(p, _)| !p.starts_with(".foundry/"))
+            .collect()
+    };
+
+    // Off: every listed file is outside ada's write globs.
+    let off = flagged(&env.verify().unwrap());
+    for file in hook_policy::WORKSPACE_FILES {
+        assert_eq!(
+            off.get(*file).map(String::as_str),
+            Some(code::OUTSIDE_WRITE_GLOBS),
+            "{file}"
+        );
+    }
+
+    // On: none of them is flagged; the rest is as before.
+    let mut plan: Value = serde_json::from_str(&env.repo.read(".foundry/plan.json")).unwrap();
+    plan["slices"][0]["workspaceAccess"] = json!(true);
+    env.repo.write(".foundry/plan.json", &plan.to_string());
+    let on = flagged(&env.verify().unwrap());
+    assert_eq!(
+        on,
+        BTreeMap::from([
+            (
+                "AGENTS.md".to_string(),
+                code::PROTECTED_FILE_CHANGED.to_string()
+            ),
+            (
+                "turbo.json".to_string(),
+                code::OUTSIDE_WRITE_GLOBS.to_string()
+            ),
+        ])
+    );
+}
+
+#[test]
 fn a_second_verify_right_after_the_first_still_passes() {
     let env = Env::new();
     env.commands(&[]);

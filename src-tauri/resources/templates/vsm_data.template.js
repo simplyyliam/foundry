@@ -11,7 +11,10 @@
 //     status: "queued" | "in_progress" | "done",
 //     depends_on: [slice ids], delivers: [capabilities],
 //     used_by: how many slices depend on this one,
-//     resolved: [decisions made], open: [open questions]
+//     resolved: [decisions made], open: [open questions],
+//     workspace_access: true when an agent on this slice may also edit the root
+//                       workspace files (package.json, the pnpm files, tsconfig.base.json,
+//                       .gitignore, .npmrc)
 //   }]
 //   future_horizon: [{ id, label, anchored_to: slice id }]: deferred features. Don't build
 //     interfaces that block them (AGENTS.md, Law 8).

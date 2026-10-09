@@ -495,6 +495,37 @@ fn the_role_line_is_the_first_line_of_every_task_prompt() {
 }
 
 #[test]
+fn workspace_access_adds_the_root_files_and_one_sentence_to_boundaries() {
+    let fix = Fix::ready();
+    let off = fix
+        .repo
+        .read(&fix.task("s-feed", "ada", false).unwrap().path);
+    assert!(!off.contains("pnpm-lock.yaml") && !off.contains("package installs"));
+
+    fix.edit_plan(|plan| plan["slices"][1]["workspaceAccess"] = json!(true));
+    let on = fix
+        .repo
+        .read(&fix.task("s-feed", "ada", false).unwrap().path);
+    let report = "You may also always write `.foundry/reports/s-feed.ada.json`.\n";
+    let added = "You may also write these root files:\n\
+                 - `package.json`\n\
+                 - `pnpm-workspace.yaml`\n\
+                 - `pnpm-lock.yaml`\n\
+                 - `tsconfig.base.json`\n\
+                 - `.gitignore`\n\
+                 - `.npmrc`\n\
+                 For this slice you may run package installs and edit the root files listed \
+                 above; edit them only as much as the slice needs.\n";
+    assert_eq!(
+        on,
+        off.replace(report, &format!("{report}{added}")),
+        "the only change is the list and the sentence, inside Boundaries"
+    );
+    let boundaries = &on[on.find("## Boundaries").unwrap()..on.find("## Done means").unwrap()];
+    assert!(boundaries.contains(added));
+}
+
+#[test]
 fn task_prompt_sections_come_in_the_fixed_order() {
     let fix = Fix::ready();
     fix.repo.write("docs/bakery/manifest.md", "# Bakery\n");

@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 
 use super::disk::{Agent, Plan, Slice, BAKERY_MANIFEST, DESIGN_MANIFEST};
+use crate::core::hook_policy;
 use crate::core::report::{self, RequirementReport, RequirementStatus, SliceReport, TestRun};
 use crate::core::text::normalize_ws;
 use crate::core::AppError;
@@ -13,6 +14,9 @@ pub const MARKER: &str = "[[ FILL IN";
 const MARKER_CLOSE: &str = "]]";
 /// Starts the line a forced task prompt carries; `launch_message` looks for it.
 pub const FORCED_PREFIX: &str = "Started with unfinished dependencies:";
+/// Closes the Boundaries section of a task prompt for a slice with `workspaceAccess`.
+pub const WORKSPACE_SENTENCE: &str = "For this slice you may run package installs and edit the \
+     root files listed above; edit them only as much as the slice needs.";
 
 // ---------- hand-off ----------
 
@@ -272,7 +276,20 @@ pub fn task_prompt(input: &TaskInputs<'_>) -> Result<String, AppError> {
         agent.write_globs.iter().map(|g| format!("`{}`", g.trim())),
         "(nothing beyond your report)",
     );
-    out.push_str(&format!("You may also always write `{report_path}`.\n\n"));
+    out.push_str(&format!("You may also always write `{report_path}`.\n"));
+    if slice.workspace_access {
+        out.push_str("You may also write these root files:\n");
+        bullets(
+            &mut out,
+            hook_policy::WORKSPACE_FILES
+                .iter()
+                .map(|f| format!("`{f}`")),
+            "",
+        );
+        out.push_str(WORKSPACE_SENTENCE);
+        out.push('\n');
+    }
+    out.push('\n');
 
     // 7. Design pointers.
     if *design_pointers {

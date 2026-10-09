@@ -83,6 +83,11 @@ pub struct Slice {
     pub open_questions: Vec<OpenQuestion>,
     /// HEAD when the slice moved to `in_progress` (null outside a git repo or before then).
     pub start_commit: Option<String>,
+    /// An agent launched on this slice may also write the root workspace files
+    /// (`core::hook_policy::WORKSPACE_FILES`). Set only by the human
+    /// (`set_slice_workspace_access`); missing in older plans, which read as `false`.
+    #[serde(default)]
+    pub workspace_access: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -587,6 +592,7 @@ impl PlanStore {
                 decisions: Vec::new(),
                 open_questions: Vec::new(),
                 start_commit: None,
+                workspace_access: false,
             });
             let deps = checked_dependencies(plan, &new_id, input.depends_on)?;
             if let Some(slice) = plan.slices.last_mut() {
@@ -685,6 +691,26 @@ impl PlanStore {
             plan.slices[index].depends_on = deps;
             Ok(())
         })?;
+        Ok(plan)
+    }
+
+    /// Turns the slice's `workspaceAccess` on or off. Only the human calls this; nothing an
+    /// agent or a roadmap proposal writes reaches it. Takes effect for sessions launched on
+    /// the slice afterwards (a running one keeps what it was launched with) and for its next
+    /// verification.
+    pub fn set_slice_workspace_access(
+        &self,
+        project_id: &str,
+        slice_id: &str,
+        value: bool,
+        expected: Option<u32>,
+    ) -> Result<Plan, AppError> {
+        let (_, plan) = self.mutate(project_id, expected, |plan, _| {
+            let index = slice_index(plan, slice_id)?;
+            plan.slices[index].workspace_access = value;
+            Ok(())
+        })?;
+        tracing::info!(project_id, slice_id, value, "slice workspace access set");
         Ok(plan)
     }
 

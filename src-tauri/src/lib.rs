@@ -75,6 +75,7 @@ pub fn specta_builder<R: Runtime>() -> tauri_specta::Builder<R> {
             plan::commands::remove_slice,
             plan::commands::set_dependencies,
             plan::commands::set_slice_status,
+            plan::commands::set_slice_workspace_access,
             plan::commands::add_decision,
             plan::commands::add_open_question,
             plan::commands::resolve_open_question,
@@ -719,6 +720,7 @@ mod tests {
                     token: "t".into(),
                 },
                 slice_id: None,
+                workspace_access: false,
                 cols: 80,
                 rows: 24,
             })
@@ -960,6 +962,7 @@ opus-test"
                 token: "tok-launch".into(),
             },
             slice_id: None,
+            workspace_access: false,
             cols: 120,
             rows: 30,
         }
@@ -1100,6 +1103,7 @@ opus-test"
                         "FOUNDRY_HOOK_PORT",
                         "FOUNDRY_HOOK_TOKEN",
                         "FOUNDRY_SLICE_ID",
+                        "FOUNDRY_WORKSPACE_ACCESS",
                         "TERM",
                         "COLORTERM",
                     ]
@@ -1162,6 +1166,49 @@ opus-test"
                 .all(|k| !k.to_ascii_uppercase().starts_with("ANTHROPIC_")
                     && !k.to_ascii_uppercase().starts_with("CLAUDE_CODE_USE_")));
         }
+    }
+
+    /// `FOUNDRY_WORKSPACE_ACCESS=1` only for a session launched on a slice whose plan entry
+    /// has `workspaceAccess` at that moment; an inherited one is always dropped.
+    #[test]
+    fn workspace_access_is_read_from_the_plan_at_launch() {
+        std::env::set_var("FOUNDRY_WORKSPACE_ACCESS", "1");
+        let l = launch_env(|_| {});
+        with_team(&l, "FAKE:ENV tester");
+        let plan = |access: bool| {
+            l.repo.write(
+                ".foundry/plan.json",
+                &serde_json::json!({ "slices": [
+                    { "id": "s-root", "workspaceAccess": access },
+                    { "id": "s-other" }
+                ]})
+                .to_string(),
+            );
+        };
+        let launched = |slice: Option<&str>| -> Option<String> {
+            let _ = std::fs::remove_file(l.bin.path().join("env.json"));
+            l.manager
+                .start_agent(&l.id, "builder", handoff(slice))
+                .unwrap();
+            let env: std::collections::BTreeMap<String, String> =
+                serde_json::from_value(written(&l, "env.json")).unwrap();
+            // fake-claude exits after writing it; wait for the slot to free up.
+            let _ = l.manager.stop(&l.id, "builder", true);
+            let deadline = std::time::Instant::now() + Duration::from_secs(20);
+            while l.sessions.is_project_active(&l.id) {
+                assert!(std::time::Instant::now() < deadline, "session never ended");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            env.get("FOUNDRY_WORKSPACE_ACCESS").cloned()
+        };
+
+        plan(true);
+        assert_eq!(launched(Some("s-root")).as_deref(), Some("1"));
+        assert_eq!(launched(Some("s-other")), None, "a slice without the flag");
+        assert_eq!(launched(None), None, "no slice");
+        // Turned off: the next launch has none.
+        plan(false);
+        assert_eq!(launched(Some("s-root")), None);
     }
 
     // ---------- agent_start ----------
@@ -1921,6 +1968,7 @@ opus-test"
             "getPlan",
             "planSummary",
             "setSliceStatus",
+            "setSliceWorkspaceAccess",
             "confirmAll",
             "\"plan:changed\"",
             "\"stale_revision\"",

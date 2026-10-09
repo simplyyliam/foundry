@@ -473,3 +473,20 @@ Auto mode lives in the frontend (`verifyRuns.ts`): on `report_ready` it calls `v
 | event | `verify:skip_cleared` | — → `VerifySkipCleared = { id, ts, projectId: string, sliceId: string }` | The slice's skip is gone: it was verified, or its cause went away. Causes are checked again for every skip of the project after `set_test_commands`, `confirm_test_commands`, any `verify_slice` (except one refused as `verification_running`), and before the digest. |
 
 Skips are kept in memory, per project and slice: after a restart the next refusal records them again. `core::setup` now holds the setup-file check that `set_slice_status` already used (`setup_not_committed`), so verification can use it too; that behavior is unchanged.
+
+## Fix: a foundation slice may edit the root workspace files
+
+An agent couldn't build a pnpm monorepo's foundation slice: its write globs stopped at `packages/**`, but the slice needs root files and installs rewrite `pnpm-lock.yaml`. A slice can now get **workspace access**, set only by the human. An agent launched on it may then also write exactly these root files: `package.json`, `pnpm-workspace.yaml`, `pnpm-lock.yaml`, `tsconfig.base.json`, `.gitignore`, `.npmrc`. The list is one constant, `core::hook_policy::WORKSPACE_FILES`. It never overrides the protected floor or the role's `protectedGlobs`. All additive.
+
+| Kind | Name | Before → After | Why |
+| --- | --- | --- | --- |
+| type | `PlanSlice` | adds `workspaceAccess: boolean` (`#[serde(default)]`, so a plan without it loads as `false`; it exports as optional `workspaceAccess?`, and the backend always fills it) | The per-slice flag. New slices and slices loaded from a roadmap proposal get `false`; nothing but the command below sets it. Agents can't write `.foundry/plan.json` (protected floor). |
+| command | `set_slice_workspace_access` | — → `setSliceWorkspaceAccess(projectId: string, sliceId: string, value: boolean, expectedRevision: number \| null): Result<Plan, AppError>` | Same revision rules as the other plan mutations: a given `expectedRevision` that isn't current → `stale_revision`; `null` skips the check. Unknown slice → `not_found`. Bumps the revision, rewrites `vsm_data.js`, emits `plan:changed`. |
+| file | `vsm_data.js` (and `resources/templates/vsm_data.template.js`) | each slice adds `workspace_access: bool`, documented in the schema header | Mirrored like the other slice fields, so it can be read with Foundry closed. |
+| command | `agent_start` | unchanged signature; when launched on a slice whose plan entry has `workspaceAccess` at that moment, the session gets `FOUNDRY_WORKSPACE_ACCESS=1` | Read from `plan.json` at launch. A later change to the flag doesn't reach a running session. An inherited `FOUNDRY_WORKSPACE_ACCESS` is always dropped. |
+| command | `generate_task_prompt` | with the flag on, the Boundaries section adds "You may also write these root files:", the six files as bullets, and "For this slice you may run package installs and edit the root files listed above; edit them only as much as the slice needs." With it off, the prompt is byte-for-byte unchanged | The agent is told what the hook allows. |
+| command | `verify_slice` (boundary check) | with the slice's flag on (read when verifying), a changed workspace file is fine when it isn't protected for a reporting agent → no `outside_write_globs` for it | The same list as the hook. Other root files are still `outside_write_globs`, and floor files are still `protected_file_changed`. |
+
+**Hook policy** (not a Tauri contract change): `core::hook_policy::check_edit` takes a new `workspace_access: bool` parameter. The `foundry-hook` helper sets it from `FOUNDRY_WORKSPACE_ACCESS=1`. With it on, an edit to a listed root file passes after the floor and `protectedGlobs` checks. Everything else is unchanged.
+
+**AGENTS.md template** (`resources/templates/AGENTS.template.md`, section 5): one line added after "Strict Dependency Lock": pnpm may ignore install-time build scripts; if a package like Prisma or esbuild needs one, the foundation slice sets `pnpm.onlyBuiltDependencies` in the root package.json.

@@ -337,6 +337,53 @@ fn project_json_and_reviews_are_blocked_for_every_role_without_editing_roles_jso
     ));
 }
 
+// ---------- workspace access ----------
+
+#[test]
+fn a_session_launched_with_workspace_access_may_write_exactly_the_root_files() {
+    let repo = TestRepo::new();
+    standard_roles(&repo);
+    let root = repo.path().to_string_lossy().into_owned();
+    let run = |access: bool, rel: &str| {
+        let mut env = vec![
+            ("FOUNDRY_AGENT_ID", AGENT),
+            ("FOUNDRY_SLICE_ID", "s-root"),
+            ("CLAUDE_PROJECT_DIR", root.as_str()),
+        ];
+        if access {
+            env.push(("FOUNDRY_WORKSPACE_ACCESS", "1"));
+        }
+        let file = repo.path().join(rel).to_string_lossy().into_owned();
+        run_with(
+            helper(&env),
+            &write_payload(repo.path(), "Write", &file).to_string(),
+        )
+        .0
+    };
+    for file in [
+        "package.json",
+        "pnpm-workspace.yaml",
+        "pnpm-lock.yaml",
+        "tsconfig.base.json",
+        ".gitignore",
+        ".npmrc",
+    ] {
+        allowed(&run(true, file));
+        blocked(&run(false, file), "outside_write_globs");
+    }
+    for rel in ["tsconfig.json", "README.md", "packages/web/package.json"] {
+        blocked(&run(true, rel), "outside_write_globs");
+    }
+    for rel in [
+        "AGENTS.md",
+        "agents/roles.json",
+        ".foundry/plan.json",
+        ".claude/settings.json",
+    ] {
+        blocked(&run(true, rel), "protected_path");
+    }
+}
+
 // ---------- R-8b-4: destructive Bash is blocked, git push only warns ----------
 
 #[test]

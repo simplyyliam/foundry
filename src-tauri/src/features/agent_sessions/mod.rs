@@ -36,7 +36,7 @@ use crate::core::process_tree::ProcessTree;
 use crate::core::repos::RepoIndex;
 use crate::core::sessions::{now_ms, SessionInfo, SessionKey, SessionRegistry, SessionStatus};
 use crate::core::subscription::subscription_env;
-use crate::core::{AppError, ErrorCode};
+use crate::core::{hook_policy, workspace, AppError, ErrorCode};
 use ring::Ring;
 
 /// Scrollback kept per agent for `agent_snapshot`.
@@ -83,6 +83,8 @@ pub struct LaunchSpec {
     pub hook: HookEnv,
     /// Becomes `FOUNDRY_SLICE_ID` when set.
     pub slice_id: Option<String>,
+    /// The slice had `workspaceAccess` at launch: sets `FOUNDRY_WORKSPACE_ACCESS=1`.
+    pub workspace_access: bool,
     pub cols: u16,
     pub rows: u16,
 }
@@ -111,6 +113,8 @@ pub struct LaunchRequest {
     pub hook: HookEnv,
     /// Becomes `FOUNDRY_SLICE_ID` when set.
     pub slice_id: Option<String>,
+    /// The slice had `workspaceAccess` at launch: sets `FOUNDRY_WORKSPACE_ACCESS=1`.
+    pub workspace_access: bool,
     pub cols: u16,
     pub rows: u16,
 }
@@ -207,18 +211,20 @@ pub trait SessionEvents: Send + Sync + 'static {
 
 /// Every variable a session may set. Inherited ones of these names are always dropped, even
 /// when this session doesn't set it (no stale `FOUNDRY_SLICE_ID` from a parent).
-const SESSION_VARS: [&str; 7] = [
+const SESSION_VARS: [&str; 8] = [
     "FOUNDRY_AGENT_ID",
     "FOUNDRY_PROJECT_ID",
     "FOUNDRY_HOOK_PORT",
     "FOUNDRY_HOOK_TOKEN",
     "FOUNDRY_SLICE_ID",
+    hook_policy::WORKSPACE_ACCESS_ENV,
     "TERM",
     "COLORTERM",
 ];
 
 /// What every session adds on top of [`subscription_env`]: four `FOUNDRY_*` variables,
-/// `TERM` and `COLORTERM` (truecolor, so Claude Code keeps its exact UI colours), plus `FOUNDRY_SLICE_ID` when the session is for a slice.
+/// `TERM` and `COLORTERM` (truecolor, so Claude Code keeps its exact UI colours), plus `FOUNDRY_SLICE_ID` when the session is for a slice,
+/// and `FOUNDRY_WORKSPACE_ACCESS=1` when that slice had `workspaceAccess` at launch.
 fn session_vars(spec: &LaunchSpec) -> Vec<(&'static str, String)> {
     let mut vars = vec![
         ("FOUNDRY_AGENT_ID", spec.agent_id.clone()),
@@ -230,6 +236,9 @@ fn session_vars(spec: &LaunchSpec) -> Vec<(&'static str, String)> {
     ];
     if let Some(slice_id) = &spec.slice_id {
         vars.push(("FOUNDRY_SLICE_ID", slice_id.clone()));
+        if spec.workspace_access {
+            vars.push((hook_policy::WORKSPACE_ACCESS_ENV, "1".to_string()));
+        }
     }
     vars
 }
@@ -428,6 +437,11 @@ impl SessionManager {
                 )));
             }
         }
+        // Read once, now: a later change to the flag doesn't reach this session.
+        let workspace_access = options
+            .slice_id
+            .as_deref()
+            .is_some_and(|slice_id| workspace::slice_has_access(&repo, slice_id));
         let message = launch_message::build(&agent, prompt.as_ref())?;
         let endpoint = launcher.endpoint.get().ok_or_else(|| {
             AppError::internal(
@@ -436,7 +450,7 @@ impl SessionManager {
             )
         })?;
         let prompt_file = prompt.as_ref().map(|p| p.rel.as_str());
-        tracing::info!(project_id, agent_id, ?prompt_file, slice_id = ?options.slice_id, "starting agent");
+        tracing::info!(project_id, agent_id, ?prompt_file, slice_id = ?options.slice_id, workspace_access, "starting agent");
         self.launch(LaunchRequest {
             project_id: project_id.to_string(),
             agent_id: agent.id,
@@ -446,6 +460,7 @@ impl SessionManager {
                 token: endpoint.token,
             },
             slice_id: options.slice_id,
+            workspace_access,
             cols: START_COLS,
             rows: START_ROWS,
         })
@@ -478,6 +493,7 @@ impl SessionManager {
             cwd,
             hook: request.hook,
             slice_id: request.slice_id,
+            workspace_access: request.workspace_access,
             cols: request.cols,
             rows: request.rows,
         };

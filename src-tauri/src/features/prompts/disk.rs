@@ -60,6 +60,9 @@ pub struct Slice {
     pub decisions: Vec<String>,
     #[serde(default)]
     pub open_questions: Vec<OpenQuestion>,
+    /// The human gave this slice the root workspace files (`hook_policy::WORKSPACE_FILES`).
+    #[serde(default)]
+    pub workspace_access: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]

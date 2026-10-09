@@ -136,6 +136,9 @@ pub struct PlanSlice {
     pub status: String,
     #[serde(default)]
     pub start_commit: Option<String>,
+    /// The root workspace files are writable too (`hook_policy::WORKSPACE_FILES`).
+    #[serde(default)]
+    pub workspace_access: bool,
 }
 
 #[derive(Debug, Deserialize)]

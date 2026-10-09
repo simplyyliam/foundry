@@ -23,5 +23,6 @@ pub mod slug;
 pub mod subscription;
 pub mod text;
 pub mod trash;
+pub mod workspace;
 
 pub use error::{AppError, ErrorCode};

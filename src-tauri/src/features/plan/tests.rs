@@ -154,6 +154,7 @@ fn expected_mirror(file: &PlanFile) -> Value {
                 "used_by": s.used_by,
                 "resolved": s.slice.decisions,
                 "open": s.slice.open_questions.iter().map(|q| q.text.clone()).collect::<Vec<_>>(),
+                "workspace_access": s.slice.workspace_access,
             });
             (s.layer + 1, s.slice.name.clone(), s.slice.id.clone(), entry)
         })
@@ -176,6 +177,70 @@ fn expected_mirror(file: &PlanFile) -> Value {
         "slices": slices.into_iter().map(|s| s.3).collect::<Vec<_>>(),
         "future_horizon": horizon.into_iter().map(|h| h.2).collect::<Vec<_>>(),
     })
+}
+
+// ---------- workspace access ----------
+
+#[test]
+fn workspace_access_defaults_off_and_set_follows_the_revision_rules() {
+    let env = Env::new();
+    let a = env.slice("A", &[]);
+    assert!(!env.slice_view(&a).slice.workspace_access, "off by default");
+    assert!(env
+        .repo
+        .read(".foundry/plan.json")
+        .contains("\"workspaceAccess\": false"));
+
+    let revision = env.plan().revision;
+    let stale = env
+        .store
+        .set_slice_workspace_access(P, &a, true, Some(revision - 1));
+    assert_eq!(stale.unwrap_err().code, ErrorCode::StaleRevision);
+    assert!(
+        !env.slice_view(&a).slice.workspace_access,
+        "a stale set changes nothing"
+    );
+
+    let plan = env
+        .store
+        .set_slice_workspace_access(P, &a, true, Some(revision))
+        .unwrap();
+    assert_eq!(plan.revision, revision + 1);
+    assert!(env.slice_view(&a).slice.workspace_access);
+    assert_mirror_matches(&env);
+    let mirrored = mirror_value(&String::from_utf8(env.mirror_bytes()).unwrap());
+    assert_eq!(mirrored["slices"][0]["workspace_access"], json!(true));
+
+    env.store
+        .set_slice_workspace_access(P, &a, false, None)
+        .unwrap();
+    assert!(!env.slice_view(&a).slice.workspace_access);
+    assert_eq!(
+        env.store
+            .set_slice_workspace_access(P, "nope", true, None)
+            .unwrap_err()
+            .code,
+        ErrorCode::NotFound
+    );
+}
+
+#[test]
+fn a_plan_written_before_workspace_access_still_loads() {
+    let env = Env::new();
+    let a = env.slice("A", &[]);
+    let mut file: Value = serde_json::from_str(&env.repo.read(".foundry/plan.json")).unwrap();
+    for slice in file["slices"].as_array_mut().unwrap() {
+        slice.as_object_mut().unwrap().remove("workspaceAccess");
+    }
+    let text = file.to_string();
+    assert!(!text.contains("workspaceAccess"));
+    env.repo.write(".foundry/plan.json", &text);
+    assert!(!env.slice_view(&a).slice.workspace_access);
+    // And the next change writes it out.
+    env.store
+        .set_slice_workspace_access(P, &a, true, None)
+        .unwrap();
+    assert!(env.slice_view(&a).slice.workspace_access);
 }
 
 fn assert_mirror_matches(env: &Env) {

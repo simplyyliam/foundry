@@ -181,6 +181,7 @@ impl Env {
                 token: "tok-123".into(),
             },
             slice_id: None,
+            workspace_access: false,
             cols: 200,
             rows: 50,
         }

@@ -159,6 +159,12 @@ export const commands = {
 	 *  `override` with a non-empty `reason`, which is recorded as a decision.
 	 */
 	setSliceStatus: (projectId: string, sliceId: string, status: SliceStatus, options: StatusOptions, expectedRevision: number | null) => typedError<Plan, AppError>(__TAURI_INVOKE("set_slice_status", { projectId, sliceId, status, options, expectedRevision })),
+	/**
+	 *  Turns the slice's `workspaceAccess` on or off: an agent launched on it afterwards may
+	 *  also write the root workspace files (`package.json`, `pnpm-workspace.yaml`,
+	 *  `pnpm-lock.yaml`, `tsconfig.base.json`, `.gitignore`, `.npmrc`).
+	 */
+	setSliceWorkspaceAccess: (projectId: string, sliceId: string, value: boolean, expectedRevision: number | null) => typedError<Plan, AppError>(__TAURI_INVOKE("set_slice_workspace_access", { projectId, sliceId, value, expectedRevision })),
 	addDecision: (projectId: string, sliceId: string, text: string, expectedRevision: number | null) => typedError<Plan, AppError>(__TAURI_INVOKE("add_decision", { projectId, sliceId, text, expectedRevision })),
 	addOpenQuestion: (projectId: string, sliceId: string, text: string, expectedRevision: number | null) => typedError<PlanAdded, AppError>(__TAURI_INVOKE("add_open_question", { projectId, sliceId, text, expectedRevision })),
 	/**  Removes the question and records "question → resolution" as a decision. */
@@ -1022,6 +1028,12 @@ export type PlanSlice = {
 	openQuestions: OpenQuestion[],
 	/**  HEAD when the slice moved to `in_progress` (null outside a git repo or before then). */
 	startCommit: string | null,
+	/**
+	 *  An agent launched on this slice may also write the root workspace files
+	 *  (`core::hook_policy::WORKSPACE_FILES`). Set only by the human
+	 *  (`set_slice_workspace_access`); missing in older plans, which read as `false`.
+	 */
+	workspaceAccess?: boolean,
 };
 
 export type PlanSummary = {
