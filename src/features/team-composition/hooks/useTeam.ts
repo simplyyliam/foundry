@@ -8,7 +8,7 @@ import {
   type TeamProposal,
   type TeamWritten,
 } from "@/lib/bindings";
-import { useTeamChanged } from "@/shared";
+import { notifyTeamChanged, useTeamChanged } from "@/shared";
 import { call, type Outcome } from "./call";
 
 export type TeamLoad =
@@ -88,7 +88,11 @@ export function useTeam(projectId: string): TeamController {
     (roster: RosterAgent[]) =>
       enqueue(async () => {
         const outcome = watch(await call(() => commands.confirmTeam(projectId, roster)));
-        if (outcome.ok) await fetchTeam();
+        if (outcome.ok) {
+          await fetchTeam();
+          // Other views of this team (and Setup's commit section: the roster is a setup file).
+          notifyTeamChanged(projectId);
+        }
         return outcome;
       }),
     [projectId, enqueue, watch, fetchTeam],

@@ -19,26 +19,27 @@ export function SliceStatusChip({ status }: { status: SliceStatus }) {
   );
 }
 
-/** "Report", with the number of reports when there's more than one. */
-export function ReportChip({ present, count }: { present: boolean; count?: number }) {
-  const many = count !== undefined && count > 1;
+/** "Report" or "No report". */
+export function ReportChip({ present }: { present: boolean }) {
   return present ? (
     <Badge variant="secondary" className={CHIP}>
       <FileCheck2 aria-hidden data-icon="inline-start" />
       Report
-      {many && (
-        <>
-          <span aria-hidden className="-mr-0.5 rounded-full bg-background/70 px-1.5 text-[10.5px] leading-4 tabular-nums">
-            {count}
-          </span>
-          <span className="sr-only">s: {count}</span>
-        </>
-      )}
     </Badge>
   ) : (
     <Badge variant="outline" className={cn(CHIP, "text-muted-foreground")}>
       <FileX2 aria-hidden data-icon="inline-start" />
       No report
+    </Badge>
+  );
+}
+
+/** "2 reports", only when a slice has more than one (one per agent). Nothing otherwise. */
+export function ReportCountChip({ count }: { count: number }) {
+  if (count < 2) return null;
+  return (
+    <Badge variant="outline" className="h-4.5 px-1.5 text-[10.5px] text-muted-foreground tabular-nums">
+      {count} reports
     </Badge>
   );
 }

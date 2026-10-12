@@ -44,4 +44,40 @@ describe("Requirements widget", () => {
     expect(screen.queryByRole("menuitem", { name: "Make project-wide" })).not.toBeInTheDocument();
     expect(backend.unhandled).toEqual([]);
   });
+
+  it("locks the kind of a project-wide rule in the edit dialog, and not of a slice requirement", async () => {
+    const feed = slice({ id: "s-feed", name: "Feed" });
+    const rule = requirement({ id: "r-1", text: "Every screen works offline", kind: "constraint", projectWide: true });
+    const story = requirement({ id: "r-2", text: "Posts load newest first", sliceId: "s-feed" });
+    backend.respond("getPlan", plan({ revision: 2, slices: [feed], requirements: [rule, story] }));
+    backend.respond("planSummary", summary());
+
+    const { user } = renderWithApp(<Requirements projectId={PROJECT_ID} />);
+
+    const rules = await screen.findByRole("region", { name: "Project rules" });
+    await user.click(within(rules).getByRole("button", { name: "More actions" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Edit…" }));
+
+    let dialog = await screen.findByRole("dialog");
+    let kinds = within(dialog).getByRole("radiogroup", { name: "Kind" });
+    for (const radio of within(kinds).getAllByRole("radio")) expect(radio).toBeDisabled();
+    expect(within(kinds).getByRole("radio", { name: "constraint" })).toHaveAttribute("aria-checked", "true");
+    expect(kinds).toHaveAccessibleDescription(
+      "Project-wide rules are always constraints. Turn off Project-wide first to change the kind.",
+    );
+    // The rest of the dialog still edits.
+    expect(within(dialog).getByLabelText("Requirement")).toBeEnabled();
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+
+    const feedGroup = screen.getByRole("region", { name: "Feed" });
+    await user.click(within(feedGroup).getByRole("button", { name: "More actions" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Edit…" }));
+    dialog = await screen.findByRole("dialog", { name: "Edit requirement" });
+    kinds = within(dialog).getByRole("radiogroup", { name: "Kind" });
+    for (const radio of within(kinds).getAllByRole("radio")) expect(radio).toBeEnabled();
+    expect(within(dialog).queryByText(/Project-wide rules are always constraints/)).not.toBeInTheDocument();
+
+    expect(backend.calls("updateRequirement")).toHaveLength(0);
+    expect(backend.unhandled).toEqual([]);
+  });
 });

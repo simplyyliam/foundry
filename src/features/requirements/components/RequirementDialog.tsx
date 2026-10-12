@@ -56,6 +56,8 @@ function RequirementForm({
   const { busy, error, run } = useAction();
 
   const editing = requirement !== undefined;
+  // The backend keeps project-wide rules as constraints, so the kind is locked until the flag is off.
+  const kindLocked = editing && requirement.projectWide;
   // Compared as typed, so opening and saving untouched fields never counts as a change.
   const changed = {
     text: editing && text !== requirement.text,
@@ -121,13 +123,20 @@ function RequirementForm({
 
         <div className="flex flex-wrap items-end gap-4">
           <Field label="Kind">
-            <div role="radiogroup" aria-label="Kind" className="flex w-fit gap-0.5 rounded-full bg-muted p-0.5">
+            <div
+              role="radiogroup"
+              aria-label="Kind"
+              aria-disabled={kindLocked || undefined}
+              aria-describedby={kindLocked ? "requirement-kind-locked" : undefined}
+              className="flex w-fit gap-0.5 rounded-full bg-muted p-0.5"
+            >
               {KINDS.map((option) => (
                 <PressButton
                   key={option}
                   type="button"
                   role="radio"
                   aria-checked={kind === option}
+                  disabled={kindLocked}
                   pressScale={0.95}
                   size="xs"
                   variant="ghost"
@@ -142,6 +151,11 @@ function RequirementForm({
               ))}
             </div>
           </Field>
+          {kindLocked && (
+            <p id="requirement-kind-locked" className="basis-full text-[12px] leading-snug text-muted-foreground">
+              Project-wide rules are always constraints. Turn off Project-wide first to change the kind.
+            </p>
+          )}
           {!editing && (
             <Field label="Slice">
               <SliceMenu slices={slices} value={sliceId} onChange={setSliceId} className="h-7" />

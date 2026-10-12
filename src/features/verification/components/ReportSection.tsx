@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { AgentReport, SliceReport, TeamAgent } from "@/lib/bindings";
+import { cn } from "@/lib/utils";
 import { usePressScale } from "@/shared";
 import type { Loaded } from "../hooks/useSliceDetail";
-import { agentLabel, plural } from "../lib/verification";
+import { agentLabel, formatWhen, plural } from "../lib/verification";
 import { RequirementStatusChip } from "./Chips";
 import { ErrorLine } from "./Notices";
 import { Loading, Muted, Section, Subheading } from "./SheetParts";
@@ -11,16 +12,14 @@ import { Loading, Muted, Section, Subheading } from "./SheetParts";
 interface ReportSectionProps {
   load: Loaded<AgentReport[]>;
   team: ReadonlyMap<string, TeamAgent>;
-  /** The agent whose report was written last, when known (see `useSliceDetail`). */
-  lastReporter: string | null;
   requirementText: (id: string) => string | undefined;
 }
 
 /**
- * The slice's reports. One report shows as it always did; several get a summary line and one
- * tab per agent, opening on the most recently written one when that's known.
+ * The slice's reports, each with when it was written. One report shows on its own; several get
+ * a summary line and one tab per agent, opening on the newest (`writtenAt`).
  */
-export function ReportSection({ load, team, lastReporter, requirementText }: ReportSectionProps) {
+export function ReportSection({ load, team, requirementText }: ReportSectionProps) {
   const reports = load.status === "ready" ? load.value : [];
   return (
     <Section title={reports.length > 1 ? "Reports" : "Report"}>
@@ -29,24 +28,34 @@ export function ReportSection({ load, team, lastReporter, requirementText }: Rep
       {load.status === "ready" && reports.length === 0 && (
         <Muted>No report yet. The agent writes one when it finishes the slice.</Muted>
       )}
-      {reports.length === 1 && <ReportBody report={reports[0].report} requirementText={requirementText} />}
-      {reports.length > 1 && (
-        <AgentReports reports={reports} team={team} lastReporter={lastReporter} requirementText={requirementText} />
+      {reports.length === 1 && (
+        <ReportBody report={reports[0].report} writtenAt={reports[0].writtenAt} requirementText={requirementText} />
       )}
+      {reports.length > 1 && <AgentReports reports={reports} team={team} requirementText={requirementText} />}
     </Section>
   );
 }
 
-/** The newest report's path: the last listed for `lastReporter` (an agent's own file comes after the legacy one). */
-function newestPath(reports: readonly AgentReport[], lastReporter: string | null): string {
-  const byLast = lastReporter ? reports.filter((entry) => entry.agent === lastReporter).at(-1) : undefined;
-  return (byLast ?? reports[0]).path;
+/** Milliseconds since the epoch, or null when the backend's time doesn't parse. */
+const writtenMs = (writtenAt: string): number | null => {
+  const ms = Date.parse(writtenAt);
+  return Number.isNaN(ms) ? null : ms;
+};
+
+/** The newest report's path by `writtenAt`. Ties (and unparsable times) go to the later listed. */
+function newestPath(reports: readonly AgentReport[]): string {
+  let newest = reports[0];
+  for (const entry of reports.slice(1)) {
+    if ((writtenMs(entry.writtenAt) ?? -Infinity) >= (writtenMs(newest.writtenAt) ?? -Infinity)) newest = entry;
+  }
+  return newest.path;
 }
 
-function AgentReports({ reports, team, lastReporter, requirementText }: Omit<ReportSectionProps, "load"> & { reports: AgentReport[] }) {
-  // A tab picked by hand stays picked while its report exists; otherwise follow the newest.
+function AgentReports({ reports, team, requirementText }: Omit<ReportSectionProps, "load"> & { reports: AgentReport[] }) {
+  // A tab picked by hand stays picked while its report exists; otherwise follow the newest, so a
+  // report written while the sheet is open (re-read on `report_ready`) comes to the front.
   const [picked, setPicked] = useState<string | null>(null);
-  const selected = picked && reports.some((entry) => entry.path === picked) ? picked : newestPath(reports, lastReporter);
+  const selected = picked && reports.some((entry) => entry.path === picked) ? picked : newestPath(reports);
 
   return (
     <div className="flex flex-col gap-3">
@@ -62,12 +71,12 @@ function AgentReports({ reports, team, lastReporter, requirementText }: Omit<Rep
       <Tabs value={selected} onValueChange={(value) => setPicked(value as string)} className="gap-4">
         <TabsList aria-label="Reports by agent" className="h-auto! w-full flex-wrap justify-start gap-1 rounded-xl p-1">
           {reports.map((entry) => (
-            <AgentTab key={entry.path} value={entry.path} {...agentLabel(team, entry.agent)} />
+            <AgentTab key={entry.path} value={entry.path} writtenAt={entry.writtenAt} {...agentLabel(team, entry.agent)} />
           ))}
         </TabsList>
         {reports.map((entry) => (
           <TabsContent key={entry.path} value={entry.path}>
-            <ReportBody report={entry.report} requirementText={requirementText} />
+            <ReportBody report={entry.report} writtenAt={entry.writtenAt} requirementText={requirementText} />
           </TabsContent>
         ))}
       </Tabs>
@@ -75,7 +84,7 @@ function AgentReports({ reports, team, lastReporter, requirementText }: Omit<Rep
   );
 }
 
-function AgentTab({ value, name, role }: { value: string; name: string; role: string | null }) {
+function AgentTab({ value, name, role, writtenAt }: { value: string; name: string; role: string | null; writtenAt: string }) {
   const ref = usePressScale<HTMLButtonElement>({ scale: 0.97 });
   return (
     <TabsTrigger
@@ -85,15 +94,37 @@ function AgentTab({ value, name, role }: { value: string; name: string; role: st
     >
       <span className="max-w-56 truncate text-[12.5px] font-medium">{name}</span>
       {role && <span className="max-w-56 truncate text-[11.5px] font-normal text-muted-foreground">{role}</span>}
+      <WrittenAt writtenAt={writtenAt} className="text-[11px] font-normal text-muted-foreground" />
     </TabsTrigger>
   );
 }
 
-function ReportBody({ report, requirementText }: { report: SliceReport; requirementText: (id: string) => string | undefined }) {
+/** "Today, 14:05" with the full date as a tooltip; the backend's text as-is if it doesn't parse. */
+function WrittenAt({ writtenAt, className }: { writtenAt: string; className?: string }) {
+  const ms = writtenMs(writtenAt);
+  return (
+    <time dateTime={writtenAt} title={ms === null ? undefined : new Date(ms).toLocaleString()} className={cn("tabular-nums", className)}>
+      {ms === null ? writtenAt : formatWhen(ms)}
+    </time>
+  );
+}
+
+function ReportBody({
+  report,
+  writtenAt,
+  requirementText,
+}: {
+  report: SliceReport;
+  writtenAt: string;
+  requirementText: (id: string) => string | undefined;
+}) {
   return (
     <div className="flex flex-col gap-4">
       <p className="text-[12.5px] text-muted-foreground">
         By <code className="font-mono text-[12px] text-foreground">{report.agent}</code>
+        <span aria-hidden> · </span>
+        <span className="sr-only">, </span>
+        written <WrittenAt writtenAt={writtenAt} />
       </p>
 
       <div className="flex flex-col gap-2">

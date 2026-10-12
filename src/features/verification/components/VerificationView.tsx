@@ -3,7 +3,6 @@ import { useCallback, useMemo, useRef, useState } from "react";
 import type { SliceDigest, VerifySkip } from "@/lib/bindings";
 import { PressButton } from "@/shared";
 import { useDigest } from "../hooks/useDigest";
-import { useReportCounts } from "../hooks/useReportCounts";
 import { useTestCommands } from "../hooks/useTestCommands";
 import { useVerifyPlan } from "../hooks/useVerifyPlan";
 import { useVerifyTeam } from "../hooks/useVerifyTeam";
@@ -37,15 +36,6 @@ export function VerificationView({ projectId }: { projectId: string }) {
         : null,
     [digest.load],
   );
-
-  const withReports = useMemo(
-    () =>
-      digest.load.status === "ready"
-        ? digest.load.digest.slices.filter((slice) => slice.reportPresent).map((slice) => slice.sliceId)
-        : [],
-    [digest.load],
-  );
-  const reportCounts = useReportCounts(projectId, withReports);
 
   const reloadCommands = testCommands.reload;
   const reviewCommands = useCallback(() => {
@@ -131,7 +121,6 @@ export function VerificationView({ projectId }: { projectId: string }) {
           projectId={projectId}
           slices={slices}
           digest={digestMap}
-          reportCounts={reportCounts}
           runs={runs}
           onOpen={setOpenSlice}
           onReviewCommands={reviewCommands}

@@ -11,7 +11,7 @@ import { useSliceDetail, type Loaded } from "../hooks/useSliceDetail";
 import type { VerifyPlan } from "../hooks/useVerifyPlan";
 import type { ProjectRuns } from "../hooks/verifyRuns";
 import { agentLabel, bySeverity, formatDuration, formatWhen } from "../lib/verification";
-import { ReportChip, SeverityChip, SliceStatusChip, VerificationChip } from "./Chips";
+import { ReportChip, ReportCountChip, SeverityChip, SliceStatusChip, VerificationChip } from "./Chips";
 import { ErrorLine } from "./Notices";
 import { ProgressLine } from "./ProgressLine";
 import { ReportSection } from "./ReportSection";
@@ -58,7 +58,7 @@ function SliceDetails({
   markDone,
   onReviewCommands,
 }: Omit<VerificationSheetProps, "sliceId" | "onClose"> & { sliceId: string }) {
-  const { reports, verification, lastReporter } = useSliceDetail(projectId, sliceId, runs.finished);
+  const { reports, verification } = useSliceDetail(projectId, sliceId, runs.finished);
   const slice = plan.slices.find((candidate) => candidate.id === sliceId);
   const sliceDigest = digest?.get(sliceId) ?? null;
   const running = runs.running?.sliceId === sliceId ? runs.running : null;
@@ -67,7 +67,7 @@ function SliceDetails({
 
   // The reports as read now (fresher than the digest right after a report_ready).
   const reportPresent = reports.status === "ready" ? reports.value.length > 0 : (sliceDigest?.reportPresent ?? false);
-  const reportCount = reports.status === "ready" ? reports.value.length : undefined;
+  const reportCount = reports.status === "ready" ? reports.value.length : (sliceDigest?.reportCount ?? 0);
   const skip = sliceDigest?.skip ?? null;
   // A refused Verify is also recorded as the skip: say it once, in plain words (with the message).
   const error = runs.errors[sliceId];
@@ -90,7 +90,8 @@ function SliceDetails({
         <SheetTitle className="truncate text-[15px]">{slice?.name ?? sliceId}</SheetTitle>
         <SheetDescription render={<div />} className="flex flex-wrap items-center gap-1 pt-0.5">
           {slice ? <SliceStatusChip status={slice.status} /> : <span className="text-[12.5px]">This slice is no longer in the plan.</span>}
-          <ReportChip present={reportPresent} count={reportCount} />
+          <ReportChip present={reportPresent} />
+          <ReportCountChip count={reportCount} />
           {sliceDigest && <VerificationChip state={sliceDigest.verification} />}
         </SheetDescription>
         <div className="mt-2 flex flex-wrap gap-2">
@@ -117,7 +118,7 @@ function SliceDetails({
       <div className="min-h-0 flex-1 overflow-y-auto border-t border-border/60">
         <div className="flex flex-col gap-7 px-6 py-5">
           <VerificationSection load={verification} team={team} requirementText={requirementText} />
-          <ReportSection load={reports} team={team} lastReporter={lastReporter} requirementText={requirementText} />
+          <ReportSection load={reports} team={team} requirementText={requirementText} />
         </div>
       </div>
 

@@ -8,15 +8,11 @@ export type Loaded<T> = { status: "loading" } | { status: "error"; error: AppErr
  * One slice's reports (`listReports`, every agent's) and last verification (`getVerification`),
  * read when the sheet opens, again whenever a verification ends (`finished`) and when one of the
  * slice's agents reports `report_ready` (a report changed, so the result may now be stale).
- *
- * `lastReporter` is the agent of the newest `report_ready` seen while the sheet is open: the
- * report written most recently. Reports carry no write time, so it's null until one arrives.
  */
 export function useSliceDetail(projectId: string, sliceId: string, finished: number) {
   const [reports, setReports] = useState<Loaded<AgentReport[]>>({ status: "loading" });
   const [verification, setVerification] = useState<Loaded<Verification | null>>({ status: "loading" });
   const [reportChanged, setReportChanged] = useState(0);
-  const [lastReporter, setLastReporter] = useState<string | null>(null);
 
   useEffect(() => {
     let current = true;
@@ -42,7 +38,6 @@ export function useSliceDetail(projectId: string, sliceId: string, finished: num
     events.agentEvent
       .listen(({ payload }) => {
         if (payload.projectId === projectId && payload.sliceId === sliceId && payload.kind === "report_ready") {
-          setLastReporter(payload.agentId);
           setReportChanged((count) => count + 1);
         }
       })
@@ -57,5 +52,5 @@ export function useSliceDetail(projectId: string, sliceId: string, finished: num
     };
   }, [projectId, sliceId]);
 
-  return { reports, verification, lastReporter };
+  return { reports, verification };
 }

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { commands, type AppError, type GenerateAgentsResult, type Placeholder } from "@/lib/bindings";
 import { useSettingsDialog } from "@/shared";
 import { call, type Outcome } from "./call";
+import { notifySetupFilesWritten } from "./setupFiles";
 
 export type PlaceholdersLoad =
   | { status: "loading" }
@@ -85,7 +86,13 @@ export function useAgentsSetup(projectId: string): AgentsSetup {
   );
 
   const generate = useCallback(
-    (overwrite: boolean) => enqueue(async () => watch(await call(() => commands.generateAgents(projectId, { overwrite })))),
+    (overwrite: boolean) =>
+      enqueue(async () => {
+        const outcome = watch(await call(() => commands.generateAgents(projectId, { overwrite })));
+        // AGENTS.md and the design copies are setup files: the commit section reads its status again.
+        if (outcome.ok) notifySetupFilesWritten(projectId);
+        return outcome;
+      }),
     [enqueue, projectId, watch],
   );
 

@@ -1,4 +1,4 @@
-import { AgentsMdSection } from "@/features/setup";
+import { AgentsMdSection, CommitSetupSection } from "@/features/setup";
 
 export interface SetupProps {
   /** The project from the route. */
@@ -11,4 +11,12 @@ export interface SetupProps {
  */
 export function Setup({ projectId }: SetupProps) {
   return <AgentsMdSection key={projectId} projectId={projectId} />;
+}
+
+/**
+ * The Setup page's last section: "Commit setup", only while setup files need committing. The
+ * page places it after Team (confirming a team writes setup files too).
+ */
+export function SetupCommit({ projectId }: SetupProps) {
+  return <CommitSetupSection key={projectId} projectId={projectId} />;
 }
