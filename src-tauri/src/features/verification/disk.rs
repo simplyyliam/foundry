@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use serde_json::Value;
 
+use crate::core::checks::RequirementCheck;
 use crate::core::{fsx, paths, repo_write, AppError, ErrorCode};
 
 pub const PROJECT_FILE: &str = ".foundry/project.json";
@@ -152,6 +153,10 @@ pub struct PlanRequirement {
     /// A rule for the whole project, in no slice. Missing in older plans: `false`.
     #[serde(default)]
     pub project_wide: bool,
+    /// Checks verification runs itself (`suggestedChecks` are never read). Missing in older
+    /// plans: none.
+    #[serde(default)]
+    pub checks: Vec<RequirementCheck>,
 }
 
 /// The plan, or an empty one if there's no `plan.json` yet.

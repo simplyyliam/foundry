@@ -2336,6 +2336,7 @@ mod guidance_rules {
             test_runs: Vec::new(),
             reports: Vec::new(),
             requirements: Vec::new(),
+            check_results: Vec::new(),
             report: Value::Null,
             verified_at: 1,
         }
@@ -2391,7 +2392,7 @@ mod guidance_rules {
             .filter(|l| l.trim_start().starts_with("pub const"))
             .filter_map(|l| l.split('"').nth(1))
             .collect();
-        assert_eq!(codes.len(), 18, "{codes:?}");
+        assert_eq!(codes.len(), 19, "{codes:?}");
         for c in codes {
             assert!(
                 guidance::has_rule(c),
@@ -2933,5 +2934,430 @@ fn guidance_sees_another_slices_folders_and_a_small_untracked_edit() {
     assert_eq!(
         g.actions[0].reason_template.as_deref(),
         Some("Edit to docs/notes.md needed for this slice; <reason>")
+    );
+}
+
+// ---------- requirement checks ----------
+
+mod requirement_checks {
+    use super::*;
+    use crate::core::checks::Limits;
+
+    impl Env {
+        /// Sets fields on requirement `id` in plan.json (adding it, project-wide, if missing).
+        fn requirement_fields(&self, id: &str, fields: Value) {
+            let mut plan: Value =
+                serde_json::from_str(&self.repo.read(".foundry/plan.json")).unwrap();
+            let requirements = plan["requirements"].as_array_mut().unwrap();
+            if !requirements.iter().any(|r| r["id"] == id) {
+                requirements.push(json!({ "id": id, "sliceId": null, "projectWide": true }));
+            }
+            let r = requirements.iter_mut().find(|r| r["id"] == id).unwrap();
+            for (key, value) in fields.as_object().unwrap() {
+                r[key] = value.clone();
+            }
+            self.repo.write(".foundry/plan.json", &plan.to_string());
+        }
+
+        /// A slice ready to verify: no test commands, both requirements met with evidence.
+        fn ready(&self) {
+            self.commands(&[]);
+            self.write_report(&report(json!([met("r-1", "test a"), met("r-2", "test b")])));
+        }
+    }
+
+    fn results(v: &Verification) -> Vec<(String, bool)> {
+        v.review
+            .check_results
+            .iter()
+            .map(|r| (crate::core::checks::describe(&r.check), r.passed))
+            .collect()
+    }
+
+    fn failed(v: &Verification) -> Vec<&Finding> {
+        v.review
+            .findings
+            .iter()
+            .filter(|f| f.code == code::CHECK_FAILED)
+            .collect()
+    }
+
+    fn all_five() -> Value {
+        json!([
+            { "type": "file_exists", "path": "components.json" },
+            { "type": "file_absent", "path": "src/legacy-sidebar.tsx" },
+            { "type": "dependency_present", "name": "@base-ui-components/*" },
+            { "type": "dependency_absent", "name": "@radix-ui/*" },
+            { "type": "text_absent", "glob": "src/**/*.tsx", "pattern": r#"from\s+["']@radix-ui/"# }
+        ])
+    }
+
+    #[test]
+    fn every_check_type_passes_then_fails_with_the_first_file_and_line() {
+        let env = Env::new();
+        env.ready();
+        env.requirement_fields("r-1", json!({ "checks": all_five() }));
+        env.repo.write("components.json", "{}");
+        env.repo.write(
+            "package.json",
+            r#"{ "dependencies": { "react": "19", "@base-ui-components/react": "1" } }"#,
+        );
+        env.repo.write(
+            "src/app.tsx",
+            "import { Menu } from \"@base-ui-components/react\";\n",
+        );
+
+        let v = env.verify().unwrap();
+        assert!(
+            results(&v).iter().all(|(_, passed)| *passed),
+            "{:?}",
+            v.review.check_results
+        );
+        assert_eq!(v.review.check_results.len(), 5);
+        assert!(v
+            .review
+            .check_results
+            .iter()
+            .all(|r| r.requirement_id == "r-1"));
+        assert!(failed(&v).is_empty());
+        assert!(v.review.passed, "{:?}", v.review.findings);
+
+        // Now break every one of them.
+        fs::remove_file(env.repo.path().join("components.json")).unwrap();
+        env.repo.write("src/legacy-sidebar.tsx", "export {}\n");
+        env.repo.write(
+            "package.json",
+            "{\n  \"dependencies\": {\n    \"react\": \"19\",\n    \"@radix-ui/react-dialog\": \"1\"\n  }\n}\n",
+        );
+        env.repo.write(
+            "src/ui/dialog.tsx",
+            "// a dialog\n\nimport * as Dialog from '@radix-ui/react-dialog';\n",
+        );
+
+        let v = env.verify().unwrap();
+        assert!(
+            results(&v).iter().all(|(_, passed)| !*passed),
+            "{:?}",
+            results(&v)
+        );
+        assert!(!v.review.passed);
+        let failed = failed(&v);
+        assert_eq!(failed.len(), 5);
+        assert!(failed
+            .iter()
+            .all(|f| f.severity == FindingSeverity::Danger
+                && f.requirement_id.as_deref() == Some("r-1")));
+        let by_check = |prefix: &str| {
+            *failed
+                .iter()
+                .find(|f| f.message.contains(prefix))
+                .unwrap_or_else(|| panic!("no {prefix} in {failed:?}"))
+        };
+        let dep = by_check("dependency_absent @radix-ui/*");
+        assert!(
+            dep.message
+                .contains("@radix-ui/react-dialog is in package.json:4"),
+            "{}",
+            dep.message
+        );
+        assert_eq!(dep.path.as_deref(), Some("package.json"));
+        let text = by_check("text_absent");
+        assert!(
+            text.message.contains("src/ui/dialog.tsx:3"),
+            "{}",
+            text.message
+        );
+        assert_eq!(text.path.as_deref(), Some("src/ui/dialog.tsx"));
+        assert!(by_check("dependency_present")
+            .message
+            .contains("none of the project's 1"));
+        assert!(by_check("file_exists components.json")
+            .message
+            .contains("doesn't exist"));
+        assert_eq!(
+            by_check("file_absent").path.as_deref(),
+            Some("src/legacy-sidebar.tsx")
+        );
+        // Stored with the verification.
+        let saved = env.store.get_verification(P, S).unwrap().unwrap();
+        assert_eq!(saved.review.check_results, v.review.check_results);
+        assert!(env
+            .repo
+            .read(&format!(".foundry/reviews/{S}.json"))
+            .contains("\"checkResults\""));
+    }
+
+    #[test]
+    fn a_dependency_name_ending_in_star_is_a_prefix_and_otherwise_exact() {
+        let env = Env::new();
+        env.ready();
+        env.repo.write(
+            "web/package.json",
+            r#"{ "devDependencies": { "react-dom": "19", "@radix-ui/react-slot": "1" } }"#,
+        );
+        env.requirement_fields(
+            "r-1",
+            json!({ "checks": [
+                { "type": "dependency_present", "name": "react" },
+                { "type": "dependency_present", "name": "react*" },
+                { "type": "dependency_absent", "name": "@radix-ui/*" },
+                { "type": "dependency_absent", "name": "@radix-ui/react-dialog" }
+            ]}),
+        );
+        let v = env.verify().unwrap();
+        assert_eq!(
+            results(&v),
+            [
+                ("dependency_present react".to_string(), false),
+                ("dependency_present react*".to_string(), true),
+                ("dependency_absent @radix-ui/*".to_string(), false),
+                ("dependency_absent @radix-ui/react-dialog".to_string(), true),
+            ]
+        );
+        assert!(failed(&v).iter().any(|f| f
+            .message
+            .contains("@radix-ui/react-slot is in web/package.json:1")));
+    }
+
+    #[test]
+    fn node_modules_and_other_skipped_folders_are_never_looked_into() {
+        let env = Env::new();
+        env.ready();
+        env.repo
+            .write("package.json", r#"{ "dependencies": { "react": "19" } }"#);
+        for dir in ["node_modules", "src/node_modules", "dist"] {
+            env.repo.write(
+                &format!("{dir}/@radix-ui/react-dialog/package.json"),
+                r#"{ "name": "@radix-ui/react-dialog", "dependencies": { "@radix-ui/primitive": "1" } }"#,
+            );
+            env.repo.write(
+                &format!("{dir}/@radix-ui/react-dialog/index.tsx"),
+                "import x from '@radix-ui/primitive';\n",
+            );
+        }
+        env.requirement_fields(
+            "r-1",
+            json!({ "checks": [
+                { "type": "dependency_absent", "name": "@radix-ui/*" },
+                { "type": "text_absent", "glob": "**/*.tsx", "pattern": "@radix-ui/" }
+            ]}),
+        );
+        let v = env.verify().unwrap();
+        assert!(
+            v.review.check_results.iter().all(|r| r.passed),
+            "{:?}",
+            v.review.check_results
+        );
+        assert!(
+            v.review.check_results[0].detail.contains("1 package.json"),
+            "{}",
+            v.review.check_results[0].detail
+        );
+    }
+
+    #[test]
+    fn a_passed_check_is_evidence_and_a_failed_one_blocks() {
+        let env = Env::new();
+        env.commands(&[]);
+        env.write_report(&report(json!([
+            met("r-1", "it uses Base UI"),
+            met("r-2", "test b")
+        ])));
+        let v = env.verify().unwrap();
+        assert_eq!(
+            finding(&v, code::MISSING_EVIDENCE)
+                .requirement_id
+                .as_deref(),
+            Some("r-1")
+        );
+
+        env.repo.write("components.json", "{}");
+        env.requirement_fields(
+            "r-1",
+            json!({ "checks": [{ "type": "file_exists", "path": "components.json" }] }),
+        );
+        let v = env.verify().unwrap();
+        assert!(
+            !codes(&v).contains(&code::MISSING_EVIDENCE),
+            "{:?}",
+            codes(&v)
+        );
+        assert!(v.review.passed, "{:?}", v.review.findings);
+
+        fs::remove_file(env.repo.path().join("components.json")).unwrap();
+        let v = env.verify().unwrap();
+        assert!(!v.review.passed, "a failed check blocks");
+        assert_eq!(failed(&v).len(), 1);
+        assert!(
+            codes(&v).contains(&code::MISSING_EVIDENCE),
+            "no longer proven"
+        );
+        let guidance = env.store.guidance(P, S).unwrap();
+        assert_eq!(guidance.headline.kind, HeadlineKind::NeedsFix);
+    }
+
+    #[test]
+    fn project_wide_requirements_checks_run_on_every_slice() {
+        let env = Env::new();
+        env.ready();
+        env.requirement_fields(
+            "r-rule",
+            json!({ "checks": [{ "type": "file_absent", "path": "src/lib.rs" }] }),
+        );
+        env.requirement_fields(
+            "r-9",
+            json!({ "checks": [{ "type": "file_absent", "path": "src/lib.rs" }] }),
+        );
+        let v = env.verify().unwrap();
+        assert_eq!(v.review.check_results.len(), 1, "not another slice's");
+        assert_eq!(v.review.check_results[0].requirement_id, "r-rule");
+        assert_eq!(failed(&v)[0].requirement_id.as_deref(), Some("r-rule"));
+    }
+
+    #[test]
+    fn a_hand_edited_check_that_escapes_or_is_over_the_limits_fails_closed() {
+        let env = Env::new();
+        env.ready();
+        env.requirement_fields(
+            "r-1",
+            json!({ "checks": [
+                { "type": "file_absent", "path": "../outside.txt" },
+                { "type": "text_absent", "glob": "src/../../**", "pattern": "x" },
+                { "type": "text_absent", "glob": "src/**", "pattern": r"(\w{500}){500}" }
+            ]}),
+        );
+        let v = env.verify().unwrap();
+        assert!(v.review.check_results.iter().all(|r| !r.passed));
+        let details: Vec<&str> = v
+            .review
+            .check_results
+            .iter()
+            .map(|r| r.detail.as_str())
+            .collect();
+        assert!(details[0].contains(".."), "{details:?}");
+        assert!(details[1].contains(".."), "{details:?}");
+        assert!(details[2].contains("size limit"), "{details:?}");
+        assert!(!v.review.passed);
+    }
+
+    #[test]
+    fn suggested_checks_are_never_run() {
+        let env = Env::new();
+        env.ready();
+        env.requirement_fields(
+            "r-1",
+            json!({ "suggestedChecks": [{ "type": "file_exists", "path": "nowhere.json" }] }),
+        );
+        let v = env.verify().unwrap();
+        assert!(v.review.check_results.is_empty());
+        assert!(v.review.passed, "{:?}", v.review.findings);
+    }
+
+    #[test]
+    fn older_plans_and_reviews_without_checks_still_load() {
+        let env = Env::new();
+        env.ready();
+        // Env's plan has no checks fields at all.
+        let v = env.verify().unwrap();
+        assert!(v.review.check_results.is_empty());
+        let path = format!(".foundry/reviews/{S}.json");
+        let mut old: Value = serde_json::from_str(&env.repo.read(&path)).unwrap();
+        old.as_object_mut().unwrap().remove("checkResults");
+        env.repo.write(&path, &old.to_string());
+        let loaded = env.store.get_verification(P, S).unwrap().unwrap();
+        assert!(loaded.review.check_results.is_empty());
+    }
+
+    // The runner's own limits, which the commands can't reach.
+
+    #[test]
+    fn the_time_limit_and_the_file_cap_fail_a_check_closed() {
+        let repo = TestRepo::new();
+        repo.write("src/a.tsx", "fine\n");
+        let check = RequirementCheck::TextAbsent {
+            glob: "**".into(),
+            pattern: "@radix-ui/".into(),
+        };
+        let out = checks::run(
+            repo.path(),
+            &check,
+            &Limits {
+                time_limit: Duration::ZERO,
+                ..Limits::default()
+            },
+        );
+        assert!(!out.passed);
+        assert!(out.detail.contains("time limit"), "{}", out.detail);
+
+        repo.write("src/b.tsx", "fine\n");
+        let out = checks::run(
+            repo.path(),
+            &check,
+            &Limits {
+                max_files: 1,
+                ..Limits::default()
+            },
+        );
+        assert!(!out.passed);
+        assert!(
+            out.detail.contains("stopped after 1 files"),
+            "{}",
+            out.detail
+        );
+        assert!(checks::run(repo.path(), &check, &Limits::default()).passed);
+    }
+
+    #[test]
+    fn matches_are_capped_and_large_files_are_skipped() {
+        let repo = TestRepo::new();
+        repo.write("src/many.ts", &"use @radix-ui/x\n".repeat(50));
+        repo.write("src/big.ts", &"x".repeat(2048));
+        let limits = Limits {
+            max_matches: 3,
+            max_file_bytes: 1024,
+            ..Limits::default()
+        };
+        let radix = RequirementCheck::TextAbsent {
+            glob: "src/many.ts".into(),
+            pattern: "@radix-ui/".into(),
+        };
+        let out = checks::run(repo.path(), &radix, &limits);
+        assert!(!out.passed);
+        assert_eq!(
+            out.detail,
+            "\"@radix-ui/\" matches src/many.ts:1 (and 2 or more others)"
+        );
+        let big = RequirementCheck::TextAbsent {
+            glob: "src/big.ts".into(),
+            pattern: "x".into(),
+        };
+        let out = checks::run(repo.path(), &big, &limits);
+        assert!(out.passed);
+        assert!(
+            out.detail.contains("1 file(s) over 1 KB not searched"),
+            "{}",
+            out.detail
+        );
+    }
+}
+
+#[test]
+fn requirement_checks_run_after_the_test_commands() {
+    let env = Env::new();
+    // The platform shell's own redirect: only a check that runs after it sees the file.
+    env.commands(&["echo {} > components.json".to_string()]);
+    env.write_report(&report(json!([met("r-1", "test a"), met("r-2", "test b")])));
+    let mut plan: Value = serde_json::from_str(&env.repo.read(".foundry/plan.json")).unwrap();
+    plan["requirements"][0]["checks"] =
+        json!([{ "type": "file_exists", "path": "components.json" }]);
+    env.repo.write(".foundry/plan.json", &plan.to_string());
+
+    let v = env.verify().unwrap();
+
+    assert_eq!(v.review.test_runs[0].exit_code, Some(0));
+    assert!(
+        v.review.check_results[0].passed,
+        "{:?}",
+        v.review.check_results
     );
 }

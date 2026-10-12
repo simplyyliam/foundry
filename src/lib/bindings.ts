@@ -180,6 +180,14 @@ export const commands = {
 	 *  it unassigned. Its state (proposed or confirmed) is unchanged either way.
 	 */
 	setRequirementProjectWide: (projectId: string, requirementId: string, value: boolean, expectedRevision: number | null) => typedError<Plan, AppError>(__TAURI_INVOKE("set_requirement_project_wide", { projectId, requirementId, value, expectedRevision })),
+	/**
+	 *  Replaces the requirement's checks, run by `verify_slice` after the test commands. Each is
+	 *  validated: paths and globs inside the project (`path_escape`), a pattern within the size
+	 *  limit, at most 20 (`invalid_input`). Its state is unchanged.
+	 */
+	setRequirementChecks: (projectId: string, requirementId: string, checks: RequirementCheck[], expectedRevision: number | null) => typedError<Plan, AppError>(__TAURI_INVOKE("set_requirement_checks", { projectId, requirementId, checks, expectedRevision })),
+	/**  Moves `suggestedChecks[index]` into `checks`. `invalid_input` for an index out of range. */
+	acceptRequirementCheck: (projectId: string, requirementId: string, index: number, expectedRevision: number | null) => typedError<Plan, AppError>(__TAURI_INVOKE("accept_requirement_check", { projectId, requirementId, index, expectedRevision })),
 	removeRequirement: (projectId: string, requirementId: string, expectedRevision: number | null) => typedError<Plan, AppError>(__TAURI_INVOKE("remove_requirement", { projectId, requirementId, expectedRevision })),
 	/**  `requirement_unassigned` while it has no slice and isn't project-wide. */
 	confirmRequirement: (projectId: string, requirementId: string, expectedRevision: number | null) => typedError<Plan, AppError>(__TAURI_INVOKE("confirm_requirement", { projectId, requirementId, expectedRevision })),
@@ -613,6 +621,15 @@ export type ChangedFile = {
 	 *  verification (`.foundry/reviews/*.json`).
 	 */
 	foundryOwned: boolean,
+};
+
+/**  One requirement check, as `verify_slice` ran it. */
+export type CheckResult = {
+	requirementId: string,
+	check: RequirementCheck,
+	passed: boolean,
+	/**  What was found, e.g. `@radix-ui/react-dialog is in package.json:12`. */
+	detail: string,
 };
 
 /**  What the UI shows about the CLI. Never includes the account's email or organisation. */
@@ -1261,6 +1278,16 @@ export type PlanRequirement = {
 	 *  missing in older plans, which read as `false`.
 	 */
 	projectWide?: boolean,
+	/**
+	 *  Checks verification runs itself (`set_requirement_checks`, `accept_requirement_check`).
+	 *  Missing in older plans: none.
+	 */
+	checks?: RequirementCheck[],
+	/**
+	 *  Checks the roadmap proposed. Never run: `accept_requirement_check` moves one into
+	 *  `checks`. Missing in older plans: none.
+	 */
+	suggestedChecks?: RequirementCheck[],
 };
 
 export type PlanSlice = {
@@ -1356,7 +1383,33 @@ export type Requirement = {
 	verifiedBy: string,
 	/**  The excerpt isn't in the brain dump (whitespace-normalized): kept, but flagged. */
 	unsourced: boolean,
+	/**
+	 *  Checks the model proposes for a `constraint` (always empty for other kinds). Invalid
+	 *  ones are dropped, not retried. Carried into the plan's `suggestedChecks`; never run.
+	 *  Missing in older roadmaps: none.
+	 */
+	suggestedChecks?: RequirementCheck[],
 };
+
+/**  One check. Paths and globs are relative to the project root, `/`-separated. */
+export type RequirementCheck = 
+/**  The file or folder exists. */
+{ type: "file_exists"; path: string } | 
+/**  The file or folder doesn't exist. */
+{ type: "file_absent"; path: string } | 
+/**
+ *  A dependency of this name is in some `package.json` of the project (any of
+ *  `dependencies`, `devDependencies`, `peerDependencies`, `optionalDependencies`). A name
+ *  ending in `*` is a prefix, e.g. `@radix-ui/*`.
+ */
+{ type: "dependency_present"; name: string } | 
+/**  No `package.json` of the project has a dependency of this name (same rules). */
+{ type: "dependency_absent"; name: string } | 
+/**
+ *  No file matching `glob` (the role-glob syntax, `core::glob`) has a match for
+ *  `pattern`, a regular expression.
+ */
+{ type: "text_absent"; glob: string; pattern: string };
 
 export type RequirementKind = "behavior" | "interaction" | "constraint";
 
@@ -1409,6 +1462,11 @@ export type Review = {
 	 *  status across the reports. Empty in a review saved before per-agent reports.
 	 */
 	requirements?: RequirementOutcome[],
+	/**
+	 *  Every check of the slice's requirements and of the project-wide ones, in plan order.
+	 *  Empty in a review saved before requirement checks.
+	 */
+	checkResults?: CheckResult[],
 	/**  The first of `reports`, kept for the shape from before per-agent reports. */
 	report: SliceReport,
 	/**  Epoch ms. */

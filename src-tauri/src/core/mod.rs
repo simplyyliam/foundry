@@ -1,5 +1,6 @@
 //! Shared building blocks. Core imports no feature.
 
+pub mod checks;
 pub mod claude;
 pub mod error;
 pub mod events;

@@ -10,8 +10,10 @@
 [PROJECT STACK]
 - Architecture: [[ FILL IN: e.g. pnpm Monorepo Workspace (Frontend UI + Server + Database Core) ]]
 - Frontend Engine: [[ FILL IN: e.g. Vite / React / TypeScript ]]
-- UI Component Library: [[ FILL IN: e.g. Tailwind CSS v4 + shadcn/ui — name it explicitly here, every
-  time. Don't assume it's implied; a missing line here is exactly how a project shipped without it. ]]
+- UI Component Library: [[ FILL IN: name all three, every time: the library (e.g. Tailwind CSS v4 +
+  shadcn/ui), its primitive layer (e.g. Base UI or Radix), and the install command (e.g. the shadcn
+  CLI: `pnpm dlx shadcn@latest add <component>`). Don't assume any of them is implied; a missing line
+  here is exactly how a project shipped without it. ]]
 - Backend Engine: [[ FILL IN: e.g. Express.js / TypeScript / Prisma ORM ]]
 - Database Layer: [[ FILL IN: e.g. Postgres via Prisma, SQLite, etc. ]]
 - Test Harness: Vitest (logic/unit) + Playwright (real browser interaction — see Law 9)

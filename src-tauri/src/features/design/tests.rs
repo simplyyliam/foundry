@@ -525,3 +525,23 @@ fn an_unknown_template_id_is_refused() {
         ErrorCode::InvalidInput
     );
 }
+
+#[test]
+fn the_ui_component_library_hint_asks_for_library_primitives_and_install_command() {
+    let marker = template::markers(REAL_TEMPLATE)
+        .into_iter()
+        .find(|m| m.label == "UI Component Library")
+        .unwrap();
+    assert!(!marker.optional);
+    for part in [
+        "the library",
+        "its primitive layer (e.g. Base UI or Radix)",
+        "the install command (e.g. the shadcn CLI",
+    ] {
+        assert!(
+            marker.hint.contains(part),
+            "{part} missing: {}",
+            marker.hint
+        );
+    }
+}

@@ -83,6 +83,8 @@ pub fn specta_builder<R: Runtime>() -> tauri_specta::Builder<R> {
             plan::commands::update_requirement,
             plan::commands::assign_requirement,
             plan::commands::set_requirement_project_wide,
+            plan::commands::set_requirement_checks,
+            plan::commands::accept_requirement_check,
             plan::commands::remove_requirement,
             plan::commands::confirm_requirement,
             plan::commands::confirm_all,

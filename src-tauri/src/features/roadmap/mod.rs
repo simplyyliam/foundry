@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use tauri_specta::Event;
 
+use crate::core::checks::RequirementCheck;
 use crate::core::claude::ClaudeStatus;
 use crate::core::events::EventMeta;
 pub use crate::core::llm::{ClaudeRunner, LlmRunner, RunControl};
@@ -65,6 +66,11 @@ pub struct Requirement {
     pub verified_by: String,
     /// The excerpt isn't in the brain dump (whitespace-normalized): kept, but flagged.
     pub unsourced: bool,
+    /// Checks the model proposes for a `constraint` (always empty for other kinds). Invalid
+    /// ones are dropped, not retried. Carried into the plan's `suggestedChecks`; never run.
+    /// Missing in older roadmaps: none.
+    #[serde(default)]
+    pub suggested_checks: Vec<RequirementCheck>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]

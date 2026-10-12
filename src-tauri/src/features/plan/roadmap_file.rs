@@ -4,11 +4,13 @@
 use std::collections::HashMap;
 
 use serde::Deserialize;
+use serde_json::Value;
 
 use super::{
     graph, Deferred, OpenQuestion, PlanFile, Requirement, RequirementKind, RequirementState, Slice,
     SliceStatus, PLAN_VERSION,
 };
+use crate::core::checks::{self, RequirementCheck};
 use crate::core::{ids, AppError, ErrorCode};
 
 #[derive(Deserialize)]
@@ -55,6 +57,10 @@ struct Req {
     verified_by: String,
     #[serde(default)]
     unsourced: bool,
+    /// Older roadmaps have none. Entries that aren't a valid check are dropped: they're only
+    /// suggestions.
+    #[serde(default)]
+    suggested_checks: Vec<Value>,
 }
 
 #[derive(Deserialize)]
@@ -79,6 +85,21 @@ fn kind(value: &str) -> Result<RequirementKind, AppError> {
              (regenerate the roadmap)"
         ))),
     }
+}
+
+/// The valid, distinct suggestions, at most `checks::MAX_CHECKS`. Never run from here.
+fn suggested(values: &[Value]) -> Vec<RequirementCheck> {
+    let mut out: Vec<RequirementCheck> = Vec::new();
+    for value in values {
+        let check = serde_json::from_value::<RequirementCheck>(value.clone())
+            .ok()
+            .and_then(|c| checks::validate(&c).ok());
+        if let Some(check) = check.filter(|c| !out.contains(c)) {
+            out.push(check);
+        }
+    }
+    out.truncate(checks::MAX_CHECKS);
+    out
 }
 
 /// The whole plan built from the roadmap, plus the labels of deferred items that name no
@@ -161,6 +182,8 @@ pub fn to_plan(file: RoadmapFile) -> Result<(PlanFile, Vec<String>), AppError> {
             state: RequirementState::Proposed,
             unsourced: r.unsourced,
             project_wide: false,
+            checks: Vec::new(),
+            suggested_checks: suggested(&r.suggested_checks),
         });
     }
 

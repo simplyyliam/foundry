@@ -9,6 +9,7 @@ use super::{
     LoadRoadmapOptions, NewDeferred, NewRequirement, NewSlice, Plan, PlanAdded, PlanStore,
     PlanSummary, RequirementPatch, RoadmapLoaded, SlicePatch, SliceStatus, StatusOptions,
 };
+use crate::core::checks::RequirementCheck;
 use crate::core::AppError;
 
 type Store<'a> = State<'a, Arc<PlanStore>>;
@@ -250,6 +251,40 @@ pub async fn set_requirement_project_wide(
 ) -> Result<Plan, AppError> {
     blocking(&store, move |s| {
         s.set_requirement_project_wide(&project_id, &requirement_id, value, expected_revision)
+    })
+    .await
+}
+
+/// Replaces the requirement's checks, run by `verify_slice` after the test commands. Each is
+/// validated: paths and globs inside the project (`path_escape`), a pattern within the size
+/// limit, at most 20 (`invalid_input`). Its state is unchanged.
+#[tauri::command]
+#[specta::specta]
+pub async fn set_requirement_checks(
+    store: Store<'_>,
+    project_id: String,
+    requirement_id: String,
+    checks: Vec<RequirementCheck>,
+    expected_revision: Option<u32>,
+) -> Result<Plan, AppError> {
+    blocking(&store, move |s| {
+        s.set_requirement_checks(&project_id, &requirement_id, checks, expected_revision)
+    })
+    .await
+}
+
+/// Moves `suggestedChecks[index]` into `checks`. `invalid_input` for an index out of range.
+#[tauri::command]
+#[specta::specta]
+pub async fn accept_requirement_check(
+    store: Store<'_>,
+    project_id: String,
+    requirement_id: String,
+    index: u32,
+    expected_revision: Option<u32>,
+) -> Result<Plan, AppError> {
+    blocking(&store, move |s| {
+        s.accept_requirement_check(&project_id, &requirement_id, index, expected_revision)
     })
     .await
 }

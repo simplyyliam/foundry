@@ -772,3 +772,49 @@ fn live_claude_generates_a_valid_roadmap() {
         result.uncovered_paragraphs.len()
     );
 }
+
+// ---------- requirement checks: suggestions ----------
+
+#[test]
+fn a_constraint_may_suggest_checks_and_invalid_ones_are_dropped_without_a_retry() {
+    let mut roadmap = valid();
+    roadmap["requirements"][1]["suggestedChecks"] = json!([
+        { "type": "dependency_absent", "name": "@radix-ui/*" },
+        { "type": "file_exists", "path": "components.json" },
+        { "type": "file_exists", "path": "../outside.json" },
+        { "type": "text_absent", "glob": "src/**", "pattern": "(" },
+        { "type": "no_such_check" },
+        { "type": "dependency_absent", "name": "@radix-ui/*" }
+    ]);
+    // Only a constraint keeps suggestions.
+    roadmap["requirements"][0]["suggestedChecks"] =
+        json!([{ "type": "file_exists", "path": "package.json" }]);
+    let env = Env::new(vec![text(&roadmap)]);
+
+    let result = env.store.generate(P).unwrap();
+
+    assert_eq!(result.attempts, 1, "a bad suggestion isn't worth a retry");
+    assert!(result.roadmap.requirements[0].suggested_checks.is_empty());
+    assert_eq!(
+        result.roadmap.requirements[1].suggested_checks,
+        [
+            RequirementCheck::DependencyAbsent {
+                name: "@radix-ui/*".into()
+            },
+            RequirementCheck::FileExists {
+                path: "components.json".into()
+            },
+        ]
+    );
+    assert!(env.runner.prompts()[0].contains("\"suggestedChecks\""));
+}
+
+#[test]
+fn a_roadmap_saved_before_suggested_checks_still_loads() {
+    let mut roadmap = valid();
+    for r in roadmap["requirements"].as_array_mut().unwrap() {
+        r["unsourced"] = json!(false);
+    }
+    let old: Requirement = serde_json::from_value(roadmap["requirements"][1].clone()).unwrap();
+    assert!(old.suggested_checks.is_empty());
+}

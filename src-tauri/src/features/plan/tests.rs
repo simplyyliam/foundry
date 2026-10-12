@@ -1853,3 +1853,176 @@ fn vsm_data_js_lists_project_rules_separately_and_keeps_what_the_viewer_reads() 
     assert!(mirrored["slices"].is_array());
     assert!(mirrored["future_horizon"].is_array());
 }
+
+// ---------- requirement checks ----------
+
+fn radix_checks() -> Vec<RequirementCheck> {
+    vec![
+        RequirementCheck::DependencyAbsent {
+            name: "@radix-ui/*".into(),
+        },
+        RequirementCheck::FileExists {
+            path: "./components.json".into(),
+        },
+    ]
+}
+
+#[test]
+fn set_requirement_checks_stores_them_tidied_and_keeps_the_state() {
+    let env = Env::new();
+    let s = env.slice("A", &[]);
+    let r = env.requirement_of(RequirementKind::Constraint, Some(&s));
+    env.store.confirm_requirement(P, &r, None).unwrap();
+    let rev = env.plan().revision;
+
+    let plan = env
+        .store
+        .set_requirement_checks(P, &r, radix_checks(), Some(rev))
+        .unwrap();
+
+    assert_eq!(plan.revision, rev + 1);
+    let stored = env.req(&r);
+    assert_eq!(stored.state, RequirementState::Confirmed);
+    assert_eq!(
+        stored.checks[1],
+        RequirementCheck::FileExists {
+            path: "components.json".into()
+        }
+    );
+    let json = env.repo.read(".foundry/plan.json");
+    assert!(json.contains("\"type\": \"dependency_absent\""), "{json}");
+    // Clearing them.
+    env.store
+        .set_requirement_checks(P, &r, vec![], None)
+        .unwrap();
+    assert!(env.req(&r).checks.is_empty());
+}
+
+#[test]
+fn set_requirement_checks_honours_expected_revision() {
+    let env = Env::new();
+    let r = env.requirement(None);
+    let rev = env.plan().revision;
+    let stale = env
+        .store
+        .set_requirement_checks(P, &r, radix_checks(), Some(rev - 1));
+    assert_eq!(stale.unwrap_err().code, ErrorCode::StaleRevision);
+    assert!(env.req(&r).checks.is_empty());
+    assert_eq!(env.plan().revision, rev);
+}
+
+#[test]
+fn set_requirement_checks_refuses_escaping_paths_and_oversized_patterns() {
+    let env = Env::new();
+    let r = env.requirement(None);
+    let rev = env.plan().revision;
+    for (check, code) in [
+        (
+            RequirementCheck::FileExists {
+                path: "../secrets.json".into(),
+            },
+            ErrorCode::PathEscape,
+        ),
+        (
+            RequirementCheck::TextAbsent {
+                glob: "src/../../**".into(),
+                pattern: "x".into(),
+            },
+            ErrorCode::PathEscape,
+        ),
+        (
+            RequirementCheck::FileAbsent {
+                path: "C:/Windows/win.ini".into(),
+            },
+            ErrorCode::PathEscape,
+        ),
+        (
+            RequirementCheck::TextAbsent {
+                glob: "src/**".into(),
+                pattern: r"(\w{500}){500}".into(),
+            },
+            ErrorCode::InvalidInput,
+        ),
+    ] {
+        let err = env
+            .store
+            .set_requirement_checks(P, &r, vec![check.clone()], None)
+            .unwrap_err();
+        assert_eq!(err.code, code, "{check:?}");
+    }
+    assert_eq!(env.plan().revision, rev, "nothing changed");
+}
+
+#[test]
+fn an_older_plan_without_checks_loads_with_none() {
+    let env = Env::new();
+    env.repo.write(
+        ".foundry/plan.json",
+        &json!({
+            "version": 1, "revision": 4, "slices": [], "deferred": [],
+            "requirements": [{
+                "id": "r1", "text": "Use Base UI", "kind": "constraint", "sliceId": null,
+                "sourceExcerpt": "", "verifiedBy": "", "state": "proposed", "unsourced": true
+            }]
+        })
+        .to_string(),
+    );
+    let r = env.req("r1");
+    assert!(r.checks.is_empty() && r.suggested_checks.is_empty());
+    env.store
+        .set_requirement_checks(P, "r1", radix_checks(), Some(4))
+        .unwrap();
+    assert_eq!(env.req("r1").checks.len(), 2);
+}
+
+#[test]
+fn suggested_checks_load_from_the_roadmap_and_move_into_checks_only_when_accepted() {
+    let env = Env::new();
+    let mut roadmap = roadmap_json();
+    roadmap["unassigned"][0]["suggestedChecks"] = json!([
+        { "type": "dependency_absent", "name": "@radix-ui/*" },
+        { "type": "file_exists", "path": "../escape" },
+        { "type": "file_exists", "path": "components.json" }
+    ]);
+    write_roadmap(&env, &roadmap);
+    load(&env, false).unwrap();
+    let id = env
+        .plan()
+        .requirements
+        .iter()
+        .find(|r| r.text == "Works for a week")
+        .unwrap()
+        .id
+        .clone();
+    let r = env.req(&id);
+    assert!(
+        r.checks.is_empty(),
+        "suggestions are never checks by themselves"
+    );
+    assert_eq!(r.suggested_checks.len(), 2, "the invalid one is dropped");
+
+    let rev = env.plan().revision;
+    let stale = env.store.accept_requirement_check(P, &id, 1, Some(rev - 1));
+    assert_eq!(stale.unwrap_err().code, ErrorCode::StaleRevision);
+    let out_of_range = env.store.accept_requirement_check(P, &id, 2, Some(rev));
+    assert_eq!(out_of_range.unwrap_err().code, ErrorCode::InvalidInput);
+
+    let plan = env
+        .store
+        .accept_requirement_check(P, &id, 1, Some(rev))
+        .unwrap();
+    assert_eq!(plan.revision, rev + 1);
+    let r = env.req(&id);
+    assert_eq!(
+        r.checks,
+        [RequirementCheck::FileExists {
+            path: "components.json".into()
+        }]
+    );
+    assert_eq!(
+        r.suggested_checks,
+        [RequirementCheck::DependencyAbsent {
+            name: "@radix-ui/*".into()
+        }]
+    );
+}

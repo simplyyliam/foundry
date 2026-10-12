@@ -12,6 +12,7 @@
 //! human last confirmed, which is kept in app data, never in the repo.
 
 mod attribution;
+mod checks;
 pub mod commands;
 mod digest;
 mod disk;
@@ -31,6 +32,7 @@ use serde_json::Value;
 use specta::Type;
 use tauri_specta::Event;
 
+use crate::core::checks::{describe, Limits, RequirementCheck};
 use crate::core::events::EventMeta;
 use crate::core::git::{self, Git, GitRun};
 use crate::core::report::{self, RequirementStatus, SliceReport};
@@ -97,6 +99,9 @@ pub mod code {
     /// A problem with a report's `bugs` list (warn): an entry that isn't in the bug shape, or
     /// one missing its steps, failing test or location.
     pub const INVALID_BUG: &str = "invalid_bug";
+    /// A requirement's check failed (danger): the message names the requirement, the check
+    /// and the first matching file and line; `path` is that file.
+    pub const CHECK_FAILED: &str = "check_failed";
 }
 
 // ---------- types ----------
@@ -214,6 +219,17 @@ pub struct RequirementOutcome {
     pub reported_by: Vec<ReportedStatus>,
 }
 
+/// One requirement check, as `verify_slice` ran it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckResult {
+    pub requirement_id: String,
+    pub check: RequirementCheck,
+    pub passed: bool,
+    /// What was found, e.g. `@radix-ui/react-dialog is in package.json:12`.
+    pub detail: String,
+}
+
 /// `.foundry/reviews/<sliceId>.json`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -231,6 +247,10 @@ pub struct Review {
     /// status across the reports. Empty in a review saved before per-agent reports.
     #[serde(default)]
     pub requirements: Vec<RequirementOutcome>,
+    /// Every check of the slice's requirements and of the project-wide ones, in plan order.
+    /// Empty in a review saved before requirement checks.
+    #[serde(default)]
+    pub check_results: Vec<CheckResult>,
     /// The first of `reports`, kept for the shape from before per-agent reports.
     #[specta(type = SliceReport)]
     pub report: Value,
@@ -540,6 +560,9 @@ struct Ready {
     /// The slice's requirement ids, in plan order.
     expected: Vec<String>,
     workspace_access: bool,
+    /// The checks to run: the slice's requirements', then the project-wide ones', in plan
+    /// order.
+    checks: Vec<(String, Vec<RequirementCheck>)>,
 }
 
 /// Why `verify_slice` didn't run, or failed: the error it returns, and the skip reason to
@@ -900,6 +923,14 @@ impl VerificationStore {
             .filter(|r| r.project_wide)
             .map(|r| r.id.as_str())
             .collect();
+        let checks = plan
+            .requirements
+            .iter()
+            .filter(|r| r.slice_id.as_deref() == Some(slice_id) && !r.project_wide)
+            .chain(plan.requirements.iter().filter(|r| r.project_wide))
+            .filter(|r| !r.checks.is_empty())
+            .map(|r| (r.id.clone(), r.checks.clone()))
+            .collect();
         let mut reports = reports;
         for l in &mut reports {
             l.report
@@ -913,6 +944,7 @@ impl VerificationStore {
             start_commit,
             expected,
             workspace_access: slice.workspace_access,
+            checks,
         })
     }
 
@@ -1050,6 +1082,7 @@ impl VerificationStore {
             start_commit,
             expected,
             workspace_access,
+            checks,
         } = self.preflight(project_id, slice_id)?;
 
         let cancel = Arc::new(AtomicBool::new(false));
@@ -1089,6 +1122,7 @@ impl VerificationStore {
             expected: expected.iter().map(String::as_str).collect(),
             reports: &reports,
             commands: &commands,
+            checks: &checks,
             cancel: &cancel,
         };
         let result = self.run_checks(&checked, &emit).and_then(
@@ -1096,6 +1130,7 @@ impl VerificationStore {
                  findings,
                  runs,
                  requirements,
+                 check_results,
              }| {
                 if cancel.load(Ordering::SeqCst) {
                     return Err(AppError::new(
@@ -1124,6 +1159,7 @@ impl VerificationStore {
                         })
                         .collect(),
                     requirements,
+                    check_results,
                     verified_at: now_ms(),
                 };
                 let text = serde_json::to_string_pretty(&review)
@@ -1363,6 +1399,61 @@ impl VerificationStore {
             });
         }
 
+        // 5b. The requirements' own checks. A passed one is evidence for its requirement.
+        let mut check_results = Vec::new();
+        let limits = Limits::default();
+        for (requirement_id, list) in c.checks {
+            for check in list {
+                if c.cancel.load(Ordering::SeqCst) {
+                    return Err(AppError::new(
+                        ErrorCode::Cancelled,
+                        "verification cancelled",
+                    ));
+                }
+                let outcome = checks::run(c.repo, check, &limits);
+                if !outcome.passed {
+                    let mut finding = Finding::new(
+                        Danger,
+                        code::CHECK_FAILED,
+                        format!(
+                            "requirement {requirement_id}: check `{}` failed: {}",
+                            describe(check),
+                            outcome.detail
+                        ),
+                    )
+                    .requirement(requirement_id);
+                    if let Some(path) = &outcome.path {
+                        finding = finding.path(path);
+                    }
+                    findings.push(finding);
+                }
+                check_results.push(CheckResult {
+                    requirement_id: requirement_id.clone(),
+                    check: check.clone(),
+                    passed: outcome.passed,
+                    detail: outcome.detail,
+                });
+            }
+        }
+        let proven: HashSet<&str> = check_results
+            .iter()
+            .filter(|r| r.passed)
+            .map(|r| r.requirement_id.as_str())
+            .collect();
+        findings.retain(|f| {
+            f.code != code::MISSING_EVIDENCE
+                || !f
+                    .requirement_id
+                    .as_deref()
+                    .is_some_and(|id| proven.contains(id))
+        });
+        tracing::info!(
+            slice_id = c.slice_id,
+            checks = check_results.len(),
+            failed = check_results.iter().filter(|r| !r.passed).count(),
+            "requirement checks ran"
+        );
+
         // 6. Files changed since the slice started, against the reporting agents' globs.
         emit(VerifyStage::Checking, None);
         let mut agents: Vec<&str> = c.reports.iter().map(|l| l.agent.as_str()).collect();
@@ -1393,6 +1484,7 @@ impl VerificationStore {
             findings,
             runs,
             requirements: outcomes,
+            check_results,
         })
     }
 
@@ -1664,6 +1756,7 @@ struct CheckOutcome {
     findings: Vec<Finding>,
     runs: Vec<CommandRun>,
     requirements: Vec<RequirementOutcome>,
+    check_results: Vec<CheckResult>,
 }
 
 /// What one verification checks, gathered before it starts.
@@ -1678,6 +1771,8 @@ struct Checked<'a> {
     /// At least one.
     reports: &'a [LoadedReport],
     commands: &'a [String],
+    /// Requirement id → its checks, run after the test commands.
+    checks: &'a [(String, Vec<RequirementCheck>)],
     cancel: &'a AtomicBool,
 }
 

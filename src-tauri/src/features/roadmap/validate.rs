@@ -6,6 +6,7 @@ use std::collections::{HashMap, HashSet};
 use serde_json::Value;
 
 use super::{Deferred, Feature, Requirement, Roadmap, Slice, TargetUser};
+use crate::core::checks::{self, RequirementCheck};
 
 /// The plan's requirement kinds (`plan::RequirementKind`), which a roadmap must use so it
 /// can be loaded into the plan.
@@ -183,6 +184,25 @@ impl Schema {
     }
 }
 
+/// A requirement's optional `suggestedChecks`: the valid, distinct ones, at most
+/// `checks::MAX_CHECKS`. Never an error: a bad suggestion isn't worth a regeneration.
+fn suggested_checks(requirement: &Value) -> Vec<RequirementCheck> {
+    let Some(Value::Array(items)) = requirement.get("suggestedChecks") else {
+        return Vec::new();
+    };
+    let mut out: Vec<RequirementCheck> = Vec::new();
+    for item in items {
+        let check = serde_json::from_value::<RequirementCheck>(item.clone())
+            .ok()
+            .and_then(|c| checks::validate(&c).ok());
+        if let Some(check) = check.filter(|c| !out.contains(c)) {
+            out.push(check);
+        }
+    }
+    out.truncate(checks::MAX_CHECKS);
+    out
+}
+
 fn schema(value: &Value) -> Result<Roadmap, Errors> {
     let mut s = Schema { errors: Vec::new() };
     let root = "roadmap";
@@ -218,13 +238,22 @@ fn schema(value: &Value) -> Result<Roadmap, Errors> {
     let requirements = s
         .objects(value, root, "requirements")
         .into_iter()
-        .map(|(p, v)| Requirement {
-            text: s.nonempty(v, &p, "text"),
-            kind: s.one_of(v, &p, "kind", KINDS),
-            source_excerpt: s.string(v, &p, "sourceExcerpt"),
-            slice_name: s.optional(v, &p, "sliceName"),
-            verified_by: s.string(v, &p, "verifiedBy"),
-            unsourced: false,
+        .map(|(p, v)| {
+            let text = s.nonempty(v, &p, "text");
+            let kind = s.one_of(v, &p, "kind", KINDS);
+            Requirement {
+                text,
+                suggested_checks: if kind == "constraint" {
+                    suggested_checks(v)
+                } else {
+                    Vec::new()
+                },
+                kind,
+                source_excerpt: s.string(v, &p, "sourceExcerpt"),
+                slice_name: s.optional(v, &p, "sliceName"),
+                verified_by: s.string(v, &p, "verifiedBy"),
+                unsourced: false,
+            }
         })
         .collect();
     let deferred = s

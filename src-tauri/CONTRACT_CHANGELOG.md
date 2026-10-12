@@ -612,3 +612,19 @@ Behaviour change, approved by the human. Signature, routing rules and prompt con
 | Kind | Name | Before → After | Why |
 | --- | --- | --- | --- |
 | command | `generate_fix_prompts` | bugs from every report of the slice → bugs from the latest run only | A fix prompt could include bugs from an older QA run that were already fixed, while the UI shows only the latest run. A run is a report that lists at least one bug; the latest is the one with the newest `writtenAt` (the file's modified time, as `list_reports` returns it). Reports tied for newest are all used. A report with no bugs never counts, so an owner's later report can't hide QA's bugs. Old-style `<sliceId>.json` reports count by their modified time like any other. Every report is still parsed, so an unparsable older report still gives `invalid_json`. |
+
+## Requirement checks
+
+Additive. No new error codes, no new events. New dependency: `regex = "1"` (approved; already in the lockfile).
+
+| Kind | Name | Before → After | Why |
+| --- | --- | --- | --- |
+| type | `RequirementCheck` | — → `{ type: "file_exists", path } \| { type: "file_absent", path } \| { type: "dependency_present", name } \| { type: "dependency_absent", name } \| { type: "text_absent", glob, pattern }` | Rules like "use Base UI, not Radix" were only claimed in reports. Paths and globs are project-relative (no `..`, not absolute; `\` read as `/`). A dependency `name` may end with one `*` (prefix). `pattern` is a regular expression (≤ 500 chars, compiled size ≤ 256 KB). |
+| type | `PlanRequirement` | adds `checks?: RequirementCheck[]` and `suggestedChecks?: RequirementCheck[]` | Missing in older plans → `[]`; always written. `suggestedChecks` are never run. |
+| type | `Requirement` (roadmap draft) | adds `suggestedChecks?: RequirementCheck[]` | Only on `constraint`s; invalid suggestions are dropped (no retry). `load_roadmap` carries them into the plan's `suggestedChecks`. The generation prompt documents the field. |
+| command | `set_requirement_checks` | — → `setRequirementChecks(projectId: string, requirementId: string, checks: RequirementCheck[], expectedRevision: number \| null): Plan` | Replaces the list (validated and tidied, duplicates dropped, at most 20). Same revision rules as other plan edits (`stale_revision`). Errors: `path_escape` (`..` or absolute), `invalid_input` (bad name or pattern, over the limits, too many), `not_found`. State unchanged. |
+| command | `accept_requirement_check` | — → `acceptRequirementCheck(projectId: string, requirementId: string, index: number, expectedRevision: number \| null): Plan` | Moves `suggestedChecks[index]` into `checks`. `invalid_input` for an index out of range. |
+| type | `CheckResult` | — → `{ requirementId: string, check: RequirementCheck, passed: boolean, detail: string }` | |
+| type | `Review` / `Verification` | adds `checkResults?: CheckResult[]` | Missing in older reviews → `[]`. |
+| behavior | `verify_slice` | after the test commands, runs the `checks` of the slice's requirements, then of the project-wide ones | Read-only; never follows symlinks; skips `node_modules`, `.git`, `.foundry`, `target`, `dist`, `build`, `out`, `coverage`, `.next`, `.nuxt`, `.svelte-kit`, `.turbo`, `.cache`, `.vite`, `.venv`, `venv`, `__pycache__`, `test-results`, `playwright-report` at any depth. Files over 1 MB aren't searched (said in `detail`); 20 matches per check; 50 000 files and 10 s per check, past which the check fails (fail closed). A passed check counts as evidence: no `missing_evidence` for its requirement. |
+| finding code | `check_failed` | — → `danger`, with `requirementId` and `path` (the first matching file) | Message: "requirement &lt;id&gt;: check `&lt;check&gt;` failed: &lt;detail&gt;", where the detail names the first `file:line` when there is one. Guidance: group `fix`, a send-to-agent action. |

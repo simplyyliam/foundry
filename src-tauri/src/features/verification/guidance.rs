@@ -296,6 +296,7 @@ const RULES: &[(&str, Rule)] = &[
     (code::SHARED_FILE_TOUCHED, shared_file_touched),
     (code::AMBIGUOUS_SHELL_CHANGE, ambiguous_shell_change),
     (code::INVALID_BUG, invalid_bug),
+    (code::CHECK_FAILED, check_failed),
 ];
 
 fn unreported_requirement(c: &Ctx<'_>) -> Guided {
@@ -312,6 +313,28 @@ fn unreported_requirement(c: &Ctx<'_>) -> Guided {
         format!(
             "Your report doesn't list requirement {id}{text}. Add it with its status (met, \
              partly or not_met) and the test and command that cover it."
+        ),
+    ))
+}
+
+fn check_failed(c: &Ctx<'_>) -> Guided {
+    let id = c.finding.requirement_id.as_deref().unwrap_or("?");
+    let text = requirement_line(c.inputs, id);
+    let what = c
+        .finding
+        .message
+        .split_once(": ")
+        .map_or(c.finding.message.as_str(), |(_, rest)| rest);
+    Guided::new(
+        FindingGroup::Fix,
+        format!("Requirement {id}{text} has a check that failed: {what}."),
+        "Ask the agent to fix the code so the check passes, then verify again.",
+    )
+    .action(c.send(
+        c.agent(),
+        "Ask to fix it",
+        format!(
+            "Requirement {id}{text} has a check Foundry runs itself, and it failed: {what}.              Change the code so the check passes (don't change the check), then update your              report."
         ),
     ))
 }

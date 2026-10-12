@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use tauri_specta::Event;
 
+use crate::core::checks::{self, RequirementCheck};
 use crate::core::events::EventMeta;
 use crate::core::git::{Git, GitRun};
 use crate::core::repos::RepoIndex;
@@ -109,6 +110,14 @@ pub struct Requirement {
     /// missing in older plans, which read as `false`.
     #[serde(default)]
     pub project_wide: bool,
+    /// Checks verification runs itself (`set_requirement_checks`, `accept_requirement_check`).
+    /// Missing in older plans: none.
+    #[serde(default)]
+    pub checks: Vec<RequirementCheck>,
+    /// Checks the roadmap proposed. Never run: `accept_requirement_check` moves one into
+    /// `checks`. Missing in older plans: none.
+    #[serde(default)]
+    pub suggested_checks: Vec<RequirementCheck>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -898,6 +907,8 @@ impl PlanStore {
                 verified_by: input.verified_by.trim().to_string(),
                 state: RequirementState::Proposed,
                 project_wide: false,
+                checks: Vec::new(),
+                suggested_checks: Vec::new(),
             });
             Ok(())
         })?;
@@ -1011,6 +1022,66 @@ impl PlanStore {
             requirement_id,
             value,
             "requirement project-wide set"
+        );
+        Ok(plan)
+    }
+
+    /// Replaces the requirement's `checks` (each validated: `invalid_input`, `path_escape`;
+    /// exact duplicates dropped). Its state is left as it is: checks don't change what it says.
+    pub fn set_requirement_checks(
+        &self,
+        project_id: &str,
+        requirement_id: &str,
+        checks: Vec<RequirementCheck>,
+        expected: Option<u32>,
+    ) -> Result<Plan, AppError> {
+        let checks = checks::validate_all(&checks)?;
+        let count = checks.len();
+        let (_, plan) = self.mutate(project_id, expected, |plan, _| {
+            let index = requirement_index(plan, requirement_id)?;
+            plan.requirements[index].checks = checks;
+            Ok(())
+        })?;
+        tracing::info!(project_id, requirement_id, count, "requirement checks set");
+        Ok(plan)
+    }
+
+    /// Moves `suggestedChecks[index]` into `checks` (validated first; already there: just
+    /// removed from the suggestions). `invalid_input` for an index out of range.
+    pub fn accept_requirement_check(
+        &self,
+        project_id: &str,
+        requirement_id: &str,
+        index: u32,
+        expected: Option<u32>,
+    ) -> Result<Plan, AppError> {
+        let (_, plan) = self.mutate(project_id, expected, |plan, _| {
+            let at = requirement_index(plan, requirement_id)?;
+            let r = &mut plan.requirements[at];
+            let i = usize::try_from(index).unwrap_or(usize::MAX);
+            let Some(suggested) = r.suggested_checks.get(i) else {
+                return Err(AppError::invalid_input(format!(
+                    "requirement {requirement_id} has no suggested check {index}"
+                )));
+            };
+            let check = checks::validate(suggested)?;
+            if !r.checks.contains(&check) {
+                if r.checks.len() >= checks::MAX_CHECKS {
+                    return Err(AppError::invalid_input(format!(
+                        "a requirement can have at most {} checks",
+                        checks::MAX_CHECKS
+                    )));
+                }
+                r.checks.push(check);
+            }
+            r.suggested_checks.remove(i);
+            Ok(())
+        })?;
+        tracing::info!(
+            project_id,
+            requirement_id,
+            index,
+            "suggested check accepted"
         );
         Ok(plan)
     }
