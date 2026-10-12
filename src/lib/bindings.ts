@@ -351,7 +351,8 @@ export const commands = {
 	setupStatus: (projectId: string) => typedError<SetupStatus, AppError>(__TAURI_INVOKE("setup_status", { projectId })),
 	/**
 	 *  Every uncommitted file in the repo (ignored ones never), at most 500, with whether each is
-	 *  Foundry's own. With a `sliceId`, also the type `commit_slice` would pick and why.
+	 *  Foundry's own. With a `sliceId`, also the type `commit_slice` would pick, why, and the
+	 *  message it would generate.
 	 *  Read-only.
 	 */
 	commitStatus: (projectId: string, sliceId: string | null) => typedError<CommitStatus, AppError>(__TAURI_INVOKE("commit_status", { projectId, sliceId })),
@@ -657,6 +658,11 @@ export type CommitStatus = {
 	commitType: CommitType | null,
 	/**  Why that type, in one line; `null` when `commitType` is. */
 	typeReason: string | null,
+	/**
+	 *  The message `commit_slice` would generate for `sliceId` now (no caller's message);
+	 *  `null` when `commitType` is.
+	 */
+	message: string | null,
 };
 
 /**  The conventional-commit type of a slice commit, picked by fixed rules (never by a model). */

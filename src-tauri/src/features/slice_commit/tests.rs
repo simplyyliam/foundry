@@ -272,6 +272,137 @@ fn commit_status_with_a_slice_gives_the_type_commit_slice_would_pick() {
     );
 }
 
+#[test]
+fn commit_status_message_is_null_without_a_slice_or_with_nothing_to_commit() {
+    let env = Env::with_plan();
+    env.repo.write(
+        "src/app.ts",
+        "changed
+",
+    );
+    let status = env.committer.commit_status(P, None).unwrap();
+    assert_eq!(status.message, None, "no slice asked about");
+
+    env.commit(None).unwrap();
+    let clean = env.committer.commit_status(P, Some(S)).unwrap();
+    assert!(clean.files.is_empty());
+    assert_eq!(clean.message, None, "nothing to commit");
+}
+
+/// For each verification state (and a two-agent slice), the previewed message is the one
+/// `commit_slice` then commits, byte for byte.
+#[test]
+fn commit_status_message_equals_what_commit_slice_then_commits() {
+    let overridden =
+        format!("{DONE_OVERRIDE_PREFIX}; it failed its last verification): checked by hand");
+    let stale_report = json!({ "sliceId": S, "agent": "ada", "requirements": [],
+        "testsRun": [], "blockers": ["new"], "notes": "" })
+    .to_string();
+    type Setup<'a> = Box<dyn Fn(&Env) + 'a>;
+    let cases: Vec<(&str, Setup)> = vec![
+        (
+            "passed",
+            Box::new(|env| {
+                env.roles();
+                env.review(true);
+            }),
+        ),
+        (
+            "overridden",
+            Box::new(|env| {
+                env.plan(
+                    "Login",
+                    "Users can log in with email.",
+                    &["other", &overridden],
+                );
+                env.review(false);
+            }),
+        ),
+        ("failed", Box::new(|env| env.review(false))),
+        (
+            "stale",
+            Box::new(|env| {
+                env.review(true);
+                env.repo
+                    .write(".foundry/reports/s-login.ada.json", &stale_report);
+            }),
+        ),
+        ("not run", Box::new(|_| {})),
+        (
+            "two agents",
+            Box::new(|env| {
+                env.roles();
+                env.report("ada");
+                env.report("bo");
+            }),
+        ),
+    ];
+    for (verification, setup) in cases {
+        let env = Env::with_plan();
+        setup(&env);
+        env.repo.write(
+            "src/app.ts",
+            "changed
+",
+        );
+
+        let status = env.committer.commit_status(P, Some(S)).unwrap();
+        let preview = status.message.expect(verification);
+        if verification == "two agents" {
+            assert!(
+                preview.contains(
+                    "
+Agents: Ada Lovelace, bo
+"
+                ),
+                "{preview}"
+            );
+        } else {
+            assert!(
+                preview.contains(&format!(
+                    "
+Verification: {verification}"
+                )),
+                "{verification}: {preview}"
+            );
+        }
+
+        let result = env.commit(None).unwrap();
+        assert_eq!(result.message, preview, "{verification}");
+        assert_eq!(env.head_message(), preview, "{verification}");
+        assert_eq!(result.commit_type, status.commit_type, "{verification}");
+    }
+}
+
+#[test]
+fn commit_status_with_a_message_leaves_git_status_and_the_index_unchanged() {
+    let env = Env::with_plan();
+    env.review(true);
+    env.repo.write(
+        "src/app.ts",
+        "changed
+",
+    );
+    env.repo.write(
+        "src/new.ts",
+        "new
+",
+    );
+    env.repo.write(
+        "README.md",
+        "staged
+",
+    );
+    env.repo.git(&["add", "README.md"]);
+    let index = env.repo.path().join(".git/index");
+    let before = (env.status(), fs::read(&index).unwrap());
+
+    let status = env.committer.commit_status(P, Some(S)).unwrap();
+
+    assert!(status.message.is_some());
+    assert_eq!((env.status(), fs::read(&index).unwrap()), before);
+}
+
 // ---------- commit_slice ----------
 
 #[test]

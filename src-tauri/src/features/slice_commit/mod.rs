@@ -90,6 +90,9 @@ pub struct CommitStatus {
     pub commit_type: Option<CommitType>,
     /// Why that type, in one line; `null` when `commitType` is.
     pub type_reason: Option<String>,
+    /// The message `commit_slice` would generate for `sliceId` now (no caller's message);
+    /// `null` when `commitType` is.
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -126,8 +129,8 @@ impl SliceCommitter {
         }
     }
 
-    /// Every uncommitted file in the repo. Read-only. With a `slice_id`, also the type
-    /// `commit_slice` would pick. Errors: `not_found` (unknown project or slice),
+    /// Every uncommitted file in the repo. Read-only. With a `slice_id`, also the type and
+    /// message `commit_slice` would generate. Errors: `not_found` (unknown project or slice),
     /// `folder_missing`, `invalid_json` (unreadable plan), `git_not_found`, `not_a_git_repo`,
     /// `commit_failed` (git status failed).
     pub fn commit_status(
@@ -142,10 +145,11 @@ impl SliceCommitter {
         };
         git::require_work_tree(&self.git, &repo)?;
         let all = self.changed(&repo)?;
-        let choice = match (&slice, all.is_empty()) {
-            (Some(slice), false) => Some(commit_type(&slice.name, slice.first_deliverable(), &all)),
+        let generated = match (&slice, all.is_empty()) {
+            (Some(slice), false) => Some(generated(&repo, slice, &all)?),
             _ => None,
         };
+        let (choice, message) = generated.unzip();
         let total = all.len();
         Ok(CommitStatus {
             head: git::head(&self.git, &repo),
@@ -155,6 +159,7 @@ impl SliceCommitter {
             truncated: total > MAX_STATUS_FILES,
             commit_type: choice.as_ref().map(|c| c.commit_type),
             type_reason: choice.map(|c| c.reason),
+            message,
         })
     }
 
@@ -202,12 +207,8 @@ impl SliceCommitter {
         let (text, choice) = match message.filter(|m| !m.trim().is_empty()) {
             Some(given) => (given.to_string(), None),
             None => {
-                let choice = commit_type(&slice.name, slice.first_deliverable(), &changed);
-                let facts = disk::message_facts(repo, &slice)?;
-                (
-                    message::build(choice.commit_type, &slice, &facts),
-                    Some(choice),
-                )
+                let (choice, text) = generated(repo, &slice, &changed)?;
+                (text, Some(choice))
             }
         };
 
@@ -302,6 +303,19 @@ impl SliceCommitter {
             }
         }
     }
+}
+
+/// The type and message Foundry generates for `slice` over `changed`. The one builder both
+/// `commit_status` and `commit_slice` use, so the preview is the commit. Reads only.
+fn generated(
+    repo: &Path,
+    slice: &disk::SliceInfo,
+    changed: &[ChangedFile],
+) -> Result<(CommitTypeChoice, String), AppError> {
+    let choice = commit_type(&slice.name, slice.first_deliverable(), changed);
+    let facts = disk::message_facts(repo, slice)?;
+    let text = message::build(choice.commit_type, slice, &facts);
+    Ok((choice, text))
 }
 
 /// `git status --porcelain=v1 -z` → files. A rename or copy entry is followed by its old

@@ -8,7 +8,8 @@ use super::{CommitSliceResult, CommitStatus, SliceCommitter};
 use crate::core::AppError;
 
 /// Every uncommitted file in the repo (ignored ones never), at most 500, with whether each is
-/// Foundry's own. With a `sliceId`, also the type `commit_slice` would pick and why.
+/// Foundry's own. With a `sliceId`, also the type `commit_slice` would pick, why, and the
+/// message it would generate.
 /// Read-only.
 #[tauri::command]
 #[specta::specta]
