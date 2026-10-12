@@ -280,6 +280,18 @@ fn text_absent(
         Ok(regex) => regex,
         Err(err) => return Outcome::fail(err.message, None),
     };
+    // The glob's literal folders (up to its first wildcard) must not lead out of the project
+    // through a link: the walk wouldn't follow it, so the check would pass on nothing.
+    let literal: Vec<&str> = glob_pattern
+        .split('/')
+        .take_while(|s| !s.contains(['*', '?']))
+        .filter(|s| !s.is_empty())
+        .collect();
+    if !literal.is_empty() {
+        if let Err(err) = paths::resolve(repo, literal.join("/")) {
+            return Outcome::fail(err.message, None);
+        }
+    }
     let mut searched = 0usize;
     let mut too_big = 0usize;
     let mut matches: Vec<(String, usize)> = Vec::new();

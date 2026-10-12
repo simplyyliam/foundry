@@ -3339,6 +3339,102 @@ mod requirement_checks {
             out.detail
         );
     }
+
+    /// Links `link` to the folder `target`: a symlink, or on Windows without the right to make
+    /// one (no Developer Mode or admin), a junction, which leads out of a folder the same way.
+    /// `None` (with the reason) when neither can be made.
+    fn link_out(target: &Path, link: &Path) -> Option<&'static str> {
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(target, link).ok()?;
+            Some("symlink")
+        }
+        #[cfg(windows)]
+        {
+            if std::os::windows::fs::symlink_dir(target, link).is_ok() {
+                return Some("symlink");
+            }
+            let junction = std::process::Command::new("cmd")
+                .arg("/C")
+                .arg("mklink")
+                .arg("/J")
+                .arg(link)
+                .arg(target)
+                .stdout(std::process::Stdio::null())
+                .status()
+                .is_ok_and(|s| s.success());
+            junction.then_some("junction")
+        }
+    }
+
+    #[test]
+    fn a_check_through_a_link_out_of_the_project_fails_closed_and_reads_nothing_outside() {
+        let outside = TestRepo::new();
+        outside.write("secret.json", "{}");
+        outside.write("leak.tsx", "import x from '@radix-ui/react-dialog';\n");
+        outside.write(
+            "package.json",
+            r#"{ "dependencies": { "@radix-ui/react-dialog": "1" } }"#,
+        );
+        let repo = TestRepo::new();
+        repo.write("src/app.tsx", "export {}\n");
+        let Some(kind) = link_out(outside.path(), &repo.path().join("linked")) else {
+            eprintln!(
+                "SKIPPED: this Windows environment can make neither a symlink (needs Developer \
+                 Mode or admin) nor a junction"
+            );
+            return;
+        };
+        eprintln!("link kind: {kind}");
+        let run = |check: RequirementCheck| checks::run(repo.path(), &check, &Limits::default());
+
+        // A path or glob that leads out through the link: fails, whichever way it'd go.
+        for check in [
+            RequirementCheck::FileExists {
+                path: "linked/secret.json".into(),
+            },
+            RequirementCheck::FileAbsent {
+                path: "linked/secret.json".into(),
+            },
+            RequirementCheck::FileAbsent {
+                path: "linked".into(),
+            },
+            RequirementCheck::TextAbsent {
+                glob: "linked/**".into(),
+                pattern: "@radix-ui/".into(),
+            },
+        ] {
+            let out = run(check.clone());
+            assert!(!out.passed, "{check:?} passed: {}", out.detail);
+            assert!(out.detail.contains("outside"), "{check:?}: {}", out.detail);
+        }
+
+        // Whole-project walks don't follow the link, so nothing outside is read: these would
+        // fail, naming leak.tsx or the outside package.json, if it were.
+        let text = run(RequirementCheck::TextAbsent {
+            glob: "**".into(),
+            pattern: "@radix-ui/".into(),
+        });
+        assert!(text.passed, "{}", text.detail);
+        assert!(text.detail.contains("none of 1 file(s)"), "{}", text.detail);
+        let dep = run(RequirementCheck::DependencyAbsent {
+            name: "@radix-ui/*".into(),
+        });
+        assert!(dep.passed, "{}", dep.detail);
+        assert!(
+            dep.detail.contains("none of the project's 0 package.json"),
+            "{}",
+            dep.detail
+        );
+        let present = run(RequirementCheck::DependencyPresent {
+            name: "@radix-ui/*".into(),
+        });
+        assert!(
+            !present.passed,
+            "found only through the link: {}",
+            present.detail
+        );
+    }
 }
 
 #[test]
