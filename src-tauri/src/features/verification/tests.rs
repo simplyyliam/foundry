@@ -2602,13 +2602,358 @@ mod guidance_rules {
                 GuidanceActionKind::SendToAgent
             ]
         );
+        // One requirement: the same message as for several, listing its text (no text: its id).
         assert_eq!(
             g.actions[2].message.as_deref(),
             Some(
-                "Update your report for requirement r-1 to name the test and command that \
-                 cover it. Don't change any code."
+                "Your report says these requirements are met but doesn't name the test that \
+                 proves them:\n- r-1\nFor each, update your report to name the test and \
+                 command that cover it. Don't change any code."
             )
         );
+    }
+
+    fn evidence(req: &str, agent: &str) -> Finding {
+        Finding {
+            requirement_id: Some(req.into()),
+            agent: Some(agent.into()),
+            ..mk(code::MISSING_EVIDENCE, FindingSeverity::Warn)
+        }
+    }
+
+    fn check_failed(req: &str, agent: &str) -> Finding {
+        Finding {
+            requirement_id: Some(req.into()),
+            agent: Some(agent.into()),
+            message: format!("check failed for {req}: GET /feed returned 500"),
+            ..mk(code::CHECK_FAILED, FindingSeverity::Danger)
+        }
+    }
+
+    fn with_texts(mut i: Inputs) -> Inputs {
+        for (id, text) in [
+            ("r-1", "Users can log in"),
+            ("r-2", "The feed shows the newest first"),
+            ("r-3", "J and K move between items"),
+            ("r-4", "A shared link opens without signing in"),
+        ] {
+            i.requirement_text.insert(id.into(), text.into());
+        }
+        i
+    }
+
+    /// Every finding's actionIds name an action in `actions`, and no two actions share an id
+    /// or a label.
+    fn assert_consistent(g: &VerificationGuidance) {
+        for f in &g.findings {
+            for id in &f.action_ids {
+                assert!(
+                    g.actions.iter().any(|a| &a.id == id),
+                    "{} points at missing action {id}",
+                    f.finding_id
+                );
+            }
+        }
+        let ids: std::collections::BTreeSet<&str> =
+            g.actions.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(ids.len(), g.actions.len(), "{:?}", g.actions);
+        let labels: std::collections::BTreeSet<&str> =
+            g.actions.iter().map(|a| a.label.as_str()).collect();
+        assert_eq!(
+            labels.len(),
+            g.actions.len(),
+            "{:#?}",
+            g.actions
+                .iter()
+                .map(|a| (&a.id, &a.label))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn missing_evidence_for_one_agent_is_one_action_listing_every_requirement_by_text() {
+        let g = guidance::build(&with_texts(inputs(review(
+            true,
+            vec![
+                evidence("r-1", "ada"),
+                evidence("r-2", "ada"),
+                evidence("r-3", "ada"),
+            ],
+        ))));
+        let sends: Vec<&GuidanceAction> = g
+            .actions
+            .iter()
+            .filter(|a| a.kind == GuidanceActionKind::SendToAgent)
+            .collect();
+        assert_eq!(sends.len(), 1, "{:?}", g.actions);
+        let send = sends[0];
+        assert_eq!(send.label, "Ask for evidence (Ada)");
+        assert_eq!(send.agent_id.as_deref(), Some("ada"));
+        assert_eq!(
+            send.message.as_deref(),
+            Some(
+                "Your report says these requirements are met but doesn't name the test that \
+                 proves them:\n- Users can log in\n- The feed shows the newest first\n- J and \
+                 K move between items\nFor each, update your report to name the test and \
+                 command that cover it. Don't change any code."
+            )
+        );
+        assert!(!send.message.as_deref().unwrap().contains("r-1"));
+        for f in &g.findings {
+            assert_eq!(f.action_ids, [send.id.clone()], "{}", f.finding_id);
+        }
+        assert_consistent(&g);
+    }
+
+    #[test]
+    fn missing_evidence_for_two_agents_is_one_action_each() {
+        let mut i = with_texts(inputs(review(
+            true,
+            vec![
+                evidence("r-1", "ada"),
+                evidence("r-2", "bo"),
+                evidence("r-3", "ada"),
+            ],
+        )));
+        i.on_slice.push("bo".into());
+        i.reported.insert("bo".into());
+        i.names.insert("bo".into(), "Bo".into());
+        let g = guidance::build(&i);
+        let sends: Vec<(&str, &str, &str)> = g
+            .actions
+            .iter()
+            .filter(|a| a.kind == GuidanceActionKind::SendToAgent)
+            .map(|a| {
+                (
+                    a.agent_id.as_deref().unwrap(),
+                    a.label.as_str(),
+                    a.message.as_deref().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(sends.len(), 2, "{:?}", g.actions);
+        assert_eq!((sends[0].0, sends[0].1), ("ada", "Ask for evidence (Ada)"));
+        assert!(sends[0]
+            .2
+            .contains("- Users can log in\n- J and K move between items\n"));
+        assert!(!sends[0].2.contains("newest"));
+        assert_eq!((sends[1].0, sends[1].1), ("bo", "Ask for evidence (Bo)"));
+        assert!(sends[1].2.contains("\n- The feed shows the newest first\n"));
+        assert_eq!(g.findings[1].action_ids, ["send:evidence:bo"]);
+        assert_consistent(&g);
+    }
+
+    /// The case seen in the app: one failed check and three missing-evidence warnings.
+    #[test]
+    fn a_danger_findings_action_comes_before_follow_ups_and_verify_again_is_last() {
+        let g = guidance::build(&with_texts(inputs(review(
+            false,
+            vec![
+                evidence("r-1", "ada"),
+                evidence("r-2", "ada"),
+                check_failed("r-4", "ada"),
+                evidence("r-3", "ada"),
+            ],
+        ))));
+        assert_eq!(g.headline.kind, HeadlineKind::NeedsFix);
+        let labels: Vec<&str> = g.actions.iter().map(|a| a.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            [
+                "Ask to fix it (Ada)",
+                "Ask for evidence (Ada)",
+                "Verify again"
+            ]
+        );
+        assert_eq!(g.findings[2].action_ids, [g.actions[0].id.clone()]);
+        assert_consistent(&g);
+    }
+
+    #[test]
+    fn labels_that_would_repeat_name_what_tells_them_apart() {
+        let mut r = review(
+            false,
+            vec![check_failed("r-1", "ada"), check_failed("r-2", "ada")],
+        );
+        for id in ["r-3", "r-4"] {
+            r.requirements.push(RequirementOutcome {
+                id: id.into(),
+                status: Some(RequirementStatus::NotMet),
+                reported_by: vec![ReportedStatus {
+                    agent: "ada".into(),
+                    status: RequirementStatus::NotMet,
+                }],
+            });
+        }
+        let g = guidance::build(&with_texts(inputs(r)));
+        let labels: Vec<&str> = g.actions.iter().map(|a| a.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            [
+                "Ask to fix it (Ada): Users can log in",
+                "Ask to fix it (Ada): The feed shows the newest first",
+                "Send back to Ada: J and K move between items",
+                "Send back to Ada: A shared link opens without signing in",
+                "Verify again"
+            ]
+        );
+        assert_consistent(&g);
+
+        // A unique label is left alone; a repeat with nothing to tell it by gets a number.
+        let g = guidance::build(&inputs(review(
+            true,
+            vec![
+                mk(code::SLICE_MISMATCH, FindingSeverity::Warn),
+                mk(code::SLICE_MISMATCH, FindingSeverity::Warn),
+            ],
+        )));
+        let labels: Vec<&str> = g.actions.iter().map(|a| a.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            [
+                "Mark done",
+                "Commit the slice",
+                "Ask to fix the report (Ada)",
+                "Ask to fix the report (Ada) (2)"
+            ]
+        );
+        assert_consistent(&g);
+    }
+
+    /// No guidance text Foundry writes has two spaces in a row (a lost line continuation).
+    #[test]
+    fn no_guidance_text_for_any_finding_code_has_a_run_of_spaces() {
+        // Every code in `code`, read from the source as `every_finding_code_has_a_rule` does,
+        // so a new code is covered without touching this test.
+        let source = include_str!("mod.rs");
+        let block = source
+            .split("pub mod code {")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}").next())
+            .expect("the code module");
+        let codes: Vec<&str> = block
+            .lines()
+            .filter(|l| l.trim_start().starts_with("pub const"))
+            .filter_map(|l| l.split('"').nth(1))
+            .collect();
+        assert_eq!(codes.len(), 19, "{codes:?}");
+
+        let tails = [
+            "",
+            "Error: EPERM: operation not permitted, rename query_engine-windows.dll.node",
+            "Error: listen EADDRINUSE: address already in use :::3000",
+        ];
+        let mut checked = 0;
+        for code in &codes {
+            for severity in [FindingSeverity::Danger, FindingSeverity::Warn] {
+                for agent in [Some("ada"), None] {
+                    for (tail, two_agents, elsewhere) in tails
+                        .iter()
+                        .flat_map(|t| [(t, false, false), (t, true, true)])
+                    {
+                        let f = Finding {
+                            message: format!("`pnpm test` {code}: something broke"),
+                            requirement_id: Some("r-1".into()),
+                            agent: agent.map(Into::into),
+                            ..at(mk(code, severity), "src/feed.ts")
+                        };
+                        let mut r = review(false, vec![f]);
+                        r.test_runs.push(failed_run("pnpm test", tail));
+                        // A requirement reported not met, for its own rule's text.
+                        r.requirements.push(RequirementOutcome {
+                            id: "r-2".into(),
+                            status: Some(RequirementStatus::NotMet),
+                            reported_by: vec![ReportedStatus {
+                                agent: "ada".into(),
+                                status: RequirementStatus::NotMet,
+                            }],
+                        });
+                        let mut i = with_texts(inputs(r));
+                        if two_agents {
+                            i.on_slice.push("bo".into());
+                            i.reported.insert("bo".into());
+                        }
+                        let facts = PathFacts {
+                            elsewhere: elsewhere.then(|| "bo on slice s-web".into()),
+                            changed_lines: Some(3),
+                            ..PathFacts::default()
+                        };
+                        i.paths.insert("src/feed.ts".into(), facts);
+                        let g = guidance::build(&i);
+
+                        let mut texts: Vec<&str> = vec![&g.headline.text];
+                        for f in &g.findings {
+                            texts.extend([f.plain.as_str(), f.what_to_do.as_str()]);
+                        }
+                        for a in &g.actions {
+                            texts.push(&a.label);
+                            texts.extend(a.message.as_deref());
+                            texts.extend(a.reason_template.as_deref());
+                        }
+                        for text in texts {
+                            // Test output is shown as it came; only Foundry's own words count.
+                            let ours = text.split("```").step_by(2).collect::<Vec<_>>();
+                            for part in ours {
+                                for line in part.lines() {
+                                    assert!(
+                                        !line.contains("  "),
+                                        "{code}: run of spaces in {text:?}"
+                                    );
+                                }
+                            }
+                            checked += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(checked > 1000, "{checked}");
+    }
+
+    /// Every rule's actions, merged and ordered, still resolve from their findings.
+    #[test]
+    fn every_findings_action_ids_resolve_for_every_code() {
+        let mut all: Vec<Finding> = Vec::new();
+        for (index, code) in [
+            code::UNREPORTED_REQUIREMENT,
+            code::UNKNOWN_REQUIREMENT,
+            code::SLICE_MISMATCH,
+            code::MISSING_EVIDENCE,
+            code::NO_TEST_COMMAND,
+            code::TEST_FAILED,
+            code::TEST_TIMED_OUT,
+            code::PROTECTED_FILE_CHANGED,
+            code::OUTSIDE_WRITE_GLOBS,
+            code::FOUNDRY_FILE_CHANGED,
+            code::BOUNDARY_SKIPPED,
+            code::CONTRADICTION,
+            code::PARTLY_REPORTED,
+            code::REPORTED_BLOCKER,
+            code::OWNED_BY_OTHER_SLICE,
+            code::SHARED_FILE_TOUCHED,
+            code::AMBIGUOUS_SHELL_CHANGE,
+            code::INVALID_BUG,
+            code::CHECK_FAILED,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            for req in ["r-1", "r-2"] {
+                let mut f = at(mk(code, FindingSeverity::Warn), &format!("src/f{index}.ts"));
+                f.requirement_id = Some(req.into());
+                all.push(f);
+            }
+        }
+        for agents in [vec!["ada".to_string()], vec!["ada".into(), "bo".into()]] {
+            let mut i = with_texts(inputs(review(false, all.clone())));
+            i.reported = agents.iter().cloned().collect();
+            i.on_slice = agents;
+            let g = guidance::build(&i);
+            assert_eq!(g.headline.kind, HeadlineKind::NeedsFix);
+            assert!(g.findings.iter().any(|f| !f.action_ids.is_empty()));
+            assert_consistent(&g);
+            assert_eq!(g.actions.last().unwrap().kind, GuidanceActionKind::Reverify);
+        }
     }
 
     #[test]

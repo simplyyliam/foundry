@@ -187,9 +187,30 @@ struct Guided {
     what_to_do: String,
     group: FindingGroup,
     output: Option<String>,
-    actions: Vec<GuidanceAction>,
+    actions: Vec<Planned>,
     /// Joined into the `override` action's template when the headline is `safe_to_override`.
     reason_template: Option<String>,
+}
+
+/// An action as a rule makes it. [`build`] then merges, orders and labels the actions.
+struct Planned {
+    action: GuidanceAction,
+    /// Actions with the same kind, agent and purpose become one that lists every item.
+    list: Option<Listed>,
+    /// What tells this action apart from another with the same label: a requirement, a file,
+    /// a command. Added to the label only when two labels would be the same.
+    detail: Option<String>,
+}
+
+/// The parts of a message that lists items, one per line.
+struct Listed {
+    /// Part of the merged action's id: `send:<purpose>:<agentId or any>`.
+    purpose: &'static str,
+    /// Before the items.
+    intro: String,
+    item: String,
+    /// After the items.
+    outro: String,
 }
 
 impl Guided {
@@ -205,7 +226,31 @@ impl Guided {
     }
 
     fn action(mut self, action: GuidanceAction) -> Self {
-        self.actions.push(action);
+        self.actions.push(Planned {
+            action,
+            list: None,
+            detail: None,
+        });
+        self
+    }
+
+    /// An action told apart by `detail` when its label isn't unique.
+    fn detailed(mut self, action: GuidanceAction, detail: impl Into<String>) -> Self {
+        self.actions.push(Planned {
+            action,
+            list: None,
+            detail: Some(detail.into()),
+        });
+        self
+    }
+
+    /// An action merged with the others of its kind, agent and purpose.
+    fn listed(mut self, action: GuidanceAction, list: Listed) -> Self {
+        self.actions.push(Planned {
+            detail: action.agent_id.clone(),
+            action,
+            list: Some(list),
+        });
         self
     }
 }
@@ -307,14 +352,17 @@ fn unreported_requirement(c: &Ctx<'_>) -> Guided {
         format!("No report says anything about requirement {id}{text}."),
         "Ask the agent to add it to its report.",
     )
-    .action(c.send(
-        c.agent(),
-        "Ask for the missing requirement",
-        format!(
-            "Your report doesn't list requirement {id}{text}. Add it with its status (met, \
-             partly or not_met) and the test and command that cover it."
-        ),
-    ))
+    .listed(
+        c.send(c.agent(), "Ask for the missing requirements", String::new()),
+        Listed {
+            purpose: "missing_requirements",
+            intro: "Your report doesn't list these requirements:".into(),
+            item: format!("{id}{text}"),
+            outro: "Add each with its status (met, partly or not_met) and the test and command \
+                    that cover it."
+                .into(),
+        },
+    )
 }
 
 fn check_failed(c: &Ctx<'_>) -> Guided {
@@ -330,13 +378,18 @@ fn check_failed(c: &Ctx<'_>) -> Guided {
         format!("Requirement {id}{text} has a check that failed: {what}."),
         "Ask the agent to fix the code so the check passes, then verify again.",
     )
-    .action(c.send(
-        c.agent(),
-        "Ask to fix it",
-        format!(
-            "Requirement {id}{text} has a check Foundry runs itself, and it failed: {what}.              Change the code so the check passes (don't change the check), then update your              report."
+    .detailed(
+        c.send(
+            c.agent(),
+            "Ask to fix it",
+            format!(
+                "Requirement {id}{text} has a check Foundry runs itself, and it failed: {what}. \
+                 Change the code so the check passes (don't change the check), then update your \
+                 report."
+            ),
         ),
-    ))
+        requirement_name(c.inputs, id),
+    )
 }
 
 fn unknown_requirement(c: &Ctx<'_>) -> Guided {
@@ -346,15 +399,22 @@ fn unknown_requirement(c: &Ctx<'_>) -> Guided {
         format!("A report lists requirement {id}, which isn't part of this slice."),
         "Doesn't block. Ask the agent to remove it from the report.",
     )
-    .action(c.send(
-        c.agent(),
-        "Ask to fix the report",
-        format!(
-            "Your report lists requirement {id}, which isn't part of slice {}. Remove it from \
-             your report. Don't change any code.",
-            c.inputs.slice_id
+    .listed(
+        c.send(
+            c.agent(),
+            "Ask to remove unknown requirements",
+            String::new(),
         ),
-    ))
+        Listed {
+            purpose: "unknown_requirements",
+            intro: format!(
+                "Your report lists requirements that aren't part of slice {}:",
+                c.inputs.slice_id
+            ),
+            item: id.to_string(),
+            outro: "Remove them from your report. Don't change any code.".into(),
+        },
+    )
 }
 
 fn slice_mismatch(c: &Ctx<'_>) -> Guided {
@@ -383,14 +443,19 @@ fn missing_evidence(c: &Ctx<'_>) -> Guided {
         ),
         "Doesn't block. Ask the agent to name the test and command.",
     )
-    .action(c.send(
-        c.agent(),
-        "Ask for evidence",
-        format!(
-            "Update your report for requirement {id} to name the test and command that cover \
-             it. Don't change any code."
-        ),
-    ))
+    .listed(
+        c.send(c.agent(), "Ask for evidence", String::new()),
+        Listed {
+            purpose: "evidence",
+            intro: "Your report says these requirements are met but doesn't name the test that \
+                    proves them:"
+                .into(),
+            item: requirement_name(c.inputs, id),
+            outro: "For each, update your report to name the test and command that cover it. \
+                    Don't change any code."
+                .into(),
+        },
+    )
 }
 
 fn no_test_command(c: &Ctx<'_>) -> Guided {
@@ -469,27 +534,34 @@ fn test_failed(c: &Ctx<'_>) -> Guided {
             plain,
             "Stop the dev server and Prisma Studio, then re-verify.",
         )
-        .action(GuidanceAction {
-            id: format!("stop_dev_server:{}", c.id),
-            label: "Stop the dev server and Prisma Studio".into(),
-            kind: GuidanceActionKind::StopDevServer,
-            agent_id: None,
-            message: Some(
-                "Stop the dev server and Prisma Studio: they hold a file the tests need to \
+        .detailed(
+            GuidanceAction {
+                id: format!("stop_dev_server:{}", c.id),
+                label: "Stop the dev server and Prisma Studio".into(),
+                kind: GuidanceActionKind::StopDevServer,
+                agent_id: None,
+                message: Some(
+                    "Stop the dev server and Prisma Studio: they hold a file the tests need to \
                  replace. Then verify again."
-                    .into(),
-            ),
-            reason_template: None,
-        }),
+                        .into(),
+                ),
+                reason_template: None,
+            },
+            command,
+        ),
         Some(EnvCause::PortInUse) => Guided::new(
             FindingGroup::Fix,
             plain,
             "A port is in use: stop whatever is using it, or change the port, then re-verify.",
         )
-        .action(c.manual(
-            "Free the port",
-            "A port is in use: stop whatever is using it, or change the port. Then verify again.",
-        )),
+        .detailed(
+            c.manual(
+                "Free the port",
+                "A port is in use: stop whatever is using it, or change the port. Then verify \
+                 again.",
+            ),
+            command,
+        ),
         None => {
             let tail = output.as_deref().unwrap_or("");
             Guided::new(
@@ -497,13 +569,16 @@ fn test_failed(c: &Ctx<'_>) -> Guided {
                 plain,
                 "Send the failure to the agent to fix.",
             )
-            .action(c.send(
-                c.inputs.slice_agent(),
-                "Send the failure to the agent",
-                format!(
-                    "`{command}` {how}. The last lines of its output:\n```\n{tail}\n```\n{FIX_LINE}"
+            .detailed(
+                c.send(
+                    c.inputs.slice_agent(),
+                    "Send the failure to the agent",
+                    format!(
+                        "`{command}` {how}. The last lines of its output:\n```\n{tail}\n```\n{FIX_LINE}"
+                    ),
                 ),
-            ))
+                command,
+            )
         }
     };
     guided.output = output;
@@ -532,7 +607,10 @@ fn out_of_bounds(c: &Ctx<'_>) -> Guided {
                  agent."
             ),
         )
-        .action(c.send(writer.clone(), "Tell the agent", revert_message.clone()))
+        .detailed(
+            c.send(writer.clone(), "Tell the agent", revert_message.clone()),
+            path,
+        )
     };
     if reverts(path) {
         return revert("it holds the project's rules, design or plan");
@@ -622,11 +700,14 @@ fn reported_blocker(c: &Ctx<'_>) -> Guided {
         format!("An agent is blocked: {blocker}"),
         "Answer it, then ask the agent to continue.",
     )
-    .action(c.send(
-        c.agent(),
-        "Answer the blocker",
-        format!("About your blocker \"{blocker}\": <your answer>. Then continue."),
-    ))
+    .detailed(
+        c.send(
+            c.agent(),
+            "Answer the blocker",
+            format!("About your blocker \"{blocker}\": <your answer>. Then continue."),
+        ),
+        blocker,
+    )
 }
 
 fn invalid_bug(c: &Ctx<'_>) -> Guided {
@@ -640,15 +721,18 @@ fn invalid_bug(c: &Ctx<'_>) -> Guided {
         format!("A report's bugs list needs fixing: {problem}."),
         "Doesn't block. Ask the agent to fix the entry so a fix prompt can be made from it.",
     )
-    .action(c.send(
-        c.agent(),
-        "Ask to fix the bugs list",
-        format!(
-            "In your report's bugs list, {problem}. Fix that entry: give it an id, severity \
+    .detailed(
+        c.send(
+            c.agent(),
+            "Ask to fix the bugs list",
+            format!(
+                "In your report's bugs list, {problem}. Fix that entry: give it an id, severity \
              (high, medium or low), title, requirement ids, steps to reproduce, the failing \
              test and its file, and the code location. Don't change any code."
+            ),
         ),
-    ))
+        problem,
+    )
 }
 
 fn owned_by_other_slice(_: &Ctx<'_>) -> Guided {
@@ -693,6 +777,17 @@ fn fallback(c: &Ctx<'_>) -> Guided {
 
 // ---------- requirement rule ----------
 
+/// The requirement's text, else its id.
+fn requirement_name(inputs: &Inputs, id: &str) -> String {
+    inputs
+        .requirement_text
+        .get(id)
+        .map(|t| t.trim())
+        .filter(|t| !t.is_empty())
+        .unwrap_or(id)
+        .to_string()
+}
+
 fn requirement_line(inputs: &Inputs, id: &str) -> String {
     inputs
         .requirement_text
@@ -729,17 +824,20 @@ fn requirement_not_met(inputs: &Inputs, review: &Review, o: &RequirementOutcome)
             Some(e) => format!("Your report says {}: {e}", word(reported.status)),
             None => format!("Your report says {}.", word(reported.status)),
         };
-        guided.actions.push(GuidanceAction {
-            id: format!("send:{fid}:{}", reported.agent),
-            label: format!("Send back to {}", inputs.name(&reported.agent)),
-            kind: GuidanceActionKind::SendToAgent,
-            agent_id: Some(reported.agent.clone()),
-            message: Some(format!(
-                "Requirement {id}{text} isn't met yet. {said}\nFinish it, run the tests, and \
+        guided = guided.detailed(
+            GuidanceAction {
+                id: format!("send:{fid}:{}", reported.agent),
+                label: format!("Send back to {}", inputs.name(&reported.agent)),
+                kind: GuidanceActionKind::SendToAgent,
+                agent_id: Some(reported.agent.clone()),
+                message: Some(format!(
+                    "Requirement {id}{text} isn't met yet. {said}\nFinish it, run the tests, and \
                  update your report."
-            )),
-            reason_template: None,
-        });
+                )),
+                reason_template: None,
+            },
+            requirement_name(inputs, id),
+        );
     }
     guided
 }
@@ -990,6 +1088,103 @@ fn outcome_rule(review: &Review, guided: &[(String, Guided)]) -> (Headline, Vec<
 
 // ---------- build ----------
 
+/// One action of the findings while [`build`] merges them.
+struct Slot {
+    action: GuidanceAction,
+    /// The best [`group_rank`] of the findings it belongs to.
+    rank: u8,
+    list: Option<(String, String)>,
+    items: Vec<String>,
+    detail: Option<String>,
+}
+
+impl Slot {
+    fn new(id: String, rank: u8, planned: Planned) -> Self {
+        let (list, items) = match planned.list {
+            Some(l) => (Some((l.intro, l.outro)), vec![l.item]),
+            None => (None, Vec::new()),
+        };
+        Self {
+            action: GuidanceAction {
+                id,
+                ..planned.action
+            },
+            rank,
+            list,
+            items,
+            detail: planned.detail,
+        }
+    }
+
+    /// A listed action's message: the intro, one item per line, the outro.
+    fn finish(mut self) -> GuidanceAction {
+        if let Some((intro, outro)) = self.list {
+            let items: Vec<String> = self.items.iter().map(|i| format!("- {i}")).collect();
+            self.action.message = Some(format!("{intro}\n{}\n{outro}", items.join("\n")));
+        }
+        self.action
+    }
+}
+
+/// Listed actions share an id per kind, agent and purpose; the rest keep their own.
+fn slot_id(planned: &Planned) -> String {
+    match &planned.list {
+        Some(list) => format!(
+            "send:{}:{}",
+            list.purpose,
+            planned.action.agent_id.as_deref().unwrap_or("any")
+        ),
+        None => planned.action.id.clone(),
+    }
+}
+
+/// Fix before Decide before Override before follow-ups and notes.
+fn group_rank(group: FindingGroup) -> u8 {
+    match group {
+        FindingGroup::Fix => 0,
+        FindingGroup::Decide => 1,
+        FindingGroup::Override => 2,
+        FindingGroup::FollowUp => 3,
+        FindingGroup::Info => 4,
+        FindingGroup::Ignore => 5,
+    }
+}
+
+/// A detail is cut to this many characters in a label.
+const LABEL_DETAIL_CHARS: usize = 48;
+
+/// Two actions never share a label: each repeat gets its detail (`label: detail`), and one
+/// still repeated gets a number.
+fn distinct_labels(actions: &mut [GuidanceAction], details: &[Option<String>]) {
+    let repeated = |actions: &[GuidanceAction], i: usize| {
+        actions
+            .iter()
+            .enumerate()
+            .any(|(j, b)| j != i && b.label == actions[i].label)
+    };
+    let with_detail: Vec<usize> = (0..actions.len())
+        .filter(|&i| repeated(actions, i))
+        .collect();
+    for i in with_detail {
+        if let Some(detail) = details.get(i).cloned().flatten() {
+            let short: String = if detail.chars().count() > LABEL_DETAIL_CHARS {
+                let cut: String = detail.chars().take(LABEL_DETAIL_CHARS - 1).collect();
+                format!("{}…", cut.trim_end())
+            } else {
+                detail
+            };
+            actions[i].label = format!("{}: {short}", actions[i].label);
+        }
+    }
+    let labels: Vec<String> = actions.iter().map(|a| a.label.clone()).collect();
+    for (i, action) in actions.iter_mut().enumerate() {
+        let earlier = labels[..i].iter().filter(|l| **l == labels[i]).count();
+        if earlier > 0 {
+            action.label = format!("{} ({})", labels[i], earlier + 1);
+        }
+    }
+}
+
 /// The guidance for one slice. Never performs anything.
 pub fn build(inputs: &Inputs) -> VerificationGuidance {
     let mut guided: Vec<(String, Guided)> = Vec::new();
@@ -1046,30 +1241,47 @@ pub fn build(inputs: &Inputs) -> VerificationGuidance {
             | HeadlineKind::NeedsDecision
             | HeadlineKind::SafeToOverride
     );
-    let mut actions: Vec<GuidanceAction> = Vec::new();
-    let push = |action: GuidanceAction, actions: &mut Vec<GuidanceAction>| {
-        if !actions.iter().any(|a| a.id == action.id) {
-            actions.push(action);
-        }
-    };
     let ends_with_reverify = lead.iter().any(|a| a.kind == GuidanceActionKind::Reverify)
         && matches!(
             headline.kind,
             HeadlineKind::NeedsFix | HeadlineKind::NeedsDecision
         );
+    let mut actions: Vec<GuidanceAction> = Vec::new();
+    let mut details: Vec<Option<String>> = Vec::new();
     for a in lead
         .iter()
         .filter(|a| !(ends_with_reverify && a.id == "reverify"))
     {
-        push(a.clone(), &mut actions);
+        if !actions.iter().any(|b| b.id == a.id) {
+            actions.push(a.clone());
+            details.push(None);
+        }
     }
+    let mut slots: Vec<Slot> = Vec::new();
     let mut findings = Vec::new();
     for (id, g) in guided {
         let mut action_ids = Vec::new();
         if final_result {
-            for a in g.actions {
-                action_ids.push(a.id.clone());
-                push(a, &mut actions);
+            let rank = group_rank(g.group);
+            for planned in g.actions {
+                let aid = slot_id(&planned);
+                if !action_ids.contains(&aid) {
+                    action_ids.push(aid.clone());
+                }
+                if actions.iter().any(|a| a.id == aid) {
+                    continue;
+                }
+                match slots.iter_mut().find(|s| s.action.id == aid) {
+                    Some(slot) => {
+                        slot.rank = slot.rank.min(rank);
+                        if let Some(list) = planned.list {
+                            if !slot.items.contains(&list.item) {
+                                slot.items.push(list.item);
+                            }
+                        }
+                    }
+                    None => slots.push(Slot::new(aid, rank, planned)),
+                }
             }
             if g.reason_template.is_some() && headline.kind == HeadlineKind::SafeToOverride {
                 action_ids.push("override".into());
@@ -1084,9 +1296,17 @@ pub fn build(inputs: &Inputs) -> VerificationGuidance {
             action_ids,
         });
     }
-    if ends_with_reverify {
-        push(reverify(), &mut actions);
+    // The headline's own findings first (Fix, then Decide, ...), each group in finding order.
+    slots.sort_by_key(|slot| slot.rank);
+    for slot in slots {
+        details.push(slot.detail.clone());
+        actions.push(slot.finish());
     }
+    if ends_with_reverify {
+        actions.push(reverify());
+        details.push(None);
+    }
+    distinct_labels(&mut actions, &details);
     VerificationGuidance {
         headline,
         actions,
