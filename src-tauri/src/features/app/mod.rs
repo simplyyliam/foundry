@@ -1,6 +1,7 @@
 //! App-level info and lifecycle events.
 
 pub mod commands;
+pub mod window_radius;
 
 use serde::{Deserialize, Serialize};
 use specta::Type;

@@ -8,6 +8,8 @@ import * as __TAURI_EVENT from "@tauri-apps/api/event";
 export const commands = {
 	/**  App version and operating system. */
 	appInfo: () => typedError<AppInfo, AppError>(__TAURI_INVOKE("app_info")),
+	/**  The OS window corner radius in pixels, or null when it can't be detected. Never fails. */
+	getWindowRadius: () => typedError<WindowRadius, AppError>(__TAURI_INVOKE("get_window_radius")),
 	/**  Visible subfolders of `path` (absolute), or of the home folder when `path` is null. */
 	listFolders: (path: string | null) => typedError<FolderListing, AppError>(__TAURI_INVOKE("list_folders", { path })),
 	/**  The home folder and filesystem roots, for the picker's quick locations. */
@@ -1976,6 +1978,11 @@ export type VerifyStage = "starting" | "checking" | "running_tests" |
 "failed" | 
 /**  Stopped by `cancel_verification`; nothing saved. */
 "cancelled";
+
+export type WindowRadius = {
+	/**  Corner radius in pixels, or null when it can't be detected. */
+	radius: number | null,
+};
 
 /* Tauri Specta runtime */
 async function typedError<T, E>(result: Promise<T>): Promise<{ status: "ok"; data: T } | { status: "error"; error: E }> {

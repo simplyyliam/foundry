@@ -70,6 +70,8 @@ test = false
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
+    # get_window_radius: read-only reads of the Windhawk corner-radius mod's settings.
+    "Win32_System_Registry",
     # delete_repository: IFileOperation moves the folder to the Recycle Bin.
     "Win32_System_Com",
     "Win32_UI_Shell",

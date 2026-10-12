@@ -688,3 +688,13 @@ Output only: no new command, type, field or error code. `verification_guidance` 
 | behavior | `verification_guidance` → `actions` order | lead actions, then finding actions in finding order → lead actions (`mark_done`/`commit`, or `override`/`commit`), then finding actions by group (fix, decide, override, follow-up, info), each group in finding order; `reverify` stays last for `needs_fix` / `needs_decision` | The real fix sat between duplicate evidence buttons. |
 | behavior | `GuidanceAction.label` | could repeat → unique within one guidance | A label that would repeat gets what tells it apart (`Ask to fix it (Ada): Users can log in`): the requirement text, file path, test command, blocker or bug-list problem, cut to 48 characters. If it still repeats, or there's nothing to add, it gets a number (`… (2)`). |
 | text | `missing_evidence`, `unreported_requirement`, `unknown_requirement` action messages and labels | single-requirement sentence → list form; labels "Ask for the missing requirement" → "Ask for the missing requirements", "Ask to fix the report" (unknown requirement) → "Ask to remove unknown requirements" | The list form is the same for one item or many. `slice_mismatch` keeps "Ask to fix the report". |
+
+## Window corner radius
+
+Additive. No new error codes, no new events. `tauri.conf.json` window settings unchanged: the frontend draws its own title bar and window buttons.
+
+| Kind | Name | Before → After | Why |
+| --- | --- | --- | --- |
+| command | `get_window_radius` | — → `getWindowRadius(): Result<WindowRadius, AppError>` | Lets the frontend's window frame follow the OS corner radius. Windows has no call that returns a custom radius, so it detects per environment. Windows: the Windhawk `custom-corner-radius` mod's `radius` (REG_DWORD under `HKLM\SOFTWARE\Windhawk\Engine\Mods\custom-corner-radius\Settings`) when the mod key's `Disabled` is missing or 0 and the radius is 1–64. macOS: 26 when `sw_vers -productVersion` is 26 or later. Otherwise, and on any read error, `radius: null`. Never returns an error; read-only. |
+| type | `WindowRadius` | — → `{ radius: number \| null }` | Pixels. |
+| dependency | `windows` (existing) | adds feature `Win32_System_Registry` | `RegGetValueW` for the read-only registry reads. No new crate. |

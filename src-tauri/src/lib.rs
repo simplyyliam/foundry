@@ -35,6 +35,7 @@ pub fn specta_builder<R: Runtime>() -> tauri_specta::Builder<R> {
     tauri_specta::Builder::<R>::new()
         .commands(collect_commands![
             app::commands::app_info,
+            app::commands::get_window_radius,
             folders::commands::list_folders,
             folders::commands::folder_locations,
             projects::commands::list_projects,
@@ -2045,6 +2046,14 @@ opus-test"
         assert!(ts.contains("\"app:ready\""), "app:ready event missing");
         assert!(ts.contains("export type AppError"), "AppError type missing");
         assert!(ts.contains("export type AppInfo"), "AppInfo type missing");
+        assert!(
+            ts.contains("getWindowRadius"),
+            "getWindowRadius wrapper missing"
+        );
+        assert!(
+            ts.contains("export type WindowRadius"),
+            "WindowRadius type missing"
+        );
         assert!(
             ts.contains("archiveProject"),
             "archiveProject wrapper missing"

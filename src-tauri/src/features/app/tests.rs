@@ -80,3 +80,100 @@ fn init_emits_app_ready_with_id_and_ts() {
     let typed: AppReady = serde_json::from_value(value).unwrap();
     assert!(!typed.meta.id.is_empty());
 }
+
+mod window_radius_detection {
+    use super::super::window_radius::{macos_radius, windhawk_radius, RegValue};
+
+    const ENABLED: Option<RegValue> = Some(RegValue::Dword(0));
+
+    #[test]
+    fn valid_radius_is_returned() {
+        assert_eq!(
+            windhawk_radius(ENABLED, Some(RegValue::Dword(26))),
+            Some(26)
+        );
+        assert_eq!(windhawk_radius(ENABLED, Some(RegValue::Dword(1))), Some(1));
+        assert_eq!(
+            windhawk_radius(ENABLED, Some(RegValue::Dword(64))),
+            Some(64)
+        );
+    }
+
+    #[test]
+    fn missing_disabled_value_counts_as_enabled() {
+        assert_eq!(windhawk_radius(None, Some(RegValue::Dword(26))), Some(26));
+    }
+
+    #[test]
+    fn disabled_mod_gives_none() {
+        assert_eq!(
+            windhawk_radius(Some(RegValue::Dword(1)), Some(RegValue::Dword(26))),
+            None
+        );
+        assert_eq!(
+            windhawk_radius(Some(RegValue::NotDword), Some(RegValue::Dword(26))),
+            None
+        );
+    }
+
+    #[test]
+    fn missing_key_gives_none() {
+        assert_eq!(windhawk_radius(None, None), None);
+        assert_eq!(windhawk_radius(ENABLED, None), None);
+    }
+
+    #[test]
+    fn non_numeric_radius_gives_none() {
+        assert_eq!(windhawk_radius(ENABLED, Some(RegValue::NotDword)), None);
+    }
+
+    #[test]
+    fn out_of_range_radius_gives_none() {
+        assert_eq!(windhawk_radius(ENABLED, Some(RegValue::Dword(0))), None);
+        assert_eq!(windhawk_radius(ENABLED, Some(RegValue::Dword(65))), None);
+        assert_eq!(
+            windhawk_radius(ENABLED, Some(RegValue::Dword(u32::MAX))),
+            None
+        );
+    }
+
+    #[test]
+    fn macos_26_and_later_gives_26() {
+        assert_eq!(macos_radius("26.0"), Some(26));
+        assert_eq!(
+            macos_radius(
+                "26.1
+"
+            ),
+            Some(26)
+        );
+        assert_eq!(macos_radius("27"), Some(26));
+    }
+
+    #[test]
+    fn older_macos_gives_none() {
+        assert_eq!(macos_radius("15.4"), None);
+        assert_eq!(macos_radius("10.15.7"), None);
+    }
+
+    #[test]
+    fn garbage_macos_version_gives_none() {
+        assert_eq!(macos_radius(""), None);
+        assert_eq!(macos_radius("abc"), None);
+        assert_eq!(macos_radius("-26.0"), None);
+        assert_eq!(macos_radius(".26"), None);
+    }
+}
+
+#[test]
+fn get_window_radius_command_round_trips_over_ipc() {
+    let app = mock_app();
+    let response = invoke(&app, "get_window_radius").unwrap();
+    let object = response.as_object().unwrap();
+    assert_eq!(object.keys().collect::<Vec<_>>(), ["radius"]);
+    let radius = &response["radius"];
+    assert!(
+        radius.is_null() || (1..=64).contains(&radius.as_u64().unwrap()),
+        "unexpected radius {radius}"
+    );
+}
