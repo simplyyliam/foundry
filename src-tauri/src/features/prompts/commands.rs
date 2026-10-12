@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use tauri::State;
 
-use super::{HandoffResult, PromptFile, PromptsStore, TaskPromptOptions, TaskPromptResult};
+use super::{
+    FixPrompt, HandoffResult, PromptFile, PromptsStore, TaskPromptOptions, TaskPromptResult,
+};
 use crate::core::AppError;
 
 type Store<'a> = State<'a, Arc<PromptsStore>>;
@@ -41,6 +43,21 @@ pub async fn generate_task_prompt(
 ) -> Result<TaskPromptResult, AppError> {
     blocking(&store, move |s| {
         s.generate_task_prompt(&project_id, &slice_id, &agent_id, options)
+    })
+    .await
+}
+
+/// One ready-to-send fix prompt per agent for the bugs in the slice's reports. Read-only:
+/// writes nothing and sends nothing.
+#[tauri::command]
+#[specta::specta]
+pub async fn generate_fix_prompts(
+    store: Store<'_>,
+    project_id: String,
+    slice_id: String,
+) -> Result<Vec<FixPrompt>, AppError> {
+    blocking(&store, move |s| {
+        s.generate_fix_prompts(&project_id, &slice_id)
     })
     .await
 }

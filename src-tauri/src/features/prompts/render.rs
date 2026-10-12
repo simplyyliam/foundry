@@ -4,7 +4,10 @@ use std::collections::BTreeMap;
 
 use super::disk::{Agent, Plan, Slice, BAKERY_MANIFEST, DESIGN_MANIFEST};
 use crate::core::hook_policy;
-use crate::core::report::{self, RequirementReport, RequirementStatus, SliceReport, TestRun};
+use crate::core::report::{
+    self, Bug, BugSeverity, Bugs, FailingTest, RequirementReport, RequirementStatus, SliceReport,
+    TestRun,
+};
 use crate::core::text::normalize_ws;
 use crate::core::AppError;
 
@@ -194,6 +197,50 @@ fn confirmed_requirements<'a>(
 
 // ---------- task prompt ----------
 
+/// The section a QA or Test Engineer's task prompt carries before "Done means".
+pub const QA_SECTION: &str = "## Testing rules\n\n\
+- Write tests and report findings. Do not change product code: change only test files \
+inside your boundaries.\n\
+- Keep every assertion strict, so a failing test stays red until the bug is fixed. Don't \
+skip a failing test, loosen it or mark it as expected to fail.\n\
+- Commit nothing.\n\
+- List every bug you find in the report's `bugs` list, in the shape below: its steps to \
+reproduce, the failing test and its file, and the code location you suspect.\n";
+
+/// Follows the report sample in a QA or Test Engineer's "Done means".
+pub const QA_BUGS_SENTENCE: &str = "List every bug in `bugs`, one entry each: a unique `id`, \
+     `severity` (`high`, `medium` or `low`), a one-line `title`, the `requirementIds` it \
+     breaks, the `steps` to reproduce it, its `failingTests` (each with its `file` and test \
+     `name`), and its `suspectedLocations` (repo-relative paths, with a line number when you \
+     know it, e.g. `src/feed/keys.ts:12`). Add `ownerHint` (an agent id from \
+     `agents/roles.json`) only when the locations don't make it clear who should fix it. \
+     With no bugs, leave `bugs` out.";
+
+/// A pretty-printed report without its trailing `"bugs": []`: only QA roles list bugs, so the
+/// others are shown the shape without it (it's optional when read).
+pub fn without_empty_bugs(json: &str) -> String {
+    match json.strip_suffix(",\n  \"bugs\": []\n}") {
+        Some(head) => format!("{head}\n}}"),
+        None => json.to_string(),
+    }
+}
+
+fn sample_bug() -> Bug {
+    Bug {
+        id: "b-1".into(),
+        severity: BugSeverity::High,
+        title: "<what is wrong, in one line>".into(),
+        requirement_ids: vec!["<requirement id>".into()],
+        steps: vec!["<step 1>".into(), "<step 2>".into()],
+        failing_tests: vec![FailingTest {
+            file: "<test file>".into(),
+            name: "<test name>".into(),
+        }],
+        suspected_locations: vec!["<path>:<line>".into()],
+        owner_hint: Some("<agent id, optional>".into()),
+    }
+}
+
 pub struct TaskInputs<'a> {
     pub plan: &'a Plan,
     pub slice: &'a Slice,
@@ -331,6 +378,12 @@ pub fn task_prompt(input: &TaskInputs<'_>) -> Result<String, AppError> {
         ));
     }
 
+    // 7b. QA and Test Engineer roles.
+    if agent.is_qa() {
+        out.push_str(QA_SECTION);
+        out.push('\n');
+    }
+
     // 8. Done means, and the report.
     out.push_str("## Done means\n\n");
     out.push_str(
@@ -355,11 +408,22 @@ pub fn task_prompt(input: &TaskInputs<'_>) -> Result<String, AppError> {
         }],
         blockers: vec![],
         notes: String::new(),
+        bugs: if agent.is_qa() {
+            Bugs(vec![sample_bug()])
+        } else {
+            Bugs::default()
+        },
     };
     let json = serde_json::to_string_pretty(&sample)
         .map_err(|err| AppError::internal(format!("serialize the sample report: {err}")))?;
+    let json = without_empty_bugs(&json);
     out.push_str("```json\n");
     out.push_str(&json);
     out.push_str("\n```\n");
+    if agent.is_qa() {
+        out.push('\n');
+        out.push_str(QA_BUGS_SENTENCE);
+        out.push('\n');
+    }
     Ok(out)
 }

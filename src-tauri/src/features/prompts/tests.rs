@@ -588,7 +588,7 @@ fn the_report_format_in_the_prompt_parses_as_the_shared_report_type() {
     assert_eq!(report.slice_id, "s-feed");
     assert_eq!(report.agent, "ada");
     assert_eq!(
-        serde_json::to_string_pretty(&report).unwrap(),
+        render::without_empty_bugs(&serde_json::to_string_pretty(&report).unwrap()),
         text[start..end]
     );
     assert!(text.ends_with("```\n"), "the report block ends the prompt");
@@ -1180,5 +1180,286 @@ fn task_prompts_are_unchanged_by_project_rules_and_carry_the_sentence() {
         render::PROJECT_RULES_SENTENCE,
         "Project rules (in the hand-off) apply to everything you build; you are not asked to \
          report on them."
+    );
+}
+
+// ---------- QA task prompts and fix prompts ----------
+
+/// The ready team plus a QA engineer (from the handbook) and a Product Lead.
+fn qa_team(fix: &Fix) {
+    let mut qa = agent_json(
+        "qa",
+        "Quinn",
+        "QA/Test Engineer",
+        &["e2e/**", "**/*.test.ts"],
+    );
+    qa["sourceHandbookRoleId"] = json!("qa-test-engineer");
+    let mut lead = agent_json("pl", "Pat", "Product Lead", &["docs/**"]);
+    lead["sourceHandbookRoleId"] = json!("product-lead");
+    fix.json(
+        "agents/roles.json",
+        &json!({
+            "version": 1,
+            "agents": [
+                agent_json("ada", "Ada", "Backend engineer", &["src/server/**", "src/features/feed/**"]),
+                agent_json("lin", "Lin", "Frontend engineer", &["src/**"]),
+                qa,
+                lead,
+            ]
+        }),
+    );
+}
+
+fn bug_json(id: &str, severity: &str, locations: &[&str]) -> Value {
+    json!({
+        "id": id,
+        "severity": severity,
+        "title": format!("{id} is broken"),
+        "requirementIds": ["r-3"],
+        "steps": ["open the feed", format!("trigger {id}")],
+        "failingTests": [{ "file": format!("e2e/{id}.spec.ts"), "name": format!("{id} works") }],
+        "suspectedLocations": locations
+    })
+}
+
+/// QA's report for s-feed with these bugs.
+fn qa_report(fix: &Fix, bugs: Value) {
+    fix.json(
+        ".foundry/reports/s-feed.qa.json",
+        &json!({
+            "sliceId": "s-feed",
+            "agent": "qa",
+            "requirements": [{ "id": "r-3", "status": "not_met", "evidence": "test j_moves" }],
+            "testsRun": [{ "command": "pnpm e2e", "result": "1 failed" }],
+            "blockers": [],
+            "notes": "",
+            "bugs": bugs
+        }),
+    );
+}
+
+fn routed(prompts: &[FixPrompt]) -> Vec<(&str, Vec<&str>)> {
+    prompts
+        .iter()
+        .map(|p| {
+            (
+                p.agent_id.as_str(),
+                p.bug_ids.iter().map(String::as_str).collect(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn the_qa_task_prompt_carries_the_testing_rules_and_the_bug_shape() {
+    let fix = Fix::ready();
+    qa_team(&fix);
+    let text = fix
+        .repo
+        .read(&fix.task("s-feed", "qa", false).unwrap().path);
+    for part in [
+        "## Testing rules",
+        "Write tests and report findings. Do not change product code",
+        "Keep every assertion strict, so a failing test stays red until the bug is fixed.",
+        "- Commit nothing.",
+        "List every bug you find in the report's `bugs` list",
+        "steps to reproduce, the failing test and its file, and the code location",
+        "`suspectedLocations`",
+    ] {
+        assert!(text.contains(part), "missing: {part}");
+    }
+    assert!(text.find("## Testing rules") < text.find("## Done means"));
+
+    // Its sample report parses, and carries one bug in the shared shape.
+    let start = text.find("```json\n").unwrap() + "```json\n".len();
+    let end = start + text[start..].find("\n```").unwrap();
+    let report: SliceReport = serde_json::from_str(&text[start..end]).unwrap();
+    assert_eq!(report.bugs.len(), 1);
+    let raw: Value = serde_json::from_str(&text[start..end]).unwrap();
+    assert!(crate::core::report::bug_problems(&raw).is_empty());
+
+    // Other roles' prompts don't change.
+    let ada = fix
+        .repo
+        .read(&fix.task("s-feed", "ada", false).unwrap().path);
+    assert!(!ada.contains("## Testing rules") && !ada.contains("\"bugs\""));
+}
+
+#[test]
+fn a_custom_role_titled_test_engineer_counts_as_qa() {
+    let fix = Fix::ready();
+    fix.json(
+        "agents/roles.json",
+        &json!({ "version": 1, "agents": [agent_json("te", "Tess", "Test Engineer", &["e2e/**"])] }),
+    );
+    let text = fix
+        .repo
+        .read(&fix.task("s-feed", "te", false).unwrap().path);
+    assert!(text.contains("## Testing rules"));
+}
+
+#[test]
+fn fix_prompts_for_a_legacy_report_without_bugs_are_empty() {
+    let fix = Fix::ready();
+    qa_team(&fix);
+    fix.json(
+        ".foundry/reports/s-feed.json",
+        &json!({
+            "sliceId": "s-feed", "agent": "ada", "requirements": [], "testsRun": [],
+            "blockers": [], "notes": ""
+        }),
+    );
+    assert!(fix
+        .store
+        .generate_fix_prompts(P, "s-feed")
+        .unwrap()
+        .is_empty());
+    assert!(fix
+        .store
+        .generate_fix_prompts(P, "s-share")
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn bugs_go_to_the_agent_with_the_longest_matching_write_path() {
+    let fix = Fix::ready();
+    qa_team(&fix);
+    // src/features/feed/** (ada) beats src/** (lin); src/ui/** only lin has.
+    qa_report(
+        &fix,
+        json!([
+            bug_json("b-1", "low", &["src/features/feed/keys.ts:12"]),
+            bug_json("b-2", "medium", &["src/ui/list.tsx"]),
+            bug_json("b-3", "high", &["src\\features\\feed\\page.ts:3:1"]),
+        ]),
+    );
+    let prompts = fix.store.generate_fix_prompts(P, "s-feed").unwrap();
+    // One prompt per agent, team order; within it, high severity first.
+    assert_eq!(
+        routed(&prompts),
+        [("ada", vec!["b-3", "b-1"]), ("lin", vec!["b-2"])]
+    );
+    assert_eq!(prompts[0].agent_name, "Ada");
+    assert!(prompts[0].prompt.contains("### 1. b-3 is broken (b-3)"));
+    assert!(prompts[0].prompt.contains("### 2. b-1 is broken (b-1)"));
+    assert!(prompts[0]
+        .prompt
+        .contains("- `src/features/feed/keys.ts:12`"));
+}
+
+#[test]
+fn a_bug_under_two_owners_is_split_with_each_ones_locations() {
+    let fix = Fix::ready();
+    qa_team(&fix);
+    qa_report(
+        &fix,
+        json!([bug_json(
+            "b-1",
+            "high",
+            &["src/server/api.ts:4", "src/ui/list.tsx"]
+        )]),
+    );
+    let prompts = fix.store.generate_fix_prompts(P, "s-feed").unwrap();
+    assert_eq!(
+        routed(&prompts),
+        [("ada", vec!["b-1"]), ("lin", vec!["b-1"])]
+    );
+    let (ada, lin) = (&prompts[0].prompt, &prompts[1].prompt);
+    let where_ada = ada.split("Where:\n").nth(1).unwrap();
+    assert!(where_ada.starts_with("- `src/server/api.ts:4`\n"));
+    assert!(ada.contains("- `src/ui/list.tsx` (Lin fixes it)"));
+    let where_lin = lin.split("Where:\n").nth(1).unwrap();
+    assert!(where_lin.starts_with("- `src/ui/list.tsx`\n"));
+    assert!(lin.contains("- `src/server/api.ts:4` (Ada fixes it)"));
+}
+
+#[test]
+fn an_unplaced_bug_goes_to_its_owner_hint_else_the_product_lead() {
+    let fix = Fix::ready();
+    qa_team(&fix);
+    let mut hinted = bug_json("b-1", "high", &["lib/vendor.js"]);
+    hinted["ownerHint"] = json!("ada");
+    let mut bad_hint = bug_json("b-2", "high", &[]);
+    bad_hint["ownerHint"] = json!("nobody");
+    let none = bug_json("b-3", "low", &["config/x.yml"]);
+    // A location match beats the hint.
+    let mut overruled = bug_json("b-4", "low", &["src/ui/a.tsx"]);
+    overruled["ownerHint"] = json!("ada");
+    qa_report(&fix, json!([hinted, bad_hint, none, overruled]));
+    let prompts = fix.store.generate_fix_prompts(P, "s-feed").unwrap();
+    assert_eq!(
+        routed(&prompts),
+        [
+            ("ada", vec!["b-1"]),
+            ("lin", vec!["b-4"]),
+            ("pl", vec!["b-2", "b-3"])
+        ]
+    );
+    assert!(prompts[2].prompt.starts_with("You are Pat, Product Lead."));
+
+    // No Product Lead and nothing else to go on: refused, naming the bug.
+    let fix = Fix::ready();
+    qa_report(&fix, json!([bug_json("b-9", "low", &["config/x.yml"])]));
+    let err = fix.store.generate_fix_prompts(P, "s-feed").unwrap_err();
+    assert_eq!(err.code, ErrorCode::InvalidInput);
+    assert!(err.message.contains("b-9"));
+}
+
+#[test]
+fn a_fix_prompt_is_self_contained_with_every_rule_and_test_name() {
+    let fix = Fix::ready();
+    qa_team(&fix);
+    qa_report(
+        &fix,
+        json!([
+            bug_json("b-1", "high", &["src/server/a.ts"]),
+            bug_json("b-2", "low", &["src/server/b.ts"]),
+        ]),
+    );
+    let before = snapshot(fix.repo.path());
+    let prompts = fix.store.generate_fix_prompts(P, "s-feed").unwrap();
+    assert_eq!(snapshot(fix.repo.path()), before, "read-only");
+    let text = &prompts[0].prompt;
+    assert!(text.starts_with("You are Ada, Backend engineer. Read agents/roles/ada.md first.\n"));
+    for part in [
+        "## Fix 2 bugs in slice: Feed",
+        "Requirements: r-3",
+        "1. open the feed\n2. trigger b-1\n",
+        "- `b-1 works` in `e2e/b-1.spec.ts`",
+        "- `b-2 works` in `e2e/b-2.spec.ts`",
+        "- Fix the product code, not the tests.",
+        "- Do not weaken or delete any assertion",
+        "- Stay inside your own write paths:\n  - `src/server/**`\n  - `src/features/feed/**`\n",
+        "If a fix needs a file outside them, don't change it: report it as a blocker",
+        "Run the failing tests above, then the full unit and e2e suites",
+        "Report the results with requirement ids: update `.foundry/reports/s-feed.ada.json`. \
+         Set r-3",
+    ] {
+        assert!(text.contains(part), "missing: {part}\n---\n{text}");
+    }
+}
+
+#[test]
+fn fix_prompts_need_a_known_slice_a_team_and_valid_reports() {
+    let fix = Fix::ready();
+    assert_code(
+        fix.store.generate_fix_prompts(P, "nope"),
+        ErrorCode::NotFound,
+    );
+    assert_code(
+        fix.store.generate_fix_prompts(P, "../x"),
+        ErrorCode::InvalidInput,
+    );
+    fix.repo
+        .write(".foundry/reports/s-feed.qa.json", "{ not json");
+    assert_code(
+        fix.store.generate_fix_prompts(P, "s-feed"),
+        ErrorCode::InvalidJson,
+    );
+    std::fs::remove_file(fix.repo.path().join("agents/roles.json")).unwrap();
+    assert_code(
+        fix.store.generate_fix_prompts(P, "s-feed"),
+        ErrorCode::TeamNotConfirmed,
     );
 }

@@ -1339,6 +1339,40 @@ fn a_requirement_in_neither_report_is_unreported_and_an_unknown_one_names_its_ag
 }
 
 #[test]
+fn a_bad_bugs_list_is_a_warn_finding_and_the_report_still_loads() {
+    let env = Env::new();
+    env.commands(&[]);
+    let mut qa = report_by("bo", json!([met("r-1", "test a"), met("r-2", "test b")]));
+    qa["bugs"] = json!([
+        { "id": "b-1", "severity": "critical", "title": "x", "requirementIds": [],
+          "steps": [], "failingTests": [], "suspectedLocations": [] },
+        { "id": "b-2", "severity": "low", "title": "J skips", "requirementIds": ["r-2"],
+          "steps": ["press J"], "failingTests": [], "suspectedLocations": ["src/a.ts"] }
+    ]);
+    env.write_agent_report("bo", &qa);
+
+    let v = env.verify().unwrap();
+    let bad: Vec<&Finding> = v
+        .review
+        .findings
+        .iter()
+        .filter(|f| f.code == code::INVALID_BUG)
+        .collect();
+    assert_eq!(bad.len(), 2, "{bad:?}");
+    assert!(bad.iter().all(|f| f.severity == FindingSeverity::Warn
+        && f.agent.as_deref() == Some("bo")
+        && f.path.as_deref() == Some(".foundry/reports/s-feed.bo.json")));
+    assert!(bad[0].message.contains("bug 1 isn't in the bug shape"));
+    assert!(bad[1].message.contains("bug b-2 names no failing test"));
+    let listed = env.store.list_reports(P, S).unwrap();
+    assert_eq!(
+        listed[0].report.bugs.len(),
+        1,
+        "the well-formed bug is kept"
+    );
+}
+
+#[test]
 fn every_reports_blockers_and_evidence_are_checked_and_labeled_with_the_agent() {
     let env = Env::new();
     env.commands(&[]);
@@ -2357,7 +2391,7 @@ mod guidance_rules {
             .filter(|l| l.trim_start().starts_with("pub const"))
             .filter_map(|l| l.split('"').nth(1))
             .collect();
-        assert_eq!(codes.len(), 17, "{codes:?}");
+        assert_eq!(codes.len(), 18, "{codes:?}");
         for c in codes {
             assert!(
                 guidance::has_rule(c),
@@ -2654,6 +2688,7 @@ mod guidance_rules {
         assert_eq!(group(code::NO_TEST_COMMAND, Warn), FindingGroup::FollowUp);
         assert_eq!(group(code::BOUNDARY_SKIPPED, Warn), FindingGroup::FollowUp);
         assert_eq!(group(code::REPORTED_BLOCKER, Warn), FindingGroup::Decide);
+        assert_eq!(group(code::INVALID_BUG, Warn), FindingGroup::FollowUp);
         assert_eq!(group(code::PARTLY_REPORTED, Info), FindingGroup::Info);
         assert_eq!(
             group(code::AMBIGUOUS_SHELL_CHANGE, Info),

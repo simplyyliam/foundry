@@ -588,3 +588,19 @@ Additive. No new error codes, no new events.
 | type | `GuidanceActionKind` | — → `"mark_done" \| "commit" \| "send_to_agent" \| "override" \| "reverify" \| "commit_setup" \| "stop_dev_server" \| "manual"` | |
 | type | `GuidedFinding` | — → `{ findingId: string, plain: string, whatToDo: string, group: FindingGroup, output: string \| null, actionIds: string[] }` | `findingId`: `f<index>` into the review's `findings`, or `r:<requirementId>` for a requirement reported `not_met`/`partly`. `output` (beyond the spec): a failed test command's last 40 lines. `actionIds` (beyond the spec): which `actions` belong to it. |
 | type | `FindingGroup` | — → `"fix" \| "decide" \| "override" \| "follow_up" \| "info" \| "ignore"` | `fix` → `needs_fix`, `decide` → `needs_decision`, `override` → `safe_to_override`; the rest don't move the headline. |
+
+## QA bugs list and fix prompts
+
+Additive. No new error codes, no new events.
+
+| Kind | Name | Before → After | Why |
+| --- | --- | --- | --- |
+| type | `SliceReport` | adds `bugs?: Bugs` | Optional list of bugs (QA and Test Engineer roles fill it in). Missing or `null` in older reports → `[]`; always written back as a list. Reading never fails on it: entries that aren't in the `Bug` shape are dropped and named by an `invalid_bug` finding. Also reaches `AgentReport.report` (`list_reports`) and `get_report`. |
+| type | `Bugs` | — → `Bug[]` | The list type above (a newtype in Rust so a malformed list is dropped rather than failing the report). |
+| type | `Bug` | — → `{ id: string, severity: BugSeverity, title: string, requirementIds: string[], steps: string[], failingTests: FailingTest[], suspectedLocations: string[], ownerHint?: string \| null }` | `id`: letters, digits, `-`, `_`, unique in the report. `suspectedLocations`: repo-relative paths, optionally `:line`, `:line:col` or `#L…`. `ownerHint`: an agent id. Extra fields are ignored. |
+| type | `BugSeverity` | — → `"high" \| "medium" \| "low"` | |
+| type | `FailingTest` | — → `{ file: string, name: string }` | |
+| finding code | `invalid_bug` | — → `warn`, with `agent` and `path` set | A problem with a report's bugs list: an entry not in the bug shape, an empty or repeated id or empty title (entry dropped), or missing steps, failing test or location (entry kept). Guidance groups it as `follow_up` with a "fix the bugs list" message to the agent. |
+| command | `generate_task_prompt` | unchanged signature; for a QA or Test Engineer agent the prompt adds a "Testing rules" section and a `bugs` entry in the sample report | QA = `sourceHandbookRoleId` `qa-test-engineer`, or a custom role whose title has the word "QA", "Tester" or "Test Engineer". Other roles' prompts are byte-for-byte unchanged. |
+| command | `generate_fix_prompts` | — → `generateFixPrompts(projectId: string, sliceId: string): FixPrompt[]` | One ready-to-send prompt per agent (team order) for the bugs in every report of the slice. Owner: per location, the agent whose matching write glob has the longest literal prefix (ties → first in the team); a bug with locations under two owners goes to both, each with their own locations; no location matched → `ownerHint` (if a team agent) → the Product Lead. Bugs are numbered, high severity first. Read-only: writes and sends nothing. Errors: `invalid_input` (bad slice id, or a bug with no owner and no Product Lead), `not_found` (project or slice), `team_not_confirmed`, `invalid_json` (a report that isn't a slice report), `folder_missing`. Empty list when no report lists bugs. |
+| type | `FixPrompt` | — → `{ agentId: string, agentName: string, bugIds: string[], prompt: string }` | `bugIds` in the prompt's numbered order. |

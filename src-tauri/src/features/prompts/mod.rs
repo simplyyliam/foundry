@@ -9,6 +9,7 @@
 
 pub mod commands;
 mod disk;
+mod fix;
 mod render;
 
 use std::collections::BTreeMap;
@@ -22,8 +23,9 @@ use specta::Type;
 
 use crate::core::paths::{self, PathKind};
 use crate::core::repos::RepoIndex;
-use crate::core::{launch_message, repo_write, AppError, ErrorCode};
+use crate::core::{launch_message, repo_write, report, AppError, ErrorCode};
 
+pub use fix::FixPrompt;
 pub use render::FORCED_PREFIX;
 
 /// `launch_message` returns at most this many characters (built in `core::launch_message`).
@@ -344,6 +346,50 @@ impl PromptsStore {
             unfinished_dependencies: unfinished,
             warnings,
         })
+    }
+
+    /// One fix prompt per agent for the bugs the slice's reports list (see `fix::build` for
+    /// the routing). Gates: a team is confirmed and the slice exists. A report that isn't a
+    /// slice report → `invalid_json`. Read-only: writes nothing, sends nothing.
+    pub fn generate_fix_prompts(
+        &self,
+        project_id: &str,
+        slice_id: &str,
+    ) -> Result<Vec<FixPrompt>, AppError> {
+        let repo = self.repos.repo(project_id)?;
+        let plan = disk::plan(&repo)?;
+        check_file_id("slice id", slice_id)?;
+        let slice = plan
+            .slice(slice_id)
+            .ok_or_else(|| AppError::not_found(format!("no slice with id {slice_id}")))?;
+        let team = require_team(&repo)?;
+        for agent in &team {
+            check_agent(agent)?;
+        }
+        let mut bugs = Vec::new();
+        for rel in report::slice_report_paths(&repo, slice_id)? {
+            // Gone since it was listed: as if it never was.
+            let Some(text) = repo_write::read_to_string(&repo, &rel)? else {
+                continue;
+            };
+            let parsed: report::SliceReport =
+                serde_json::from_str(text.trim_start_matches('\u{feff}')).map_err(|err| {
+                    AppError::new(
+                        ErrorCode::InvalidJson,
+                        format!("{rel} isn't a valid slice report ({err})"),
+                    )
+                })?;
+            bugs.extend(parsed.bugs.0);
+        }
+        let prompts = fix::build(slice, &team, &bugs)?;
+        tracing::info!(
+            project_id,
+            slice_id,
+            bugs = bugs.len(),
+            prompts = prompts.len(),
+            "fix prompts generated"
+        );
+        Ok(prompts)
     }
 
     /// One line that starts a session. `prompt_file` must be an existing file under

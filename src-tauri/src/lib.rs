@@ -111,6 +111,7 @@ pub fn specta_builder<R: Runtime>() -> tauri_specta::Builder<R> {
             design::commands::generate_agents,
             prompts::commands::generate_handoff,
             prompts::commands::generate_task_prompt,
+            prompts::commands::generate_fix_prompts,
             prompts::commands::launch_message,
             prompts::commands::list_prompts,
             prompts::commands::read_prompt,

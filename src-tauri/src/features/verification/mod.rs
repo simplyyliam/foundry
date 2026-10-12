@@ -94,6 +94,9 @@ pub mod code {
     /// A file that changed during this slice's session without an edit tool while another
     /// slice's session was running too, so it can't be told whose it is (info).
     pub const AMBIGUOUS_SHELL_CHANGE: &str = "ambiguous_shell_change";
+    /// A problem with a report's `bugs` list (warn): an entry that isn't in the bug shape, or
+    /// one missing its steps, failing test or location.
+    pub const INVALID_BUG: &str = "invalid_bug";
 }
 
 // ---------- types ----------
@@ -1300,6 +1303,21 @@ impl VerificationStore {
                         format!("{} reported a blocker: {blocker}", l.agent),
                     )
                     .agent(&l.agent),
+                );
+            }
+        }
+
+        // 4b. Every report's bugs list is in the shape fix prompts need.
+        for l in c.reports {
+            for problem in report::bug_problems(&l.value) {
+                findings.push(
+                    Finding::new(
+                        Warn,
+                        code::INVALID_BUG,
+                        format!("{}'s bugs list: {problem}", l.agent),
+                    )
+                    .agent(&l.agent)
+                    .path(&l.path),
                 );
             }
         }

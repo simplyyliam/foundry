@@ -295,6 +295,7 @@ const RULES: &[(&str, Rule)] = &[
     (code::OWNED_BY_OTHER_SLICE, owned_by_other_slice),
     (code::SHARED_FILE_TOUCHED, shared_file_touched),
     (code::AMBIGUOUS_SHELL_CHANGE, ambiguous_shell_change),
+    (code::INVALID_BUG, invalid_bug),
 ];
 
 fn unreported_requirement(c: &Ctx<'_>) -> Guided {
@@ -602,6 +603,28 @@ fn reported_blocker(c: &Ctx<'_>) -> Guided {
         c.agent(),
         "Answer the blocker",
         format!("About your blocker \"{blocker}\": <your answer>. Then continue."),
+    ))
+}
+
+fn invalid_bug(c: &Ctx<'_>) -> Guided {
+    let problem = c
+        .finding
+        .message
+        .split_once(": ")
+        .map_or(c.finding.message.as_str(), |(_, p)| p);
+    Guided::new(
+        FindingGroup::FollowUp,
+        format!("A report's bugs list needs fixing: {problem}."),
+        "Doesn't block. Ask the agent to fix the entry so a fix prompt can be made from it.",
+    )
+    .action(c.send(
+        c.agent(),
+        "Ask to fix the bugs list",
+        format!(
+            "In your report's bugs list, {problem}. Fix that entry: give it an id, severity \
+             (high, medium or low), title, requirement ids, steps to reproduce, the failing \
+             test and its file, and the code location. Don't change any code."
+        ),
     ))
 }
 

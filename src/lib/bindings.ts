@@ -249,6 +249,11 @@ export const commands = {
 	 *  `dependencies_not_done`, unless `force`.
 	 */
 	generateTaskPrompt: (projectId: string, sliceId: string, agentId: string, options: TaskPromptOptions) => typedError<TaskPromptResult, AppError>(__TAURI_INVOKE("generate_task_prompt", { projectId, sliceId, agentId, options })),
+	/**
+	 *  One ready-to-send fix prompt per agent for the bugs in the slice's reports. Read-only:
+	 *  writes nothing and sends nothing.
+	 */
+	generateFixPrompts: (projectId: string, sliceId: string) => typedError<FixPrompt[], AppError>(__TAURI_INVOKE("generate_fix_prompts", { projectId, sliceId })),
 	/**  One line that starts an agent's session on a prompt file under `.foundry/prompts/`. */
 	launchMessage: (projectId: string, agentId: string, promptFile: string) => typedError<string, AppError>(__TAURI_INVOKE("launch_message", { projectId, agentId, promptFile })),
 	listPrompts: (projectId: string) => typedError<PromptFile[], AppError>(__TAURI_INVOKE("list_prompts", { projectId })),
@@ -298,6 +303,11 @@ export const commands = {
 	testsRun: TestRun[],
 	blockers: string[],
 	notes: string,
+	/**
+	 *  Missing in older reports (and in most non-QA ones). Entries that don't parse are
+	 *  dropped here; [`bug_problems`] names them.
+	 */
+	bugs?: Bugs,
 } | null, AppError>(__TAURI_INVOKE("get_report", { projectId, sliceId })),
 	/**
 	 *  Every report of the slice, each with its file and agent: the legacy `<sliceId>.json`
@@ -568,6 +578,31 @@ export type BakeryState = {
 	/**  Absolute path of `docs/bakery/`; an item's image is at `<dir>/<file>`. */
 	dir: string,
 };
+
+/**  One bug a report lists (QA and Test Engineer roles fill these in). */
+export type Bug = {
+	/**  Unique within the report, e.g. `b-1`. */
+	id: string,
+	severity: BugSeverity,
+	title: string,
+	requirementIds: string[],
+	/**  Steps to reproduce, in order. */
+	steps: string[],
+	failingTests: FailingTest[],
+	/**  Repo-relative paths, optionally with a line (`src/a.ts:12`). */
+	suspectedLocations: string[],
+	/**  An agent id that should fix it, when the locations don't say. */
+	ownerHint?: string | null,
+};
+
+export type BugSeverity = "high" | "medium" | "low";
+
+/**
+ *  A report's bugs list. Reading it never fails: it keeps the well-formed entries (see
+ *  [`bug_problems`]), and anything that isn't a list is empty. A hand-written `Deserialize`
+ *  rather than `deserialize_with`, so the exported type stays one plain `Bug[]`.
+ */
+export type Bugs = Bug[];
 
 export type ChangedFile = {
 	/**  Repo-relative, `/`-separated. For a rename, the new path. */
@@ -883,6 +918,14 @@ export type EventMeta = {
 	ts: number,
 };
 
+/**  A test that fails because of a bug and passes once it's fixed. */
+export type FailingTest = {
+	/**  Repo-relative test file. */
+	file: string,
+	/**  The test's name as the runner prints it. */
+	name: string,
+};
+
 export type Feature = {
 	family: string,
 	description: string,
@@ -924,6 +967,16 @@ export type FindingGroup =
 
 /**  Ordered: `info < warn < danger`. */
 export type FindingSeverity = "info" | "warn" | "danger";
+
+/**  One agent's fix prompt. */
+export type FixPrompt = {
+	agentId: string,
+	agentName: string,
+	/**  The bugs in the prompt, in its numbered order. */
+	bugIds: string[],
+	/**  Self-contained text, ready to send as the agent's next message. */
+	prompt: string,
+};
 
 /**  Protected globs that had to be put back on an agent. */
 export type FloorRestored = {
@@ -1550,6 +1603,11 @@ export type SliceReport = {
 	testsRun: TestRun[],
 	blockers: string[],
 	notes: string,
+	/**
+	 *  Missing in older reports (and in most non-QA ones). Entries that don't parse are
+	 *  dropped here; [`bug_problems`] names them.
+	 */
+	bugs?: Bugs,
 };
 
 export type SliceStatus = "queued" | "in_progress" | "done";

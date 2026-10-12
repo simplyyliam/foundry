@@ -187,6 +187,45 @@ pub struct Agent {
     pub title: String,
     #[serde(default)]
     pub write_globs: Vec<String>,
+    /// The Role Handbook role it was made from; `None` for a custom role.
+    #[serde(default)]
+    pub source_handbook_role_id: Option<String>,
+}
+
+/// The Role Handbook's ids for the roles prompts treat specially (the team feature's
+/// starter set).
+pub const QA_ROLE: &str = "qa-test-engineer";
+pub const PRODUCT_LEAD_ROLE: &str = "product-lead";
+
+impl Agent {
+    fn title_words(&self) -> Vec<String> {
+        self.title
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|w| !w.is_empty())
+            .map(str::to_lowercase)
+            .collect()
+    }
+
+    /// A QA or Test Engineer: made from the handbook's QA role, or a custom role whose title
+    /// has the word "QA", or "test" next to "engineer" or "tester".
+    pub fn is_qa(&self) -> bool {
+        if let Some(role) = &self.source_handbook_role_id {
+            return role == QA_ROLE;
+        }
+        let words = self.title_words();
+        words.iter().any(|w| w == "qa" || w == "tester")
+            || words
+                .windows(2)
+                .any(|p| p[0] == "test" && p[1] == "engineer")
+    }
+
+    /// Made from the handbook's Product Lead role, or a custom role titled "Product Lead".
+    pub fn is_product_lead(&self) -> bool {
+        match &self.source_handbook_role_id {
+            Some(role) => role == PRODUCT_LEAD_ROLE,
+            None => self.title_words() == ["product", "lead"],
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
