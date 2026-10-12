@@ -1,5 +1,5 @@
-import { TriangleAlert } from "lucide-react";
-import { useState } from "react";
+import { ChevronDown, FileText, TriangleAlert } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import {
   Dialog,
   DialogContent,
@@ -8,6 +8,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import type { AppError } from "@/lib/bindings";
@@ -23,26 +24,53 @@ interface NotVerifiedDialogProps {
    * call (only feature hooks call bindings); a refusal stays in the dialog, as-is.
    */
   onOverride: (reason: string) => Promise<OverrideOutcome>;
+  /** Reasons to start from (the guidance's `reasonTemplate`s); `<reason>` is for the user to fill in. */
+  templates?: readonly string[];
+  /** What the override sets aside, in plain words: "You are overriding: …". */
+  overriding?: readonly string[];
 }
+
+/** The part of a template the user still has to write. */
+const BLANK = "<reason>";
 
 /**
  * Asked after `setSliceStatus(done)` answers `not_verified`: mark it done anyway, with a
  * required reason the backend records as a decision. Used by the Verification page and the
  * Blueprint's status control.
  */
-export function NotVerifiedDialog({ open, onOpenChange, onOverride }: NotVerifiedDialogProps) {
+export function NotVerifiedDialog({ open, onOpenChange, onOverride, templates = [], overriding = [] }: NotVerifiedDialogProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md" showCloseButton={false}>
         {/* Mounts with the dialog: fresh state each time, and press feedback can attach. */}
-        <OverrideForm onOverride={onOverride} onClose={() => onOpenChange(false)} />
+        <OverrideForm onOverride={onOverride} templates={templates} overriding={overriding} onClose={() => onOpenChange(false)} />
       </DialogContent>
     </Dialog>
   );
 }
 
-function OverrideForm({ onOverride, onClose }: { onOverride: NotVerifiedDialogProps["onOverride"]; onClose: () => void }) {
+function OverrideForm({
+  onOverride,
+  templates,
+  overriding,
+  onClose,
+}: Required<Pick<NotVerifiedDialogProps, "onOverride" | "templates" | "overriding">> & { onClose: () => void }) {
   const [reason, setReason] = useState("");
+  const reasonRef = useRef<HTMLTextAreaElement>(null);
+  // After a template fills the box, select its `<reason>` so typing replaces it.
+  const selectBlank = useRef(false);
+  const choices = [...new Set(templates.map((template) => template.trim()).filter((template) => template !== ""))];
+
+  useEffect(() => {
+    if (!selectBlank.current) return;
+    selectBlank.current = false;
+    const box = reasonRef.current;
+    const at = reason.indexOf(BLANK);
+    if (!box) return;
+    box.focus();
+    if (at >= 0) box.setSelectionRange(at, at + BLANK.length);
+    else box.setSelectionRange(reason.length, reason.length);
+  }, [reason]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<AppError | null>(null);
   const empty = reason.trim() === "";
@@ -71,11 +99,49 @@ function OverrideForm({ onOverride, onClose }: { onOverride: NotVerifiedDialogPr
           This slice has no passed verification. Mark it done anyway? The reason is kept as a decision on the slice.
         </DialogDescription>
       </DialogHeader>
+      {overriding.length > 0 && (
+        <div className="rounded-lg bg-muted/50 px-3 py-2 text-[12.5px] leading-snug">
+          <p className="font-medium">You are overriding:</p>
+          <ul className="mt-1 flex list-disc flex-col gap-0.5 pl-4 text-muted-foreground">
+            {overriding.map((line, index) => (
+              <li key={index} className="text-pretty">
+                {line}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       <div className="flex flex-col gap-2">
-        <Label htmlFor="not-verified-reason" className="text-[13px]">
-          Reason
-        </Label>
+        <div className="flex items-center justify-between gap-2">
+          <Label htmlFor="not-verified-reason" className="text-[13px]">
+            Reason
+          </Label>
+          {choices.length > 0 && (
+            <DropdownMenu>
+              <DropdownMenuTrigger render={<PressButton type="button" size="xs" variant="ghost" className="-my-1 text-muted-foreground" />}>
+                <FileText aria-hidden data-icon="inline-start" />
+                Use a template
+                <ChevronDown aria-hidden data-icon="inline-end" />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-80" finalFocus={reasonRef}>
+                {choices.map((template) => (
+                  <DropdownMenuItem
+                    key={template}
+                    className="items-start text-[12.5px] leading-snug font-normal"
+                    onClick={() => {
+                      selectBlank.current = true;
+                      setReason(template);
+                    }}
+                  >
+                    <span className="line-clamp-3 text-pretty">{template}</span>
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
+        </div>
         <Textarea
+          ref={reasonRef}
           id="not-verified-reason"
           autoFocus
           required

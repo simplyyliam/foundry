@@ -49,6 +49,7 @@ describe("Verification widget", () => {
     const qa = { ...agentReport("s-feed", "qa", { notes: "Checked empty and error states." }), writtenAt: "2026-10-01T15:30:00.000Z" };
     backend.respond("listReports", [builder, qa]);
     backend.respond("getVerification", null);
+    backend.respond("verificationGuidance", { headline: { kind: "stale", text: "Not verified yet." }, actions: [], findings: [] });
     backend.respond("commitStatus", commitStatus());
     backend.respond("agentList", []);
 
@@ -94,6 +95,7 @@ describe("Verification widget", () => {
     );
     backend.respond("getTeam", { agents: [] });
     backend.respond("getVerification", null);
+    backend.respond("verificationGuidance", { headline: { kind: "stale", text: "Not verified yet." }, actions: [], findings: [] });
     backend.respond("commitStatus", commitStatus());
     backend.respond("agentList", []);
     const builder = { ...agentReport("s-feed", "builder", { notes: "First pass." }), writtenAt: "2026-10-01T15:00:00.000Z" };

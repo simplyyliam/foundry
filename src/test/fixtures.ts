@@ -6,15 +6,19 @@ import type {
   AgentReport,
   ChangedFile,
   CommitStatus,
+  GuidanceAction,
+  GuidedFinding,
   ManagerDigest,
   Plan,
   PlanRequirement,
   PlanSummary,
+  SessionInfo,
   SliceDigest,
   SliceReport,
   SliceView,
   TeamAgent,
   TestCommands,
+  Verification,
 } from "@/lib/bindings";
 
 export const PROJECT_ID = "p-test";
@@ -117,4 +121,29 @@ export function commitStatus(overrides: Partial<CommitStatus> = {}): CommitStatu
     message: null,
     ...overrides,
   };
+}
+
+/** A saved verification of `sliceId`, passed with no findings unless overridden. */
+export function verification(overrides: Partial<Verification> & Pick<Verification, "sliceId">): Verification {
+  return {
+    stale: false,
+    passed: true,
+    findings: [],
+    testRuns: [],
+    report: sliceReport({ sliceId: overrides.sliceId, agent: "builder" }),
+    verifiedAt: Date.parse("2026-10-01T12:00:00.000Z"),
+    ...overrides,
+  };
+}
+
+export function guidedFinding(overrides: Partial<GuidedFinding> & Pick<GuidedFinding, "findingId" | "plain">): GuidedFinding {
+  return { whatToDo: "", group: "fix", output: null, actionIds: [], ...overrides };
+}
+
+export function guidanceAction(overrides: Partial<GuidanceAction> & Pick<GuidanceAction, "id" | "label" | "kind">): GuidanceAction {
+  return { agentId: null, message: null, reasonTemplate: null, ...overrides };
+}
+
+export function session(agentId: string, status: SessionInfo["status"] = "running"): SessionInfo {
+  return { agentId, projectId: PROJECT_ID, status, pid: status === "exited" ? null : 4242, exitCode: null, since: 1 };
 }

@@ -1,9 +1,9 @@
-import { Check, ChevronRight, CircleCheck, CircleX, History, LoaderCircle, UserRound } from "lucide-react";
+import { Check, ChevronRight, LoaderCircle } from "lucide-react";
 import { useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import type { CommandRun, Finding, Plan, SliceDigest, TeamAgent, Verification } from "@/lib/bindings";
+import type { CommandRun, Plan, SliceDigest, TeamAgent, Verification, VerificationGuidance } from "@/lib/bindings";
 import { cn } from "@/lib/utils";
 import {
   CommitSliceButton,
@@ -14,16 +14,21 @@ import {
   commitAvailability,
 } from "@/shared";
 import { useAction } from "../hooks/useAction";
+import { useAgentSend } from "../hooks/useAgentSend";
+import { useCommitSetup } from "../hooks/useCommitSetup";
+import { useGuidance } from "../hooks/useGuidance";
 import { useSliceCommit } from "../hooks/useSliceCommit";
 import { useSliceDetail, type Loaded } from "../hooks/useSliceDetail";
 import type { VerifyPlan } from "../hooks/useVerifyPlan";
 import type { ProjectRuns } from "../hooks/verifyRuns";
-import { agentLabel, bySeverity, formatDuration, formatWhen } from "../lib/verification";
-import { ReportChip, ReportCountChip, SeverityChip, SliceStatusChip, VerificationChip } from "./Chips";
+import { formatDuration, plural } from "../lib/verification";
+import { ReportChip, ReportCountChip, SliceStatusChip, VerificationChip } from "./Chips";
+import { GuidanceCard } from "./GuidanceCard";
+import { GuidedFindings } from "./GuidedFindings";
 import { ErrorLine } from "./Notices";
 import { ProgressLine } from "./ProgressLine";
 import { ReportSection } from "./ReportSection";
-import { Loading, Muted, Section, Subheading } from "./SheetParts";
+import { Loading, Muted } from "./SheetParts";
 import { SkipNotice } from "./SkipNotice";
 import { VerifyButton, VerifyError } from "./VerifyControls";
 
@@ -67,6 +72,9 @@ function SliceDetails({
   onReviewCommands,
 }: Omit<VerificationSheetProps, "sliceId" | "onClose"> & { sliceId: string }) {
   const { reports, verification } = useSliceDetail(projectId, sliceId, runs.finished);
+  const guidance = useGuidance(projectId, sliceId, runs.finished);
+  const agents = useAgentSend(projectId);
+  const commitSetup = useCommitSetup(projectId);
   const slice = plan.slices.find((candidate) => candidate.id === sliceId);
   const sliceDigest = digest?.get(sliceId) ?? null;
   const running = runs.running?.sliceId === sliceId ? runs.running : null;
@@ -99,6 +107,11 @@ function SliceDetails({
       setNotVerifiedOpen(true);
     }
   };
+
+  const guided = guidance.status === "ready" ? guidance.value : null;
+  const waiting = guided?.headline.kind === "waiting";
+  const overrideTemplates = guided?.actions.flatMap((action) => (action.reasonTemplate ? [action.reasonTemplate] : [])) ?? [];
+  const overriding = overriddenFindings(guided);
 
   const requirementText = (id: string) => plan.requirements.find((requirement) => requirement.id === id)?.text;
 
@@ -139,14 +152,42 @@ function SliceDetails({
 
       <div className="min-h-0 flex-1 overflow-y-auto border-t border-border/60">
         <div className="flex flex-col gap-7 px-6 py-5">
-          <VerificationSection load={verification} team={team} requirementText={requirementText} />
-          <ReportSection load={reports} team={team} requirementText={requirementText} />
+          {guidance.status === "loading" && <Loading label="Loading what to do" />}
+          {guidance.status === "error" && <ErrorLine message={guidance.error.message} />}
+          {guidance.status === "ready" && (
+            <GuidanceCard
+              guidance={guidance.value}
+              verifiedAt={verification.status === "ready" && verification.value ? verification.value.verifiedAt : null}
+              projectId={projectId}
+              sliceId={sliceId}
+              team={team}
+              reportPresent={reportPresent}
+              running={running !== null}
+              markDone={{ run: () => void onMarkDone(), busy: done.busy, done: slice?.status === "done" }}
+              commit={{ availability: commitState, open: openCommit }}
+              override={() => setNotVerifiedOpen(true)}
+              commitSetup={{ ...commitSetup, run: () => void commitSetup.commit() }}
+              sessions={agents.load}
+              isAgentLive={agents.isAgentLive}
+              send={agents.send}
+            />
+          )}
+          {/* While agents haven't reported, everything below is provisional: shown, but muted. */}
+          <div
+            data-provisional={waiting || undefined}
+            className={cn("flex flex-col gap-7 transition-opacity motion-reduce:transition-none", waiting && "opacity-50")}
+          >
+            <VerificationSection load={verification} guidance={guided} team={team} requirementText={requirementText} />
+            <ReportSection load={reports} team={team} requirementText={requirementText} />
+          </div>
         </div>
       </div>
 
       <NotVerifiedDialog
         open={notVerifiedOpen}
         onOpenChange={setNotVerifiedOpen}
+        templates={overrideTemplates}
+        overriding={overriding}
         onOverride={async (reason) => {
           const outcome = await markDone(sliceId, reason);
           if (outcome.ok) setPromptCommit(true);
@@ -158,136 +199,82 @@ function SliceDetails({
   );
 }
 
+/** What an override sets aside: the findings the guidance ties to it, else the "override" group. */
+function overriddenFindings(guidance: VerificationGuidance | null): string[] {
+  if (!guidance) return [];
+  const tied = guidance.findings.filter((finding) => finding.actionIds.includes("override"));
+  const list = tied.length > 0 ? tied : guidance.findings.filter((finding) => finding.group === "override");
+  return list.map((finding) => finding.plain);
+}
+
 /* ---------- verification ---------- */
 
 function VerificationSection({
   load,
+  guidance,
   team,
   requirementText,
 }: {
   load: Loaded<Verification | null>;
+  guidance: VerificationGuidance | null;
   team: ReadonlyMap<string, TeamAgent>;
   requirementText: (id: string) => string | undefined;
 }) {
+  if (load.status === "loading") return <Loading label="Loading the verification" />;
+  if (load.status === "error") return <ErrorLine message={load.error.message} />;
+  // Not verified: the card says so, and there's nothing to list.
+  if (load.value === null) return null;
   return (
-    <Section title="Verification">
-      {load.status === "loading" && <Loading label="Loading the verification" />}
-      {load.status === "error" && <ErrorLine message={load.error.message} />}
-      {load.status === "ready" && load.value === null && <Muted>Not verified yet.</Muted>}
-      {load.status === "ready" && load.value !== null && <VerificationResult result={load.value} team={team} requirementText={requirementText} />}
-    </Section>
+    <>
+      {guidance && <GuidedFindings findings={guidance.findings} review={load.value} team={team} requirementText={requirementText} />}
+      <TestRuns runs={load.value.testRuns} />
+    </>
   );
 }
 
-function VerificationResult({
-  result,
-  team,
-  requirementText,
-}: {
-  result: Verification;
-  team: ReadonlyMap<string, TeamAgent>;
-  requirementText: (id: string) => string | undefined;
-}) {
-  const findings = bySeverity(result.findings);
+const failed = (run: CommandRun) => run.timedOut || run.exitCode !== 0;
+
+/** Collapsed under "Test runs", except that a failing run opens it, with its output showing. */
+function TestRuns({ runs }: { runs: readonly CommandRun[] }) {
+  const failing = runs.filter(failed).length;
   return (
-    <div className="flex flex-col gap-4">
-      <div
-        role="status"
-        className={cn(
-          "flex items-center gap-2.5 rounded-xl px-3.5 py-2.5 text-[13px]",
-          result.passed ? "bg-status-running/10" : "bg-destructive/8",
-        )}
+    <Collapsible defaultOpen={failing > 0} className="flex flex-col gap-2.5">
+      <CollapsibleTrigger
+        render={
+          <PressButton
+            variant="ghost"
+            pressScale={0.98}
+            className="group -mx-2 h-auto w-[calc(100%+1rem)] justify-start gap-1.5 px-2 py-1 text-left hover:bg-accent/60"
+          />
+        }
       >
-        {result.passed ? (
-          <CircleCheck aria-hidden className="size-4 shrink-0 text-status-running" />
-        ) : (
-          <CircleX aria-hidden className="size-4 shrink-0 text-destructive" />
-        )}
-        <span className="font-medium">{result.passed ? "Passed" : "Failed"}</span>
-        <time
-          dateTime={new Date(result.verifiedAt).toISOString()}
-          title={new Date(result.verifiedAt).toLocaleString()}
-          className="ml-auto text-[12px] text-muted-foreground tabular-nums"
-        >
-          {formatWhen(result.verifiedAt)}
-        </time>
-      </div>
-
-      {result.stale && (
-        <div role="status" className="flex items-start gap-2 rounded-lg bg-warning/12 px-3 py-2 text-[12.5px] ring-1 ring-warning/25">
-          <History aria-hidden className="mt-px size-3.5 shrink-0 text-warning" />
-          <p className="leading-snug">The report changed after this check. Verify again.</p>
-        </div>
-      )}
-
-      <div className="flex flex-col gap-2">
-        <Subheading>{findings.length === 0 ? "Findings" : `Findings (${findings.length})`}</Subheading>
-        {findings.length === 0 ? (
-          <Muted>No findings.</Muted>
-        ) : (
-          <ul className="flex flex-col gap-1.5">
-            {findings.map((finding, index) => (
-              <li key={index} className="flex flex-col gap-1 rounded-lg px-3 py-2 ring-1 ring-foreground/6">
-                <div className="flex flex-wrap items-center gap-1.5">
-                  <SeverityChip severity={finding.severity} />
-                  <code className="font-mono text-[11.5px] text-muted-foreground">{finding.code}</code>
-                  <FindingAgent finding={finding} team={team} />
-                </div>
-                <p className="text-[13px] leading-snug text-pretty">{finding.message}</p>
-                {(finding.requirementId || finding.path) && (
-                  <div className="flex flex-col gap-0.5 text-[12px] text-muted-foreground">
-                    {finding.requirementId && (
-                      <p className="min-w-0">
-                        <code className="font-mono text-[11.5px]">{finding.requirementId}</code>
-                        {requirementText(finding.requirementId) && (
-                          <span className="ml-1.5">{requirementText(finding.requirementId)}</span>
-                        )}
-                      </p>
-                    )}
-                    {finding.path && <code className="font-mono text-[11.5px] break-all">{finding.path}</code>}
-                  </div>
-                )}
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
-
-      <div className="flex flex-col gap-2">
-        <Subheading>Test runs</Subheading>
-        {result.testRuns.length === 0 ? (
+        <ChevronRight aria-hidden className="size-3.5 shrink-0 text-muted-foreground transition-transform group-data-[panel-open]:rotate-90 motion-reduce:transition-none" />
+        <span className="text-[13.5px] font-semibold">Test runs</span>
+        <span className="text-[12px] font-normal text-muted-foreground tabular-nums">
+          {runs.length === 0 ? "none" : failing > 0 ? `${failing} of ${runs.length} failed` : plural(runs.length, "run")}
+        </span>
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        {runs.length === 0 ? (
           <Muted>No test commands ran.</Muted>
         ) : (
           <ul className="flex flex-col gap-1.5">
-            {result.testRuns.map((run, index) => (
+            {runs.map((run, index) => (
               <li key={index}>
                 <TestRunRow run={run} />
               </li>
             ))}
           </ul>
         )}
-      </div>
-    </div>
-  );
-}
-
-/** The agent whose report a finding is about (blockers, a partly in one report, …). */
-function FindingAgent({ finding, team }: { finding: Finding; team: ReadonlyMap<string, TeamAgent> }) {
-  if (!finding.agent) return null;
-  const { name, role } = agentLabel(team, finding.agent);
-  return (
-    <span className="ml-auto flex min-w-0 items-center gap-1 text-[12px] text-muted-foreground" title={role ? `${name}, ${role}` : name}>
-      <UserRound aria-hidden className="size-3 shrink-0" />
-      <span className="sr-only">From</span>
-      <span className="truncate font-medium text-foreground/80">{name}</span>
-    </span>
+      </CollapsibleContent>
+    </Collapsible>
   );
 }
 
 function TestRunRow({ run }: { run: CommandRun }) {
-  const failed = run.timedOut || run.exitCode !== 0;
+  const isFailed = failed(run);
   return (
-    <Collapsible className="rounded-lg ring-1 ring-foreground/6">
+    <Collapsible defaultOpen={isFailed} className="rounded-lg ring-1 ring-foreground/6">
       <CollapsibleTrigger
         render={
           <PressButton
@@ -306,7 +293,7 @@ function TestRunRow({ run }: { run: CommandRun }) {
             timed out
           </Badge>
         )}
-        <Badge variant={failed ? "destructive" : "outline"} className="h-5 px-2 font-mono text-[11px]">
+        <Badge variant={isFailed ? "destructive" : "outline"} className="h-5 px-2 font-mono text-[11px]">
           {run.exitCode === null ? "no exit code" : `exit ${run.exitCode}`}
         </Badge>
         <span className="shrink-0 text-[12px] text-muted-foreground tabular-nums">{formatDuration(run.durationMs)}</span>
