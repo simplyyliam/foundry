@@ -4,7 +4,7 @@ import type { AgentReport, SliceReport, TeamAgent } from "@/lib/bindings";
 import { cn } from "@/lib/utils";
 import { usePressScale } from "@/shared";
 import type { Loaded } from "../hooks/useSliceDetail";
-import { agentLabel, formatWhen, plural } from "../lib/verification";
+import { agentLabel, formatWhen, plural, writtenMs } from "../lib/verification";
 import { RequirementStatusChip } from "./Chips";
 import { ErrorLine } from "./Notices";
 import { Loading, Muted, Section, Subheading } from "./SheetParts";
@@ -35,12 +35,6 @@ export function ReportSection({ load, team, requirementText }: ReportSectionProp
     </Section>
   );
 }
-
-/** Milliseconds since the epoch, or null when the backend's time doesn't parse. */
-const writtenMs = (writtenAt: string): number | null => {
-  const ms = Date.parse(writtenAt);
-  return Number.isNaN(ms) ? null : ms;
-};
 
 /** The newest report's path by `writtenAt`. Ties (and unparsable times) go to the later listed. */
 function newestPath(reports: readonly AgentReport[]): string {
@@ -100,7 +94,7 @@ function AgentTab({ value, name, role, writtenAt }: { value: string; name: strin
 }
 
 /** "Today, 14:05" with the full date as a tooltip; the backend's text as-is if it doesn't parse. */
-function WrittenAt({ writtenAt, className }: { writtenAt: string; className?: string }) {
+export function WrittenAt({ writtenAt, className }: { writtenAt: string; className?: string }) {
   const ms = writtenMs(writtenAt);
   return (
     <time dateTime={writtenAt} title={ms === null ? undefined : new Date(ms).toLocaleString()} className={cn("tabular-nums", className)}>

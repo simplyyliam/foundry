@@ -16,15 +16,19 @@ import {
 import { useAction } from "../hooks/useAction";
 import { useAgentSend } from "../hooks/useAgentSend";
 import { useCommitSetup } from "../hooks/useCommitSetup";
+import { useFixPrompts } from "../hooks/useFixPrompts";
 import { useGuidance } from "../hooks/useGuidance";
 import { useSliceCommit } from "../hooks/useSliceCommit";
 import { useSliceDetail, type Loaded } from "../hooks/useSliceDetail";
 import type { VerifyPlan } from "../hooks/useVerifyPlan";
 import type { ProjectRuns } from "../hooks/verifyRuns";
+import { qaRuns } from "../lib/bugs";
 import { formatDuration, plural } from "../lib/verification";
+import { BugsSection } from "./BugsSection";
 import { ReportChip, ReportCountChip, SliceStatusChip, VerificationChip } from "./Chips";
 import { GuidanceCard } from "./GuidanceCard";
 import { GuidedFindings } from "./GuidedFindings";
+import { FixPromptsSection } from "./FixPromptsSection";
 import { ErrorLine } from "./Notices";
 import { ProgressLine } from "./ProgressLine";
 import { ReportSection } from "./ReportSection";
@@ -73,6 +77,7 @@ function SliceDetails({
 }: Omit<VerificationSheetProps, "sliceId" | "onClose"> & { sliceId: string }) {
   const { reports, verification } = useSliceDetail(projectId, sliceId, runs.finished);
   const guidance = useGuidance(projectId, sliceId, runs.finished);
+  const fixPrompts = useFixPrompts(projectId, sliceId, reports);
   const agents = useAgentSend(projectId);
   const commitSetup = useCommitSetup(projectId);
   const slice = plan.slices.find((candidate) => candidate.id === sliceId);
@@ -112,6 +117,8 @@ function SliceDetails({
   const waiting = guided?.headline.kind === "waiting";
   const overrideTemplates = guided?.actions.flatMap((action) => (action.reasonTemplate ? [action.reasonTemplate] : [])) ?? [];
   const overriding = overriddenFindings(guided);
+
+  const bugRuns = reports.status === "ready" ? qaRuns(reports.value) : [];
 
   const requirementText = (id: string) => plan.requirements.find((requirement) => requirement.id === id)?.text;
 
@@ -177,6 +184,16 @@ function SliceDetails({
             data-provisional={waiting || undefined}
             className={cn("flex flex-col gap-7 transition-opacity motion-reduce:transition-none", waiting && "opacity-50")}
           >
+            {bugRuns.length > 0 && <BugsSection runs={bugRuns} prompts={fixPrompts} team={team} requirementText={requirementText} />}
+            {fixPrompts && (
+              <FixPromptsSection
+                load={fixPrompts}
+                team={team}
+                sessions={agents.load}
+                isAgentLive={agents.isAgentLive}
+                send={agents.send}
+              />
+            )}
             <VerificationSection load={verification} guidance={guided} team={team} requirementText={requirementText} />
             <ReportSection load={reports} team={team} requirementText={requirementText} />
           </div>

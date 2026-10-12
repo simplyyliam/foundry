@@ -49,6 +49,12 @@ export function formatWhen(ms: number): string {
   return `${date.toLocaleDateString(undefined, { month: "short", day: "numeric" })}, ${time}`;
 }
 
+/** Milliseconds since the epoch of a report's `writtenAt`, or null when it doesn't parse. */
+export function writtenMs(writtenAt: string): number | null {
+  const ms = Date.parse(writtenAt);
+  return Number.isNaN(ms) ? null : ms;
+}
+
 export const plural = (count: number, one: string, many = `${one}s`) => `${count} ${count === 1 ? one : many}`;
 
 /** Why a wanted verification couldn't run, in plain words. `other` has no fixed words. */
