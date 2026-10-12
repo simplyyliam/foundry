@@ -50,7 +50,7 @@ export function PromptsView({ projectId }: { projectId: string }) {
         />
       </div>
 
-      <PromptList load={prompts.load} reload={prompts.reload} plan={loadedPlan} agents={agents} onOpen={setOpenPath} />
+      <PromptList projectId={projectId} load={prompts.load} reload={prompts.reload} plan={loadedPlan} agents={agents} onOpen={setOpenPath} />
 
       <RunByHand />
 

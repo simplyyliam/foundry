@@ -66,6 +66,27 @@ export function formatModified(ms: number, now = new Date()): string {
 
 export const formatModifiedFull = (ms: number) => FULL.format(new Date(ms));
 
+/** The backend's limit on a prompt note, in characters (`set_prompt_note`). */
+export const NOTE_MAX_CHARS = 8000;
+const NOTES_HEADING = "## Notes from the user";
+
+/** A note's length as the backend counts it: characters, not UTF-16 units (an emoji is one). */
+export const noteLength = (note: string) => [...note].length;
+
+/** An empty or all-whitespace note is no note: the backend removes it. */
+export const isBlankNote = (note: string | null) => note === null || note.trim() === "";
+
+/**
+ * What the agent is sent: the generated text, then the note (the text alone without one).
+ * Mirrors the backend's `core::prompt_note::for_launch` exactly: a line break if the text
+ * lacks one, a blank line, the heading, a blank line, the note as written.
+ */
+export function sentPrompt(text: string, note: string | null): string {
+  if (isBlankNote(note)) return text;
+  const generated = text !== "" && !text.endsWith("\n") ? `${text}\n` : text;
+  return `${generated}\n${NOTES_HEADING}\n\n${note}`;
+}
+
 const BAKERY_WARNING_PREFIX = "bakery_note_incomplete:";
 
 /**

@@ -5,6 +5,7 @@ import type { Plan, PromptFile, TeamAgent } from "@/lib/bindings";
 import { PressButton } from "@/shared";
 import { useCopy } from "../hooks/useCopy";
 import { useLaunchMessage, usePromptText } from "../hooks/usePromptFile";
+import { sentPrompt } from "../lib/prompts";
 import { ErrorLine } from "./Notices";
 import { AgentName, SliceName } from "./PromptList";
 
@@ -19,7 +20,7 @@ interface PromptSheetProps {
   onClose: () => void;
 }
 
-/** One prompt file's text, read-only, with Copy (and Copy launch message for task prompts). */
+/** One prompt file's text and the user's note under it (what's sent), read-only, with Copy (and Copy launch message for task prompts). */
 export function PromptSheet({ path, onClose, ...rest }: PromptSheetProps) {
   // Keep showing the last file while the sheet animates out.
   const [shown, setShown] = useState(path);
@@ -44,6 +45,7 @@ function PromptDetails({ projectId, path, file, plan, agents }: Omit<PromptSheet
   >({ status: "idle" });
 
   const isTask = file?.kind === "task" && file.agentId !== null;
+  const sent = text.status === "ready" ? sentPrompt(text.text, text.note) : null;
 
   const onCopyLaunch = async () => {
     if (!file?.agentId) return;
@@ -75,8 +77,8 @@ function PromptDetails({ projectId, path, file, plan, agents }: Omit<PromptSheet
           <PressButton
             size="sm"
             variant="secondary"
-            disabled={text.status !== "ready"}
-            onClick={() => text.status === "ready" && void copy(text.text)}
+            disabled={sent === null}
+            onClick={() => sent !== null && void copy(sent)}
           >
             {copyState === "copied" ? <Check data-icon="inline-start" /> : <Copy data-icon="inline-start" />}
             {copyState === "copied" ? "Copied" : "Copy"}
@@ -117,13 +119,13 @@ function PromptDetails({ projectId, path, file, plan, agents }: Omit<PromptSheet
           </div>
         )}
         {text.status === "error" && <ErrorLine message={text.message} className="m-6" />}
-        {text.status === "ready" && (
+        {sent !== null && (
           <pre
             tabIndex={0}
             aria-label="Prompt text"
             className="h-full overflow-auto bg-muted/30 px-6 py-4 font-mono text-[12px] leading-relaxed whitespace-pre-wrap break-words outline-none select-text focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:ring-inset"
           >
-            {text.text}
+            {sent}
           </pre>
         )}
       </div>
