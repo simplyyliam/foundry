@@ -1440,6 +1440,176 @@ fn a_fix_prompt_is_self_contained_with_every_rule_and_test_name() {
     }
 }
 
+/// `rel` as an s-feed report by `agent` with these bugs, last modified `mins_ago` minutes
+/// ago (its `writtenAt`).
+fn report_at(fix: &Fix, rel: &str, agent: &str, bugs: Value, mins_ago: u64) {
+    fix.json(
+        rel,
+        &json!({
+            "sliceId": "s-feed", "agent": agent, "requirements": [], "testsRun": [],
+            "blockers": [], "notes": "", "bugs": bugs
+        }),
+    );
+    let at = std::time::SystemTime::now() - std::time::Duration::from_secs(mins_ago * 60);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(fix.repo.path().join(rel))
+        .unwrap()
+        .set_modified(at)
+        .unwrap();
+}
+
+#[test]
+fn fix_prompts_use_only_the_newest_qa_run() {
+    let fix = Fix::ready();
+    qa_team(&fix);
+    // The newer run is listed first (te < zz by agent id), so it's time, not order.
+    report_at(
+        &fix,
+        ".foundry/reports/s-feed.te.json",
+        "te",
+        json!([bug_json("b-2", "high", &["src/server/api.ts"])]),
+        5,
+    );
+    report_at(
+        &fix,
+        ".foundry/reports/s-feed.zz.json",
+        "zz",
+        json!([bug_json("b-1", "high", &["src/ui/list.tsx"])]),
+        60,
+    );
+    let prompts = fix.store.generate_fix_prompts(P, "s-feed").unwrap();
+    assert_eq!(routed(&prompts), [("ada", vec!["b-2"])]);
+    assert!(!prompts[0].prompt.contains("b-1"));
+}
+
+#[test]
+fn a_later_report_without_bugs_doesnt_hide_the_qa_run() {
+    let fix = Fix::ready();
+    qa_team(&fix);
+    report_at(
+        &fix,
+        ".foundry/reports/s-feed.qa.json",
+        "qa",
+        json!([bug_json("b-1", "high", &["src/server/api.ts"])]),
+        60,
+    );
+    let before = fix.store.generate_fix_prompts(P, "s-feed").unwrap();
+    // The owner reports afterwards, with no bugs (an empty list, and no list at all).
+    report_at(
+        &fix,
+        ".foundry/reports/s-feed.ada.json",
+        "ada",
+        json!([]),
+        1,
+    );
+    report_at(
+        &fix,
+        ".foundry/reports/s-feed.lin.json",
+        "lin",
+        Value::Null,
+        0,
+    );
+    let after = fix.store.generate_fix_prompts(P, "s-feed").unwrap();
+    assert_eq!(after, before);
+    assert_eq!(routed(&after), [("ada", vec!["b-1"])]);
+}
+
+#[test]
+fn an_old_style_slice_report_counts_as_a_run_by_its_modified_time() {
+    let fix = Fix::ready();
+    qa_team(&fix);
+    report_at(
+        &fix,
+        ".foundry/reports/s-feed.json",
+        "qa",
+        json!([bug_json("b-1", "high", &["src/ui/list.tsx"])]),
+        30,
+    );
+    let prompts = fix.store.generate_fix_prompts(P, "s-feed").unwrap();
+    assert_eq!(routed(&prompts), [("lin", vec!["b-1"])]);
+
+    // A newer per-agent run replaces it; an older one wouldn't.
+    report_at(
+        &fix,
+        ".foundry/reports/s-feed.qa.json",
+        "qa",
+        json!([bug_json("b-2", "low", &["src/server/a.ts"])]),
+        60,
+    );
+    let prompts = fix.store.generate_fix_prompts(P, "s-feed").unwrap();
+    assert_eq!(routed(&prompts), [("lin", vec!["b-1"])]);
+    report_at(
+        &fix,
+        ".foundry/reports/s-feed.qa.json",
+        "qa",
+        json!([bug_json("b-2", "low", &["src/server/a.ts"])]),
+        1,
+    );
+    let prompts = fix.store.generate_fix_prompts(P, "s-feed").unwrap();
+    assert_eq!(routed(&prompts), [("ada", vec!["b-2"])]);
+}
+
+#[test]
+fn a_bug_id_reused_by_an_older_run_adds_no_owner() {
+    let fix = Fix::ready();
+    qa_team(&fix);
+    report_at(
+        &fix,
+        ".foundry/reports/s-feed.json",
+        "qa",
+        json!([bug_json("b-1", "high", &["src/ui/list.tsx"])]),
+        60,
+    );
+    report_at(
+        &fix,
+        ".foundry/reports/s-feed.qa.json",
+        "qa",
+        json!([bug_json("b-1", "high", &["src/server/api.ts"])]),
+        5,
+    );
+    let prompts = fix.store.generate_fix_prompts(P, "s-feed").unwrap();
+    assert_eq!(routed(&prompts), [("ada", vec!["b-1"])]);
+    assert!(!prompts[0].prompt.contains("src/ui/list.tsx"));
+}
+
+#[test]
+fn reports_tied_for_newest_are_one_run() {
+    let fix = Fix::ready();
+    qa_team(&fix);
+    let at = std::time::SystemTime::now() - std::time::Duration::from_secs(120);
+    for (rel, bug) in [
+        (
+            ".foundry/reports/s-feed.qa.json",
+            bug_json("b-1", "high", &["src/server/api.ts"]),
+        ),
+        (
+            ".foundry/reports/s-feed.te.json",
+            bug_json("b-2", "high", &["src/ui/list.tsx"]),
+        ),
+    ] {
+        report_at(&fix, rel, "qa", json!([bug]), 0);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(fix.repo.path().join(rel))
+            .unwrap()
+            .set_modified(at)
+            .unwrap();
+    }
+    report_at(
+        &fix,
+        ".foundry/reports/s-feed.old.json",
+        "qa",
+        json!([bug_json("b-3", "low", &["src/server/b.ts"])]),
+        60,
+    );
+    let prompts = fix.store.generate_fix_prompts(P, "s-feed").unwrap();
+    assert_eq!(
+        routed(&prompts),
+        [("ada", vec!["b-1"]), ("lin", vec!["b-2"])]
+    );
+}
+
 #[test]
 fn fix_prompts_need_a_known_slice_a_team_and_valid_reports() {
     let fix = Fix::ready();

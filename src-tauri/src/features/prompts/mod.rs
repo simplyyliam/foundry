@@ -348,8 +348,8 @@ impl PromptsStore {
         })
     }
 
-    /// One fix prompt per agent for the bugs the slice's reports list (see `fix::build` for
-    /// the routing). Gates: a team is confirmed and the slice exists. A report that isn't a
+    /// One fix prompt per agent for the bugs of the slice's latest QA run (see `fix::build`
+    /// for the routing). Gates: a team is confirmed and the slice exists. A report that isn't a
     /// slice report → `invalid_json`. Read-only: writes nothing, sends nothing.
     pub fn generate_fix_prompts(
         &self,
@@ -366,10 +366,17 @@ impl PromptsStore {
         for agent in &team {
             check_agent(agent)?;
         }
+        // The latest run only: of the reports that list a bug, the one(s) with the newest
+        // `writtenAt` (the file's modified time, as `list_reports` gives the UI). A report
+        // with no bugs never counts as a run, and older runs' bugs are left out.
+        let mut latest: Option<String> = None;
         let mut bugs = Vec::new();
         for rel in report::slice_report_paths(&repo, slice_id)? {
             // Gone since it was listed: as if it never was.
             let Some(text) = repo_write::read_to_string(&repo, &rel)? else {
+                continue;
+            };
+            let Some(written_at) = report::written_at(&repo, &rel)? else {
                 continue;
             };
             let parsed: report::SliceReport =
@@ -379,6 +386,17 @@ impl PromptsStore {
                         format!("{rel} isn't a valid slice report ({err})"),
                     )
                 })?;
+            if parsed.bugs.is_empty() {
+                continue;
+            }
+            match latest.as_deref() {
+                Some(newest) if written_at.as_str() < newest => continue,
+                Some(newest) if written_at.as_str() == newest => {}
+                _ => {
+                    bugs.clear();
+                    latest = Some(written_at);
+                }
+            }
             bugs.extend(parsed.bugs.0);
         }
         let prompts = fix::build(slice, &team, &bugs)?;

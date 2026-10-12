@@ -604,3 +604,11 @@ Additive. No new error codes, no new events.
 | command | `generate_task_prompt` | unchanged signature; for a QA or Test Engineer agent the prompt adds a "Testing rules" section and a `bugs` entry in the sample report | QA = `sourceHandbookRoleId` `qa-test-engineer`, or a custom role whose title has the word "QA", "Tester" or "Test Engineer". Other roles' prompts are byte-for-byte unchanged. |
 | command | `generate_fix_prompts` | — → `generateFixPrompts(projectId: string, sliceId: string): FixPrompt[]` | One ready-to-send prompt per agent (team order) for the bugs in every report of the slice. Owner: per location, the agent whose matching write glob has the longest literal prefix (ties → first in the team); a bug with locations under two owners goes to both, each with their own locations; no location matched → `ownerHint` (if a team agent) → the Product Lead. Bugs are numbered, high severity first. Read-only: writes and sends nothing. Errors: `invalid_input` (bad slice id, or a bug with no owner and no Product Lead), `not_found` (project or slice), `team_not_confirmed`, `invalid_json` (a report that isn't a slice report), `folder_missing`. Empty list when no report lists bugs. |
 | type | `FixPrompt` | — → `{ agentId: string, agentName: string, bugIds: string[], prompt: string }` | `bugIds` in the prompt's numbered order. |
+
+## Fix prompts from the latest QA run
+
+Behaviour change, approved by the human. Signature, routing rules and prompt content unchanged; no new command, type or error code.
+
+| Kind | Name | Before → After | Why |
+| --- | --- | --- | --- |
+| command | `generate_fix_prompts` | bugs from every report of the slice → bugs from the latest run only | A fix prompt could include bugs from an older QA run that were already fixed, while the UI shows only the latest run. A run is a report that lists at least one bug; the latest is the one with the newest `writtenAt` (the file's modified time, as `list_reports` returns it). Reports tied for newest are all used. A report with no bugs never counts, so an owner's later report can't hide QA's bugs. Old-style `<sliceId>.json` reports count by their modified time like any other. Every report is still parsed, so an unparsable older report still gives `invalid_json`. |

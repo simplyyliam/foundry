@@ -1,4 +1,4 @@
-//! Fix prompts (`generate_fix_prompts`): the bugs a slice's reports list, routed to the agents
+//! Fix prompts (`generate_fix_prompts`): the bugs of a slice's latest run, routed to the agents
 //! who own the code and batched into one ready-to-send prompt per agent. Pure: the store
 //! reads the reports and the team, this turns them into text. Nothing is written or sent.
 
