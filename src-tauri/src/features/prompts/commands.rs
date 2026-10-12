@@ -3,7 +3,8 @@ use std::sync::Arc;
 use tauri::State;
 
 use super::{
-    FixPrompt, HandoffResult, PromptFile, PromptsStore, TaskPromptOptions, TaskPromptResult,
+    FixPrompt, HandoffResult, PromptFile, PromptWithNote, PromptsStore, TaskPromptOptions,
+    TaskPromptResult,
 };
 use crate::core::AppError;
 
@@ -95,4 +96,33 @@ pub async fn list_prompts(
     project_id: String,
 ) -> Result<Vec<PromptFile>, AppError> {
     blocking(&store, move |s| s.list_prompts(&project_id)).await
+}
+
+/// The generated text of a prompt file under `.foundry/prompts/` and the user's note on it,
+/// apart (`note` is null without one). Same path rules as `read_prompt`.
+#[tauri::command]
+#[specta::specta]
+pub async fn get_prompt(
+    store: Store<'_>,
+    project_id: String,
+    file: String,
+) -> Result<PromptWithNote, AppError> {
+    blocking(&store, move |s| s.get_prompt(&project_id, &file)).await
+}
+
+/// Stores the user's note on a prompt file (plain text, at most 8,000 characters); an empty
+/// note removes it. Sent after the generated text, under "Notes from the user", when an agent
+/// launches on the prompt. The generated prompt is never changed.
+#[tauri::command]
+#[specta::specta]
+pub async fn set_prompt_note(
+    store: Store<'_>,
+    project_id: String,
+    file: String,
+    note: String,
+) -> Result<(), AppError> {
+    blocking(&store, move |s| {
+        s.set_prompt_note(&project_id, &file, &note)
+    })
+    .await
 }

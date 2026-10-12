@@ -293,6 +293,17 @@ export const commands = {
 	/**  The text of a prompt file under `.foundry/prompts/` (`.md`, at most 200 KB). */
 	readPrompt: (projectId: string, file: string) => typedError<string, AppError>(__TAURI_INVOKE("read_prompt", { projectId, file })),
 	/**
+	 *  The generated text of a prompt file under `.foundry/prompts/` and the user's note on it,
+	 *  apart (`note` is null without one). Same path rules as `read_prompt`.
+	 */
+	getPrompt: (projectId: string, file: string) => typedError<PromptWithNote, AppError>(__TAURI_INVOKE("get_prompt", { projectId, file })),
+	/**
+	 *  Stores the user's note on a prompt file (plain text, at most 8,000 characters); an empty
+	 *  note removes it. Sent after the generated text, under "Notes from the user", when an agent
+	 *  launches on the prompt. The generated prompt is never changed.
+	 */
+	setPromptNote: (projectId: string, file: string, note: string) => typedError<null, AppError>(__TAURI_INVOKE("set_prompt_note", { projectId, file, note })),
+	/**
 	 *  The agent's events in the project, newest first: those before `beforeId`, at least
 	 *  `minSeverity`, at most `limit` (1–500, default 100).
 	 */
@@ -1448,6 +1459,14 @@ export type PromptFile = {
 };
 
 export type PromptKind = "handoff" | "task";
+
+/**  A prompt as stored: the generated text and the user's note, kept apart. */
+export type PromptWithNote = {
+	/**  The generated prompt, exactly as `read_prompt` returns it. */
+	text: string,
+	/**  The user's note, exactly as set; `null` without one. */
+	note: string | null,
+};
 
 export type ProposedAgent = {
 	tempId: string,

@@ -664,3 +664,16 @@ Additive. No new error codes, no new events. The existing `warnings` strings are
 | type | `HandoffResult` / `TaskPromptResult` | adds `bakeryNoteIssues: BakeryNoteIssue[]` | The `bakery_note_incomplete` warning's entries, structured for the UI: same entries, same rule (Take or Skip empty or only whitespace). Always present; empty when none. |
 | type | `BakeryNoteIssue` | — → `{ entryId: string, file: string, missing: BakeryNoteMissing }` | `entryId` is the entry's id in `.foundry/bakery.json` (empty if a hand-edited entry has none). |
 | type | `BakeryNoteMissing` | — → `"take" \| "skip" \| "both"` | |
+
+## Notes on prompts
+
+Additive. No new error codes, no new events. Existing commands keep their signatures; `launch_message` / `agent_start` name a different file only when the prompt has a note.
+
+| Kind | Name | Before → After | Why |
+| --- | --- | --- | --- |
+| command | `set_prompt_note` | — → `setPromptNote(projectId: string, file: string, note: string): null` | Prompts can't be edited in the app, so extra instructions were typed into the terminal by hand. `file` is the prompt's repo-relative path (what `list_prompts` returns; same path rules as `read_prompt`). Stores the note as plain text, exactly as written, in `.foundry/prompts/notes/<name>`. An empty or all-whitespace note removes it. Errors: `invalid_input` (over 8,000 characters, or control characters other than line breaks and tabs; the old note is kept), `not_found` (no such prompt or project), `path_escape` / `unsupported_file` / `invalid_path` (as `read_prompt`). |
+| command | `get_prompt` | — → `getPrompt(projectId: string, file: string): PromptWithNote` | The generated text and the note, apart. Same rules and errors as `read_prompt`. |
+| type | `PromptWithNote` | — → `{ text: string, note: string \| null }` | `text` is exactly what `read_prompt` returns. |
+| behavior | `launch_message`, `agent_start` | unchanged signatures; with a note, the line names `.foundry/prompts/sent/<name>` instead of `.foundry/prompts/<name>` | The agent reads the prompt from disk (the launch line is at most 500 characters), so at launch the backend writes the generated text + `\n## Notes from the user\n\n` + the note to `sent/<name>` and points the agent there. The generated prompt is never changed, so regenerating still works. Without a note: unchanged, nothing written. |
+| behavior | `generate_handoff`, `generate_task_prompt` | unchanged signatures | Regenerating an existing prompt keeps its note. A prompt file that no longer exists has no note (`get_prompt` → `not_found`), and generating it again starts without one. A prompt of a removed slice keeps its file and its note. |
+| floor | protected floor (`core::hook_policy`, `team`) | adds `.foundry/prompts/notes/**` | Only `set_prompt_note` writes notes; agents' edit tools are refused there. |

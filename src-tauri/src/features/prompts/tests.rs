@@ -1080,6 +1080,241 @@ fn read_prompt_writes_nothing() {
     assert_eq!(snapshot(fix.repo.path()), before);
 }
 
+// ---------- prompt notes ----------
+
+const FEED_ADA: &str = ".foundry/prompts/s-feed-ada.md";
+const FEED_ADA_NOTE: &str = ".foundry/prompts/notes/s-feed-ada.md";
+const FEED_ADA_SENT: &str = ".foundry/prompts/sent/s-feed-ada.md";
+
+fn note(fix: &Fix, file: &str) -> Option<String> {
+    fix.store.get_prompt(P, file).unwrap().note
+}
+
+#[test]
+fn a_prompt_note_is_set_read_apart_from_the_prompt_and_cleared() {
+    let fix = Fix::ready();
+    fix.task("s-feed", "ada", true).unwrap();
+    let generated = fix.repo.read(FEED_ADA);
+    assert_eq!(
+        fix.store.get_prompt(P, FEED_ADA).unwrap(),
+        PromptWithNote {
+            text: generated.clone(),
+            note: None
+        }
+    );
+
+    let written = "  Use the staging DB.\r\n\n\tAsk before touching CI.  ";
+    fix.store.set_prompt_note(P, FEED_ADA, written).unwrap();
+    let got = fix.store.get_prompt(P, FEED_ADA).unwrap();
+    assert_eq!(
+        got.note.as_deref(),
+        Some(written),
+        "kept exactly as written"
+    );
+    assert_eq!(got.text, generated);
+    assert_eq!(got.text, fix.store.read_prompt(P, FEED_ADA).unwrap());
+    assert_eq!(
+        fix.repo.read(FEED_ADA),
+        generated,
+        "the prompt is unchanged"
+    );
+    assert_eq!(fix.repo.read(FEED_ADA_NOTE), written);
+
+    // Replacing, then clearing with an empty or whitespace-only note.
+    fix.store
+        .set_prompt_note(P, FEED_ADA, "Second thoughts.")
+        .unwrap();
+    assert_eq!(note(&fix, FEED_ADA).as_deref(), Some("Second thoughts."));
+    fix.store.set_prompt_note(P, FEED_ADA, "").unwrap();
+    assert_eq!(note(&fix, FEED_ADA), None);
+    assert!(!fix.repo.path().join(FEED_ADA_NOTE).exists());
+    fix.store.set_prompt_note(P, FEED_ADA, "x").unwrap();
+    fix.store.set_prompt_note(P, FEED_ADA, " \n\t ").unwrap();
+    assert_eq!(note(&fix, FEED_ADA), None);
+    // Clearing a prompt without a note is fine.
+    fix.store.set_prompt_note(P, FEED_ADA, "").unwrap();
+
+    // The hand-off takes a note the same way.
+    fix.store.generate_handoff(P).unwrap();
+    fix.store
+        .set_prompt_note(P, ".foundry/prompts/handoff.md", "Hand-off note.")
+        .unwrap();
+    assert_eq!(
+        note(&fix, ".foundry/prompts/handoff.md").as_deref(),
+        Some("Hand-off note.")
+    );
+    assert_eq!(note(&fix, FEED_ADA), None, "notes are per prompt");
+}
+
+#[test]
+fn a_prompt_note_over_the_limit_or_not_plain_text_is_refused() {
+    let fix = Fix::ready();
+    fix.task("s-feed", "ada", true).unwrap();
+    fix.store.set_prompt_note(P, FEED_ADA, "keep me").unwrap();
+
+    // Characters, not bytes: 8,000 two-byte characters fit.
+    let at_cap = "é".repeat(MAX_NOTE_CHARS);
+    fix.store.set_prompt_note(P, FEED_ADA, &at_cap).unwrap();
+    assert_eq!(note(&fix, FEED_ADA), Some(at_cap.clone()));
+    for bad in [
+        "é".repeat(MAX_NOTE_CHARS + 1),
+        "x".repeat(MAX_NOTE_CHARS + 1),
+        "nul \0 inside".to_string(),
+        "escape \u{1b}[31m".to_string(),
+    ] {
+        assert_code(
+            fix.store.set_prompt_note(P, FEED_ADA, &bad),
+            ErrorCode::InvalidInput,
+        );
+        assert_eq!(note(&fix, FEED_ADA), Some(at_cap.clone()), "left as it was");
+    }
+
+    // Only on an existing prompt file, by the same path rules as read_prompt.
+    assert_code(
+        fix.store
+            .set_prompt_note(P, ".foundry/prompts/missing.md", "x"),
+        ErrorCode::NotFound,
+    );
+    assert_code(
+        fix.store.set_prompt_note(P, ".foundry/plan.json", "x"),
+        ErrorCode::PathEscape,
+    );
+    assert_code(
+        fix.store
+            .set_prompt_note(P, ".foundry/prompts/notes/s-feed-ada.md", "x"),
+        ErrorCode::PathEscape,
+    );
+    assert_code(
+        fix.store.set_prompt_note("nope", FEED_ADA, "x"),
+        ErrorCode::NotFound,
+    );
+}
+
+#[test]
+fn launch_sends_the_prompt_with_the_note_appended_under_its_heading() {
+    let fix = Fix::ready();
+    fix.task("s-feed", "ada", true).unwrap();
+    let generated = fix.repo.read(FEED_ADA);
+    let written = "Use the staging DB.\n\n- Don't rename `feed_items`.\n";
+    fix.store.set_prompt_note(P, FEED_ADA, written).unwrap();
+
+    let message = fix.store.launch_message(P, "ada", FEED_ADA).unwrap();
+    assert_eq!(
+        message,
+        format!(
+            "You are Ada, Backend engineer. Read agents/roles/ada.md, then {FEED_ADA_SENT} \
+             and follow it."
+        )
+    );
+    let sent = fix.repo.read(FEED_ADA_SENT);
+    assert!(generated.ends_with('\n'));
+    assert_eq!(
+        sent,
+        format!("{generated}\n## Notes from the user\n\n{written}")
+    );
+    assert_eq!(NOTES_HEADING, "## Notes from the user");
+    // Everywhere else the generated prompt is unchanged.
+    assert_eq!(fix.repo.read(FEED_ADA), generated);
+    assert_eq!(fix.store.read_prompt(P, FEED_ADA).unwrap(), generated);
+
+    // A changed note is what the next launch sends.
+    fix.store
+        .set_prompt_note(P, FEED_ADA, "Only this.")
+        .unwrap();
+    fix.store.launch_message(P, "ada", FEED_ADA).unwrap();
+    assert_eq!(
+        fix.repo.read(FEED_ADA_SENT),
+        format!("{generated}\n## Notes from the user\n\nOnly this.")
+    );
+}
+
+#[test]
+fn launch_without_a_note_sends_the_generated_prompt_and_writes_nothing() {
+    let fix = Fix::ready();
+    fix.task("s-feed", "ada", true).unwrap();
+    let before = snapshot(fix.repo.path());
+    let plain = format!(
+        "You are Ada, Backend engineer. Read agents/roles/ada.md, then {FEED_ADA} and follow it."
+    );
+    assert_eq!(fix.store.launch_message(P, "ada", FEED_ADA).unwrap(), plain);
+    assert_eq!(snapshot(fix.repo.path()), before);
+
+    // A cleared note: back to the generated prompt.
+    fix.store.set_prompt_note(P, FEED_ADA, "for now").unwrap();
+    fix.store.set_prompt_note(P, FEED_ADA, "").unwrap();
+    assert_eq!(fix.store.launch_message(P, "ada", FEED_ADA).unwrap(), plain);
+}
+
+#[test]
+fn regenerating_keeps_the_note_and_a_deleted_prompt_takes_it_along() {
+    let fix = Fix::ready();
+    fix.task("s-feed", "ada", true).unwrap();
+    fix.store.generate_handoff(P).unwrap();
+    fix.store.set_prompt_note(P, FEED_ADA, "task note").unwrap();
+    fix.store
+        .set_prompt_note(P, ".foundry/prompts/handoff.md", "handoff note")
+        .unwrap();
+
+    // Regenerating rewrites the prompt and keeps its note.
+    fix.edit_plan(|plan| plan["slices"][1]["decisions"] = json!(["Use offset paging"]));
+    fix.task("s-feed", "ada", true).unwrap();
+    fix.store.generate_handoff(P).unwrap();
+    let got = fix.store.get_prompt(P, FEED_ADA).unwrap();
+    assert!(got.text.contains("Use offset paging"));
+    assert_eq!(got.note.as_deref(), Some("task note"));
+    assert_eq!(
+        note(&fix, ".foundry/prompts/handoff.md").as_deref(),
+        Some("handoff note")
+    );
+
+    // A deleted prompt's note is gone with it: not readable, not sent, and a new prompt of
+    // the same name starts without one.
+    std::fs::remove_file(fix.repo.path().join(FEED_ADA)).unwrap();
+    assert_code(fix.store.get_prompt(P, FEED_ADA), ErrorCode::NotFound);
+    fix.task("s-feed", "ada", true).unwrap();
+    assert_eq!(note(&fix, FEED_ADA), None);
+    assert!(!fix.repo.path().join(FEED_ADA_NOTE).exists());
+    assert!(fix
+        .store
+        .launch_message(P, "ada", FEED_ADA)
+        .unwrap()
+        .contains(&format!("then {FEED_ADA} and")));
+}
+
+#[test]
+fn a_prompt_of_a_removed_slice_keeps_its_note() {
+    let fix = Fix::ready();
+    fix.task("s-share", "lin", true).unwrap();
+    let share = ".foundry/prompts/s-share-lin.md";
+    fix.store.set_prompt_note(P, share, "share note").unwrap();
+    fix.edit_plan(|plan| {
+        let slices = plan["slices"].as_array_mut().unwrap();
+        slices.retain(|s| s["id"] != "s-share");
+        let reqs = plan["requirements"].as_array_mut().unwrap();
+        reqs.retain(|r| r["sliceId"] != "s-share");
+    });
+    // Other prompts are generated as usual; the removed slice's prompt keeps its note.
+    fix.task("s-feed", "ada", true).unwrap();
+    fix.store.generate_handoff(P).unwrap();
+    assert_eq!(note(&fix, share).as_deref(), Some("share note"));
+}
+
+#[test]
+fn notes_are_not_listed_as_prompts() {
+    let fix = Fix::ready();
+    fix.task("s-feed", "ada", true).unwrap();
+    fix.store.set_prompt_note(P, FEED_ADA, "n").unwrap();
+    fix.store.launch_message(P, "ada", FEED_ADA).unwrap();
+    let listed: Vec<String> = fix
+        .store
+        .list_prompts(P)
+        .unwrap()
+        .into_iter()
+        .map(|p| p.path)
+        .collect();
+    assert_eq!(listed, [FEED_ADA]);
+}
+
 // ---------- project rules ----------
 
 /// A confirmed, project-wide constraint with no slice.

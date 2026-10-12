@@ -120,6 +120,8 @@ pub fn specta_builder<R: Runtime>() -> tauri_specta::Builder<R> {
             prompts::commands::launch_message,
             prompts::commands::list_prompts,
             prompts::commands::read_prompt,
+            prompts::commands::get_prompt,
+            prompts::commands::set_prompt_note,
             agent_events::commands::agent_events,
             agent_events::commands::agent_event_counts,
             agent_events::commands::agent_mark_read,
@@ -1262,6 +1264,33 @@ opus-test"
         );
     }
 
+    /// With the user's note on the prompt, the agent is pointed at the prompt with the note
+    /// appended; the generated prompt is unchanged.
+    #[test]
+    fn agent_start_sends_the_prompt_with_the_users_note_appended() {
+        let l = launch_env(|_| {});
+        with_team(&l, "FAKE:ARGS tester");
+        l.repo
+            .write(".foundry/prompts/notes/handoff.md", "Use the staging DB.");
+
+        l.manager
+            .start_agent(&l.id, "builder", handoff(None))
+            .unwrap();
+
+        assert_eq!(
+            written(&l, "args.json"),
+            serde_json::json!([
+                "You are Bob, FAKE:ARGS tester. Read agents/roles/builder.md, then \
+                 .foundry/prompts/sent/handoff.md and follow it."
+            ])
+        );
+        assert_eq!(
+            l.repo.read(".foundry/prompts/sent/handoff.md"),
+            "# Hand-off\n\n## Notes from the user\n\nUse the staging DB."
+        );
+        assert_eq!(l.repo.read(".foundry/prompts/handoff.md"), "# Hand-off\n");
+    }
+
     /// Without a prompt file the agent reads its role, then waits for the human. A slice id
     /// still reaches the environment.
     #[test]
@@ -1926,6 +1955,8 @@ opus-test"
             ".foundry/project.json",
             ".foundry/reviews/*.json",
             ".foundry/reviews/digest.md",
+            // Written only by set_prompt_note.
+            ".foundry/prompts/notes/**",
         ] {
             assert!(team::PROTECTED_FLOOR.contains(&glob), "{glob} missing");
         }
@@ -2134,6 +2165,9 @@ opus-test"
             "\"git_identity_missing\"",
             "\"commit_failed\"",
             "\"git_not_found\"",
+            "getPrompt",
+            "setPromptNote",
+            "export type PromptWithNote",
         ] {
             assert!(ts.contains(name), "{name} missing from bindings");
         }

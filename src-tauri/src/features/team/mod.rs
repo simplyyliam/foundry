@@ -41,6 +41,8 @@ pub const PROTECTED_FLOOR: &[&str] = &[
     // `.foundry/reviews/` stays writable (e.g. a Manager role's review notes).
     ".foundry/reviews/*.json",
     ".foundry/reviews/digest.md",
+    // The user's notes on prompts: written only by `set_prompt_note`.
+    ".foundry/prompts/notes/**",
     ".claude/**",
 ];
 

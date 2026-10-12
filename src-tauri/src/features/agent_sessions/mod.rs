@@ -31,12 +31,12 @@ use tauri_specta::Event;
 
 use crate::core::events::EventMeta;
 use crate::core::hook::HookEndpointCell;
-use crate::core::launch_message;
 use crate::core::process_tree::ProcessTree;
 use crate::core::repos::RepoIndex;
 use crate::core::sessions::{now_ms, SessionInfo, SessionKey, SessionRegistry, SessionStatus};
 use crate::core::subscription::subscription_env;
 use crate::core::{hook_policy, workspace, AppError, ErrorCode};
+use crate::core::{launch_message, prompt_note};
 use ring::Ring;
 
 /// Scrollback kept per agent for `agent_snapshot`.
@@ -426,6 +426,9 @@ impl SessionManager {
             .prompt_file
             .as_deref()
             .map(|file| launch_message::prompt_file(&repo, file))
+            .transpose()?
+            // With the user's note, the agent is sent the prompt with the note appended.
+            .map(|prompt| prompt_note::for_launch(&repo, prompt))
             .transpose()?;
         if let Some(slice_id) = &options.slice_id {
             let one_line = !slice_id.trim().is_empty()

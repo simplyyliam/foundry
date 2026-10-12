@@ -4,7 +4,8 @@
 //!
 //! Reads `.foundry/plan.json`, `.foundry/roadmap.json`, `agents/roles.json`,
 //! `.foundry/agents-placeholders.json`, `.foundry/bakery.json` and `AGENTS.md` (see `disk`;
-//! no other feature is imported). Writes only `.foundry/prompts/`, through `repo_write`.
+//! no other feature is imported). Writes only `.foundry/prompts/`, through `repo_write`,
+//! including the user's notes on prompts (`core::prompt_note`).
 //! Never writes `plan.json`: the plan feature is its only writer.
 
 pub mod commands;
@@ -23,13 +24,14 @@ use specta::Type;
 
 use crate::core::paths::{self, PathKind};
 use crate::core::repos::RepoIndex;
-use crate::core::{launch_message, repo_write, report, AppError, ErrorCode};
+use crate::core::{launch_message, prompt_note, repo_write, report, AppError, ErrorCode};
 
 pub use fix::FixPrompt;
 pub use render::FORCED_PREFIX;
 
 /// `launch_message` returns at most this many characters (built in `core::launch_message`).
 pub use crate::core::launch_message::{MAX_LAUNCH_CHARS, PROMPTS_DIR};
+pub use crate::core::prompt_note::{MAX_NOTE_CHARS, NOTES_HEADING};
 const HANDOFF_FILE: &str = ".foundry/prompts/handoff.md";
 /// Starts the warning for referenced Bakery entries with an empty Take or Skip note.
 pub const BAKERY_NOTE_INCOMPLETE: &str = "bakery_note_incomplete";
@@ -120,6 +122,16 @@ pub struct PromptFile {
     /// Epoch milliseconds.
     #[specta(type = u32)]
     pub modified_ms: u64,
+}
+
+/// A prompt as stored: the generated text and the user's note, kept apart.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptWithNote {
+    /// The generated prompt, exactly as `read_prompt` returns it.
+    pub text: String,
+    /// The user's note, exactly as set; `null` without one.
+    pub note: Option<String>,
 }
 
 // ---------- helpers ----------
@@ -288,6 +300,105 @@ fn parse_task_name<'a>(plan: &'a disk::Plan, name: &'a str) -> Option<(&'a str, 
         .max_by_key(|(slice, _)| slice.len())
 }
 
+/// Plain text: line breaks and tabs, no other control characters.
+fn check_note(note: &str) -> Result<(), AppError> {
+    let chars = note.chars().count();
+    if chars > MAX_NOTE_CHARS {
+        return Err(AppError::invalid_input(format!(
+            "a note can be at most {MAX_NOTE_CHARS} characters (this one has {chars})"
+        )));
+    }
+    if note
+        .chars()
+        .any(|c| c.is_control() && !matches!(c, '\n' | '\r' | '\t'))
+    {
+        return Err(AppError::invalid_input(
+            "a note must be plain text: no control characters other than line breaks and tabs",
+        ));
+    }
+    Ok(())
+}
+
+/// Before writing a prompt file that doesn't exist yet: a note left from a deleted prompt of
+/// the same name goes, so a new prompt starts without one. Regenerating keeps the note.
+fn drop_orphan_note(repo: &Path, rel: &str) -> Result<(), AppError> {
+    if disk::is_file(repo, rel)? {
+        return Ok(());
+    }
+    let Some(name) = Path::new(rel).file_name().and_then(|n| n.to_str()) else {
+        return Ok(());
+    };
+    let note = prompt_note::note_file(name);
+    if disk::is_file(repo, &note)? {
+        repo_write::remove(repo, &note)?;
+    }
+    Ok(())
+}
+
+/// `file` checked to be a repo-relative `.md` file directly in `.foundry/prompts/`, resolved
+/// through `core::paths` (a link out of the folder doesn't count): its file name and
+/// resolved path. It may not exist.
+fn checked_prompt(repo: &Path, file: &str) -> Result<(String, std::path::PathBuf), AppError> {
+    if file.chars().any(char::is_control) {
+        return Err(AppError::invalid_path(
+            "the prompt file path has control characters",
+        ));
+    }
+    let rel = paths::check(Path::new(file), PathKind::Relative)?;
+    let outside = || {
+        AppError::path_escape(format!(
+            "the prompt file must be directly in {PROMPTS_DIR}/"
+        ))
+    };
+    if !rel.starts_with(PROMPTS_DIR) || rel.components().count() != 3 {
+        return Err(outside());
+    }
+    if rel.extension().and_then(|e| e.to_str()) != Some("md") {
+        return Err(AppError::new(
+            ErrorCode::UnsupportedFile,
+            "only .md prompt files can be read",
+        ));
+    }
+    // Through core::paths: a link out of the prompts folder doesn't count.
+    let dir = paths::resolve(repo, PROMPTS_DIR)?;
+    let resolved = paths::resolve(repo, &rel)?;
+    if !resolved.starts_with(&dir) {
+        return Err(outside());
+    }
+    let name = rel
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(outside)?
+        .to_string();
+    Ok((name, resolved))
+}
+
+/// The UTF-8 text of a checked prompt file, at most `MAX_PROMPT_BYTES`.
+fn read_capped(resolved: &Path, file: &str) -> Result<String, AppError> {
+    let file_not_found = || AppError::not_found(format!("no prompt file {file}"));
+    // A folder can't be opened on Windows, so check before opening.
+    if !resolved.is_file() {
+        return Err(file_not_found());
+    }
+    let handle = match std::fs::File::open(resolved) {
+        Ok(handle) => handle,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Err(file_not_found()),
+        Err(err) => return Err(err.into()),
+    };
+    // One byte past the cap tells an oversized file from one exactly at it, even if it
+    // grows between the open and the read.
+    let mut bytes = Vec::new();
+    handle.take(MAX_PROMPT_BYTES + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_PROMPT_BYTES {
+        return Err(AppError::new(
+            ErrorCode::FileTooLarge,
+            format!("prompt files can be at most {} KB", MAX_PROMPT_BYTES / 1000),
+        ));
+    }
+    String::from_utf8(bytes)
+        .map_err(|_| AppError::invalid_input("the prompt file isn't valid UTF-8 text"))
+}
+
 fn epoch_ms(time: std::io::Result<std::time::SystemTime>) -> u64 {
     time.ok()
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
@@ -364,6 +475,7 @@ impl PromptsStore {
         let mut warnings = bakery_warnings(&repo)?;
         let bakery_note_issues = bakery_note_issues(&referenced);
         warnings.extend(incomplete_notes_warning(&bakery_note_issues));
+        drop_orphan_note(&repo, HANDOFF_FILE)?;
         repo_write::write(&repo, HANDOFF_FILE, text)?;
         tracing::info!(project_id, "hand-off prompt generated");
         Ok(HandoffResult {
@@ -420,6 +532,7 @@ impl PromptsStore {
         let bakery_note_issues = bakery_note_issues(&referenced);
         warnings.extend(incomplete_notes_warning(&bakery_note_issues));
         let path = task_file(slice_id, agent_id);
+        drop_orphan_note(&repo, &path)?;
         repo_write::write(&repo, &path, text)?;
         tracing::info!(
             project_id,
@@ -531,6 +644,8 @@ impl PromptsStore {
             }
         }
 
+        // With the user's note, the agent is sent the prompt with the note appended.
+        let prompt = prompt_note::for_launch(&repo, prompt)?;
         launch_message::build(
             &launch_message::RosterAgent {
                 id: agent.id,
@@ -545,54 +660,45 @@ impl PromptsStore {
     /// `.foundry/prompts/`, at most `MAX_PROMPT_BYTES`. Read-only.
     pub fn read_prompt(&self, project_id: &str, file: &str) -> Result<String, AppError> {
         let repo = self.repos.repo(project_id)?;
-        if file.chars().any(char::is_control) {
-            return Err(AppError::invalid_path(
-                "the prompt file path has control characters",
-            ));
-        }
-        let rel = paths::check(Path::new(file), PathKind::Relative)?;
-        let outside = || {
-            AppError::path_escape(format!(
-                "the prompt file must be directly in {PROMPTS_DIR}/"
-            ))
-        };
-        if !rel.starts_with(PROMPTS_DIR) || rel.components().count() != 3 {
-            return Err(outside());
-        }
-        if rel.extension().and_then(|e| e.to_str()) != Some("md") {
-            return Err(AppError::new(
-                ErrorCode::UnsupportedFile,
-                "only .md prompt files can be read",
-            ));
-        }
-        // Through core::paths: a link out of the prompts folder doesn't count.
-        let dir = paths::resolve(&repo, PROMPTS_DIR)?;
-        let resolved = paths::resolve(&repo, &rel)?;
-        if !resolved.starts_with(&dir) {
-            return Err(outside());
-        }
-        let file_not_found = || AppError::not_found(format!("no prompt file {file}"));
-        // A folder can't be opened on Windows, so check before opening.
+        let (_, resolved) = checked_prompt(&repo, file)?;
+        read_capped(&resolved, file)
+    }
+
+    /// The generated text of one prompt file (as `read_prompt`) and the user's note on it,
+    /// apart. Read-only.
+    pub fn get_prompt(&self, project_id: &str, file: &str) -> Result<PromptWithNote, AppError> {
+        let repo = self.repos.repo(project_id)?;
+        let (name, resolved) = checked_prompt(&repo, file)?;
+        let text = read_capped(&resolved, file)?;
+        let note = prompt_note::read(&repo, &name)?;
+        Ok(PromptWithNote { text, note })
+    }
+
+    /// Stores the user's note on an existing prompt file (`file` as for `read_prompt`) in
+    /// `.foundry/prompts/notes/`, replacing any earlier one. Plain text of at most
+    /// `MAX_NOTE_CHARS` characters, kept exactly as written; an empty (or all-whitespace) note
+    /// removes it. The generated prompt is never changed.
+    pub fn set_prompt_note(
+        &self,
+        project_id: &str,
+        file: &str,
+        note: &str,
+    ) -> Result<(), AppError> {
+        let repo = self.repos.repo(project_id)?;
+        check_note(note)?;
+        let (name, resolved) = checked_prompt(&repo, file)?;
         if !resolved.is_file() {
-            return Err(file_not_found());
+            return Err(AppError::not_found(format!("no prompt file {file}")));
         }
-        let handle = match std::fs::File::open(&resolved) {
-            Ok(handle) => handle,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Err(file_not_found()),
-            Err(err) => return Err(err.into()),
-        };
-        // One byte past the cap tells an oversized file from one exactly at it, even if it
-        // grows between the open and the read.
-        let mut bytes = Vec::new();
-        handle.take(MAX_PROMPT_BYTES + 1).read_to_end(&mut bytes)?;
-        if bytes.len() as u64 > MAX_PROMPT_BYTES {
-            return Err(AppError::new(
-                ErrorCode::FileTooLarge,
-                format!("prompt files can be at most {} KB", MAX_PROMPT_BYTES / 1000),
-            ));
+        let rel = prompt_note::note_file(&name);
+        if note.trim().is_empty() {
+            repo_write::remove(&repo, &rel)?;
+            tracing::info!(project_id, prompt = %name, "prompt note removed");
+        } else {
+            repo_write::write(&repo, &rel, note)?;
+            tracing::info!(project_id, prompt = %name, "prompt note set");
         }
-        String::from_utf8(bytes)
-            .map_err(|_| AppError::invalid_input("the prompt file isn't valid UTF-8 text"))
+        Ok(())
     }
 
     /// The hand-off and task prompts in `.foundry/prompts/`, by file name. Other files

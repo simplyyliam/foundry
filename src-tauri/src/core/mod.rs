@@ -16,6 +16,7 @@ pub mod launch_message;
 pub mod llm;
 pub mod paths;
 pub mod process_tree;
+pub mod prompt_note;
 pub mod repo_write;
 pub mod report;
 pub mod repos;

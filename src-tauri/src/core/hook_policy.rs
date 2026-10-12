@@ -39,6 +39,8 @@ pub const PROTECTED_FLOOR: &[&str] = &[
     // `.foundry/reviews/` stays writable (e.g. a Manager role's review notes).
     ".foundry/reviews/*.json",
     ".foundry/reviews/digest.md",
+    // The user's notes on prompts: written only by `set_prompt_note`.
+    ".foundry/prompts/notes/**",
     ".claude/**",
 ];
 
@@ -665,6 +667,30 @@ mod tests {
             )
             .rule(),
             Some(rule::PROTECTED)
+        );
+    }
+
+    #[test]
+    fn no_agent_may_write_the_users_prompt_notes() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        for rel in [
+            ".foundry/prompts/notes/s-1-all.md",
+            ".foundry/prompts/notes/handoff.md",
+            ".foundry/prompts/notes/sub/x.md",
+        ] {
+            for slice in [Some("s-1"), None] {
+                assert_eq!(
+                    edit(repo, "all", slice, rel),
+                    Some(rule::PROTECTED),
+                    "{rel}"
+                );
+            }
+        }
+        // The rest of the prompts folder is as before: up to the role's writeGlobs.
+        assert_eq!(
+            edit(repo, "all", Some("s-1"), ".foundry/prompts/s-1-all.md"),
+            None
         );
     }
 
