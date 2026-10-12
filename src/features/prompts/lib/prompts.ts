@@ -1,4 +1,4 @@
-import type { Plan, PromptFile, SliceStatus, SliceView } from "@/lib/bindings";
+import type { BakeryNoteIssue, Plan, PromptFile, SliceStatus, SliceView } from "@/lib/bindings";
 
 /** Slices by layer, then name (ids break ties so the order never flickers), like the Blueprint. */
 export function orderSlices(slices: readonly SliceView[]): SliceView[] {
@@ -65,3 +65,13 @@ export function formatModified(ms: number, now = new Date()): string {
 }
 
 export const formatModifiedFull = (ms: number) => FULL.format(new Date(ms));
+
+const BAKERY_WARNING_PREFIX = "bakery_note_incomplete:";
+
+/**
+ * The result's warnings, as-is, except the `bakery_note_incomplete` one when its entries come
+ * structured (`bakeryNoteIssues`): `BakeryNoteWarning` says that one, with links.
+ */
+export function plainWarnings(warnings: readonly string[], issues: readonly BakeryNoteIssue[]): string[] {
+  return issues.length === 0 ? [...warnings] : warnings.filter((warning) => !warning.startsWith(BAKERY_WARNING_PREFIX));
+}

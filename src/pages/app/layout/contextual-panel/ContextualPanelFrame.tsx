@@ -1,5 +1,6 @@
 import { matchPath, useLocation } from "react-router-dom";
-import { PROJECT_VIEW_IDS, useProjectView, type ProjectViewId } from "./projectView";
+import { usePanelRequests } from "@/shared";
+import { PROJECT_VIEW_IDS, setProjectView, useProjectView, type ProjectViewId } from "./projectView";
 import { PANEL_VIEWS, ROUTE_VIEWS } from "./views";
 import { ViewSwitcher } from "./ViewSwitcher";
 
@@ -19,6 +20,8 @@ const isProjectView = (id: string): id is ProjectViewId => (PROJECT_VIEW_IDS as 
 export function ContextualPanelFrame() {
   const { pathname } = useLocation();
   const chosen = useProjectView();
+  // A page asked for the conflicts or a Bakery entry: show the view that has it.
+  usePanelRequests((request) => setProjectView(request.kind === "bakery-entry" ? "references" : "roadmap"));
 
   for (const route of ROUTE_VIEWS) {
     const match = matchPath(route.path, pathname);

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ImagePlus, TriangleAlert, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { AppError } from "@/lib/bindings";
-import { DropOverlay, PressButton, useFileDrop } from "@/shared";
+import { DropOverlay, PressButton, useFileDrop, usePanelRequest } from "@/shared";
 import { addFromBytes, addFromPaths, useBakery } from "../hooks/useBakery";
 import { usePasteImage } from "../hooks/usePasteImage";
 import { newestFirst } from "../lib/reference";
@@ -27,6 +27,8 @@ export function References({ projectId, layout, className }: ReferencesProps) {
   const [fresh, setFresh] = useState<ReadonlySet<string>>(new Set());
   const [addError, setAddError] = useState<AppError | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
+  // A page linked to one entry (e.g. a prompt's incomplete-notes warning): open its editor.
+  usePanelRequest("bakery-entry", projectId, (request) => setOpenId(request.entryId));
 
   const added = useCallback((ids: string[]) => setFresh(new Set(ids)), []);
 

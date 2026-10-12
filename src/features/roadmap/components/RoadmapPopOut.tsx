@@ -9,10 +9,12 @@ interface RoadmapPopOutProps {
   projectId: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** Changes when a page asks to settle the conflicts: they scroll into view. */
+  focusConflicts?: number;
 }
 
 /** The same Roadmap in a large scrollable dialog; boxes go two-up when there's room. */
-export function RoadmapPopOut({ projectId, open, onOpenChange }: RoadmapPopOutProps) {
+export function RoadmapPopOut({ projectId, open, onOpenChange, focusConflicts }: RoadmapPopOutProps) {
   const closeRef = usePressScale<HTMLButtonElement>();
 
   return (
@@ -42,7 +44,7 @@ export function RoadmapPopOut({ projectId, open, onOpenChange }: RoadmapPopOutPr
           />
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 py-5">
-          <Roadmap projectId={projectId} ownsPrompts />
+          <Roadmap projectId={projectId} ownsPrompts focusConflicts={focusConflicts} />
         </div>
       </DialogContent>
     </Dialog>

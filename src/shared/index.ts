@@ -50,3 +50,4 @@ export {
   type SliceCommitController,
 } from "./components/slice-commit/types";
 export { CHECK_TYPES, buildCheck, checkKey, describeCheck, type CheckField, type CheckType } from "./lib/requirement-checks";
+export { requestPanel, usePanelRequest, usePanelRequests, resetPanelRequests, type PanelRequest } from "./lib/panel-requests";

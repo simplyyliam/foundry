@@ -3,7 +3,8 @@ import { useState } from "react";
 import type { AppError, HandoffResult } from "@/lib/bindings";
 import { PressButton } from "@/shared";
 import type { Prompts } from "../hooks/usePrompts";
-import { GateError, WarningNotice } from "./Notices";
+import { GateError, WarningNotice, BakeryNoteWarning } from "./Notices";
+import { plainWarnings } from "../lib/prompts";
 import { PromptCard } from "./PromptCard";
 
 interface HandoffCardProps {
@@ -43,7 +44,8 @@ export function HandoffCard({ projectId, exists, generate, onOpen }: HandoffCard
       {result && (
         <div className="flex flex-col gap-2">
           <Written path={result.path} onOpen={() => onOpen(result.path)} />
-          <WarningNotice warnings={result.warnings} />
+          <BakeryNoteWarning projectId={projectId} issues={result.bakeryNoteIssues} />
+          <WarningNotice warnings={plainWarnings(result.warnings, result.bakeryNoteIssues)} />
         </div>
       )}
     </PromptCard>

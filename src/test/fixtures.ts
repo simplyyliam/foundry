@@ -53,7 +53,7 @@ export function requirement(overrides: Partial<PlanRequirement> & Pick<PlanRequi
 }
 
 export function plan(overrides: Partial<Plan> = {}): Plan {
-  return { revision: 1, slices: [], requirements: [], deferred: [], openQuestions: [], ...overrides };
+  return { revision: 1, slices: [], requirements: [], deferred: [], openQuestions: [], unresolvedConflicts: 0, ...overrides };
 }
 
 export function summary(overrides: Partial<PlanSummary> = {}): PlanSummary {

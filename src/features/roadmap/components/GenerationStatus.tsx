@@ -11,6 +11,7 @@ const STAGE_LABEL: Record<Stage, string> = {
   running: "Generating the roadmap",
   validating: "Checking the result",
   retrying: "Retrying",
+  checking_conflicts: "Comparing with your references",
   done: "Finishing",
   failed: "Stopping",
 };

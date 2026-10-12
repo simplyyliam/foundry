@@ -1,11 +1,11 @@
-import { ArrowUpRight, Info, TriangleAlert } from "lucide-react";
+import { ArrowUpRight, ImageOff, Info, TriangleAlert } from "lucide-react";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { buttonVariants } from "@/components/ui/button";
 import { PROJECT_SECTIONS, projectSectionPath } from "@/features/projects";
-import type { AppError } from "@/lib/bindings";
+import type { AppError, BakeryNoteIssue, BakeryNoteMissing } from "@/lib/bindings";
 import { cn } from "@/lib/utils";
-import { usePressScale } from "@/shared";
+import { PressButton, requestPanel, usePressScale } from "@/shared";
 
 /** A backend message, as-is, with an optional action beside it. */
 export function ErrorLine({ message, children, className }: { message: string; children?: ReactNode; className?: string }) {
@@ -29,6 +29,47 @@ export function WarningNotice({ warnings }: { warnings: readonly string[] }) {
           <li key={index}>{warning}</li>
         ))}
       </ul>
+    </div>
+  );
+}
+
+const MISSING: Record<BakeryNoteMissing, string> = {
+  take: "no Take",
+  skip: "no Skip",
+  both: "no Take or Skip",
+};
+
+/** References the prompt points agents to whose notes are incomplete, each opening its editor. */
+export function BakeryNoteWarning({ projectId, issues }: { projectId: string; issues: readonly BakeryNoteIssue[] }) {
+  if (issues.length === 0) return null;
+  return (
+    <div role="status" className="flex items-start gap-2 rounded-lg bg-warning/10 px-3 py-2 text-[12.5px] ring-1 ring-warning/30">
+      <TriangleAlert aria-hidden className="mt-px size-3.5 shrink-0 text-warning" />
+      <div className="flex min-w-0 flex-1 flex-col gap-1.5 leading-snug">
+        <p>
+          {issues.length === 1 ? "A reference in this prompt has" : `${issues.length} references in this prompt have`} incomplete
+          notes, so agents will guess what to copy and what to ignore.
+        </p>
+        <ul aria-label="References with incomplete notes" className="flex flex-wrap gap-1.5">
+          {issues.map((issue) => (
+            <li key={issue.entryId}>
+              <PressButton
+                size="xs"
+                variant="outline"
+                pressScale={0.96}
+                aria-label={`Edit ${issue.file} (${MISSING[issue.missing]})`}
+                onClick={() => requestPanel({ kind: "bakery-entry", projectId, entryId: issue.entryId })}
+                className="h-auto min-h-6 max-w-full rounded-md bg-background py-0.5 font-normal"
+              >
+                <ImageOff aria-hidden data-icon="inline-start" className="text-muted-foreground" />
+                <span className="truncate font-mono text-[11.5px]">{issue.file}</span>
+                <span className="shrink-0 text-muted-foreground">· {MISSING[issue.missing]}</span>
+                <ArrowUpRight aria-hidden data-icon="inline-end" />
+              </PressButton>
+            </li>
+          ))}
+        </ul>
+      </div>
     </div>
   );
 }

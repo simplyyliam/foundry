@@ -5,10 +5,10 @@ import { PressButton } from "@/shared";
 import type { PromptPlan } from "../hooks/usePromptPlan";
 import type { Prompts } from "../hooks/usePrompts";
 import type { TeamLoad } from "../hooks/usePromptTeam";
-import { decisionText, orderSlices, unfinishedFromMessage } from "../lib/prompts";
+import { decisionText, orderSlices, plainWarnings, unfinishedFromMessage } from "../lib/prompts";
 import { ForceDialog, type ForceRequest } from "./ForceDialog";
 import { Written } from "./HandoffCard";
-import { ErrorLine, GateError, SectionLink, WarningNotice } from "./Notices";
+import { ErrorLine, GateError, SectionLink, WarningNotice, BakeryNoteWarning } from "./Notices";
 import { AgentPicker, SlicePicker } from "./Pickers";
 import { PromptCard } from "./PromptCard";
 
@@ -154,7 +154,8 @@ export function TaskPromptCard({ projectId, plan, team, generate, onOpen }: Task
       {done && (
         <div className="flex flex-col gap-2">
           <Written path={done.result.path} onOpen={() => onOpen(done.result.path)} />
-          <WarningNotice warnings={done.result.warnings} />
+          <BakeryNoteWarning projectId={projectId} issues={done.result.bakeryNoteIssues} />
+          <WarningNotice warnings={plainWarnings(done.result.warnings, done.result.bakeryNoteIssues)} />
           {done.decision?.status === "recording" && (
             <p className="flex items-center gap-1.5 text-[12.5px] text-muted-foreground">
               <LoaderCircle aria-hidden className="size-3 animate-spin" />

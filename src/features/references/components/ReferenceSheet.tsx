@@ -58,7 +58,7 @@ function Details({ projectId, dir, item, onRemoved }: { projectId: string; dir: 
           {ORDER.map((key) => (
             <div key={key} className="flex flex-col gap-1.5">
               <Label className="text-[12px] text-muted-foreground">{FIELDS[key].label}</Label>
-              <Field projectId={projectId} item={item} field={key} multiline={key === "take" || key === "skip"} />
+              <Field projectId={projectId} item={item} field={key} multiline={key === "take" || key === "skip"} showHint />
             </div>
           ))}
         </div>

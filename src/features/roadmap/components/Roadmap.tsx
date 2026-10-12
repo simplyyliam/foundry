@@ -5,10 +5,12 @@ import { cn } from "@/lib/utils";
 import { PROJECT_SECTIONS, projectSectionPath } from "@/features/projects";
 import { usePressScale } from "@/shared";
 import { useClaudeStatus } from "../hooks/useClaudeStatus";
+import { useConflicts } from "../hooks/useConflicts";
 import { useGenerateControl } from "../hooks/useGenerateControl";
 import { cancelGeneration, useGeneration } from "../hooks/useGeneration";
 import { useRoadmap } from "../hooks/useRoadmap";
 import { Artifact, BodyText } from "./Artifact";
+import { ConflictsPanel } from "./ConflictsPanel";
 import { DiscardDialog } from "./DiscardDialog";
 import { ErrorArtifact, GenerationProgress } from "./GenerationStatus";
 import { NeedsALook } from "./NeedsALook";
@@ -28,6 +30,8 @@ interface RoadmapProps {
    * the dialog nests inside it (and never shows twice).
    */
   ownsPrompts: boolean;
+  /** Changes when a page asks to settle the conflicts: they scroll into view. */
+  focusConflicts?: number;
   className?: string;
 }
 
@@ -35,11 +39,12 @@ interface RoadmapProps {
  * The roadmap itself, used as-is by the panel and the pop-out: status boxes on top, then the
  * plan as the backend returned it. Narrow: one column; wide (`@2xl`): boxes in two columns.
  */
-export function Roadmap({ projectId, ownsPrompts, className }: RoadmapProps) {
+export function Roadmap({ projectId, ownsPrompts, focusConflicts, className }: RoadmapProps) {
   const data = useRoadmap(projectId);
   const generation = useGeneration(projectId);
   const claude = useClaudeStatus();
   const control = useGenerateControl(projectId);
+  const conflicts = useConflicts(projectId);
   const generateRef = usePressScale<HTMLButtonElement>({ disabled: !control.canGenerate });
   const result = data.result;
 
@@ -58,6 +63,7 @@ export function Roadmap({ projectId, ownsPrompts, className }: RoadmapProps) {
       )}
       {data.error && <ErrorArtifact errors={[data.error]} />}
       {result && <NeedsALook result={result} />}
+      <ConflictsPanel controller={conflicts} focusToken={focusConflicts} />
 
       {data.status === "loading" ? (
         <div className="flex flex-col gap-2" aria-label="Loading roadmap">

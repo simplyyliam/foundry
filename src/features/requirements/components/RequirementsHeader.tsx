@@ -2,6 +2,7 @@ import { useState } from "react";
 import { CheckCheck, CircleCheck, CircleDashed, Plus } from "lucide-react";
 import type { Plan, PlanRequirement, PlanSummary } from "@/lib/bindings";
 import { PressButton } from "@/shared";
+import { UnsettledConflictsDialog } from "./UnsettledConflictsDialog";
 import { useAction } from "../hooks/useAction";
 import type { RequirementActions } from "../hooks/useRequirementActions";
 import { orderSlices, placement, plural } from "../lib/order";
@@ -16,6 +17,7 @@ interface RequirementsHeaderProps {
 /** Counts, Confirm all (which skips unassigned requirements, not project-wide ones) and Add requirement. */
 export function RequirementsHeader({ plan, actions }: RequirementsHeaderProps) {
   const [adding, setAdding] = useState(false);
+  const [askingConflicts, setAskingConflicts] = useState(false);
   const { busy, error, run } = useAction();
   const known = new Set(plan.slices.map((slice) => slice.id));
   const unhandled = (requirement: PlanRequirement) => placement(requirement, known) === "unassigned";
@@ -39,7 +41,8 @@ export function RequirementsHeader({ plan, actions }: RequirementsHeaderProps) {
           size="sm"
           disabled={busy || confirmable === 0}
           title={unassigned > 0 ? "Unassigned requirements stay proposed" : undefined}
-          onClick={() => void run(() => actions.confirmAll())}
+          // Unsettled conflicts never block: they only get one question first.
+          onClick={() => (plan.unresolvedConflicts > 0 ? setAskingConflicts(true) : void run(() => actions.confirmAll()))}
         >
           <CheckCheck aria-hidden data-icon="inline-start" />
           Confirm all{confirmable > 0 && ` (${confirmable})`}
@@ -53,6 +56,13 @@ export function RequirementsHeader({ plan, actions }: RequirementsHeaderProps) {
         <p className="text-right text-[12px] text-muted-foreground">Confirm all skips the {unassigned} unassigned.</p>
       )}
       <ActionError error={error} />
+      <UnsettledConflictsDialog
+        open={askingConflicts}
+        onOpenChange={setAskingConflicts}
+        count={plan.unresolvedConflicts}
+        projectId={actions.projectId}
+        onConfirmAnyway={() => void run(() => actions.confirmAll())}
+      />
       <RequirementDialog open={adding} onOpenChange={setAdding} actions={actions} slices={orderSlices(plan.slices)} />
     </div>
   );

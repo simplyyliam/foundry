@@ -3,7 +3,7 @@ import { ChevronRight } from "lucide-react";
 import type { BakeryItem } from "@/lib/bindings";
 import { PressButton } from "@/shared";
 import { updateReference } from "../hooks/useBakery";
-import { FIELDS, type FieldKey } from "../lib/fields";
+import { EMPTY_SKIP_CONFIRM, FIELDS, type FieldKey } from "../lib/fields";
 import { parseList } from "../lib/reference";
 import { CommitField } from "./CommitField";
 
@@ -48,11 +48,14 @@ export function Field({
   item,
   field,
   multiline,
+  showHint,
 }: {
   projectId: string;
   item: BakeryItem;
   field: FieldKey;
   multiline?: boolean;
+  /** The field's muted hint under it (the sheet; cards have no room). */
+  showHint?: boolean;
 }) {
   const spec = FIELDS[field];
   const raw = item[field];
@@ -63,6 +66,8 @@ export function Field({
       label={spec.label}
       placeholder={spec.placeholder}
       multiline={multiline}
+      hint={showHint ? spec.hint : undefined}
+      confirmEmpty={field === "skip" ? EMPTY_SKIP_CONFIRM : undefined}
       onCommit={(text) => updateReference(projectId, item.id, { [field]: spec.list ? parseList(text) : text })}
     />
   );
