@@ -337,6 +337,11 @@ export const commands = {
 	 */
 	cancelVerification: (projectId: string) => typedError<boolean, AppError>(__TAURI_INVOKE("cancel_verification", { projectId })),
 	managerDigest: (projectId: string) => typedError<ManagerDigest, AppError>(__TAURI_INVOKE("manager_digest", { projectId })),
+	/**
+	 *  What to do after the slice's last verification, in plain words: a headline, the actions
+	 *  the user can take, and one entry per finding. Read-only: it never performs an action.
+	 */
+	verificationGuidance: (projectId: string, sliceId: string) => typedError<VerificationGuidance, AppError>(__TAURI_INVOKE("verification_guidance", { projectId, sliceId })),
 	/**  Writes the digest to `.foundry/reviews/digest.md` and returns it. */
 	writeDigestFile: (projectId: string) => typedError<ManagerDigest, AppError>(__TAURI_INVOKE("write_digest_file", { projectId })),
 	/**
@@ -902,6 +907,21 @@ export type Finding = {
 	agent: string | null,
 };
 
+/**  How a finding weighs on the slice. */
+export type FindingGroup = 
+/**  Must be fixed (headline `needs_fix`). */
+"fix" | 
+/**  The user must decide (headline `needs_decision`). */
+"decide" | 
+/**  Fine to mark done with an override reason (headline `safe_to_override`). */
+"override" | 
+/**  Worth doing, doesn't block. */
+"follow_up" | 
+/**  For information. */
+"info" | 
+/**  Nothing to do. */
+"ignore";
+
 /**  Ordered: `info < warn < danger`. */
 export type FindingSeverity = "info" | "warn" | "danger";
 
@@ -956,6 +976,40 @@ export type GenerateOptions = {
 	overwrite: boolean,
 };
 
+/**  One thing the user can do. Foundry never does it on its own. */
+export type GuidanceAction = {
+	/**  Unique within one guidance, e.g. `reverify` or `send:f2`. */
+	id: string,
+	label: string,
+	kind: GuidanceActionKind,
+	/**
+	 *  `send_to_agent`: who to send `message` to; `null` when the slice has several agents
+	 *  and the user picks.
+	 */
+	agentId: string | null,
+	/**  `send_to_agent`: the message to send. `manual` and `stop_dev_server`: what to do. */
+	message: string | null,
+	/**  `override`: a reason to start from; `<reason>` is for the user to fill in. */
+	reasonTemplate: string | null,
+};
+
+export type GuidanceActionKind = "mark_done" | "commit" | "send_to_agent" | "override" | "reverify" | "commit_setup" | "stop_dev_server" | "manual";
+
+export type GuidedFinding = {
+	/**
+	 *  `f<index>` for the review's findings (index into `findings`), `r:<requirementId>` for a
+	 *  requirement reported not met or partly.
+	 */
+	findingId: string,
+	plain: string,
+	whatToDo: string,
+	group: FindingGroup,
+	/**  A failed test command's last 40 output lines. */
+	output: string | null,
+	/**  The ids of the actions in `actions` that belong to this finding. */
+	actionIds: string[],
+};
+
 export type HandbookRole = {
 	id: string,
 	title: string,
@@ -980,6 +1034,13 @@ export type HandoffResult = {
 	/**  Not refusals, e.g. unlabeled Bakery images. */
 	warnings: string[],
 };
+
+export type Headline = {
+	kind: HeadlineKind,
+	text: string,
+};
+
+export type HeadlineKind = "passed" | "needs_fix" | "safe_to_override" | "needs_decision" | "stale" | "waiting" | "skipped";
 
 export type HooksChange = {
 	status: HooksStatus,
@@ -1590,6 +1651,12 @@ export type Verification = {
 	 */
 	stale: boolean,
 } & Review;
+
+export type VerificationGuidance = {
+	headline: Headline,
+	actions: GuidanceAction[],
+	findings: GuidedFinding[],
+};
 
 export type VerificationState = "passed" | "failed" | 
 /**  Never verified. */

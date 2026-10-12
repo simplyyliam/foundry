@@ -2271,3 +2271,632 @@ fn another_slices_change_after_verifying_doesnt_make_the_verification_stale() {
     let now = env.store.get_verification(P, S).unwrap().unwrap();
     assert!(!now.stale);
 }
+
+// ---------- guidance ----------
+
+mod guidance_rules {
+    use super::*;
+    use crate::features::verification::guidance::{self, Inputs, PathFacts};
+
+    fn mk(code: &str, severity: FindingSeverity) -> Finding {
+        Finding {
+            severity,
+            code: code.into(),
+            message: format!("{code} happened"),
+            requirement_id: None,
+            path: None,
+            agent: None,
+        }
+    }
+
+    fn at(mut f: Finding, path: &str) -> Finding {
+        f.path = Some(path.into());
+        f
+    }
+
+    fn review(passed: bool, findings: Vec<Finding>) -> Review {
+        Review {
+            slice_id: S.into(),
+            passed,
+            findings,
+            test_runs: Vec::new(),
+            reports: Vec::new(),
+            requirements: Vec::new(),
+            report: Value::Null,
+            verified_at: 1,
+        }
+    }
+
+    fn inputs(review: Review) -> Inputs {
+        Inputs {
+            slice_id: S.into(),
+            review: Some(review),
+            on_slice: vec!["ada".into()],
+            reported: ["ada".to_string()].into(),
+            names: [("ada".to_string(), "Ada".to_string())].into(),
+            ..Inputs::default()
+        }
+    }
+
+    fn failed_run(command: &str, tail: &str) -> CommandRun {
+        CommandRun {
+            command: command.into(),
+            exit_code: Some(1),
+            duration_ms: 10,
+            tail: tail.into(),
+            timed_out: false,
+        }
+    }
+
+    fn test_failure(tail: &str) -> Inputs {
+        let mut r = review(
+            false,
+            vec![Finding {
+                message: "`pnpm test` failed (exit code 1)".into(),
+                ..mk(code::TEST_FAILED, FindingSeverity::Danger)
+            }],
+        );
+        r.test_runs.push(failed_run("pnpm test", tail));
+        inputs(r)
+    }
+
+    fn kinds(g: &VerificationGuidance) -> Vec<GuidanceActionKind> {
+        g.actions.iter().map(|a| a.kind).collect()
+    }
+
+    #[test]
+    fn every_finding_code_has_a_rule() {
+        let source = include_str!("mod.rs");
+        let block = source
+            .split("pub mod code {")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}").next())
+            .expect("the code module");
+        let codes: Vec<&str> = block
+            .lines()
+            .filter(|l| l.trim_start().starts_with("pub const"))
+            .filter_map(|l| l.split('"').nth(1))
+            .collect();
+        assert_eq!(codes.len(), 17, "{codes:?}");
+        for c in codes {
+            assert!(
+                guidance::has_rule(c),
+                "finding code {c} has no guidance rule"
+            );
+        }
+    }
+
+    #[test]
+    fn test_failed_sends_the_command_and_its_last_40_lines_to_the_slice_agent() {
+        let tail: String = (1..=60).map(|n| format!("line {n}\n")).collect();
+        let g = guidance::build(&test_failure(&tail));
+        assert_eq!(g.headline.kind, HeadlineKind::NeedsFix);
+        let f = &g.findings[0];
+        assert_eq!(f.group, FindingGroup::Fix);
+        assert_eq!(f.plain, "`pnpm test` failed (exit code 1).");
+        let output = f.output.as_deref().unwrap();
+        assert_eq!(output.lines().count(), 40);
+        assert!(output.starts_with("line 21\n") && output.ends_with("line 60"));
+        let send = &g.actions[0];
+        assert_eq!(
+            (send.kind, send.agent_id.as_deref()),
+            (GuidanceActionKind::SendToAgent, Some("ada"))
+        );
+        let message = send.message.as_deref().unwrap();
+        assert!(message.contains("`pnpm test` failed"), "{message}");
+        assert!(message.contains("line 60") && !message.contains("line 20\n"));
+        assert!(message
+            .ends_with("Fix the code, don't weaken tests, run the command, report the result."));
+        assert_eq!(f.action_ids, [send.id.clone()]);
+        assert_eq!(kinds(&g).last(), Some(&GuidanceActionKind::Reverify));
+    }
+
+    #[test]
+    fn eperm_on_the_prisma_engine_says_stop_the_dev_server_then_reverify() {
+        let tail = "Error: EPERM: operation not permitted, rename \
+                    'node_modules/.prisma/client/query_engine-windows.dll.node.tmp123'\n";
+        let g = guidance::build(&test_failure(tail));
+        assert_eq!(
+            kinds(&g),
+            [
+                GuidanceActionKind::StopDevServer,
+                GuidanceActionKind::Reverify
+            ]
+        );
+        assert!(g.findings[0]
+            .what_to_do
+            .contains("Stop the dev server and Prisma Studio"));
+        // EBUSY on a .node file too; EPERM on something else is the code's problem.
+        let busy = guidance::build(&test_failure(
+            "EBUSY: resource busy or locked, open 'x/sharp.node'",
+        ));
+        assert_eq!(busy.actions[0].kind, GuidanceActionKind::StopDevServer);
+        let other = guidance::build(&test_failure(
+            "EPERM: operation not permitted, open 'a.txt'",
+        ));
+        assert_eq!(other.actions[0].kind, GuidanceActionKind::SendToAgent);
+    }
+
+    #[test]
+    fn eaddrinuse_says_a_port_is_in_use() {
+        let g = guidance::build(&test_failure(
+            "Error: listen EADDRINUSE: address already in use :::3000",
+        ));
+        assert_eq!(
+            kinds(&g),
+            [GuidanceActionKind::Manual, GuidanceActionKind::Reverify]
+        );
+        assert!(g.actions[0]
+            .message
+            .as_deref()
+            .unwrap()
+            .starts_with("A port is in use: stop whatever is using it, or change the port"));
+    }
+
+    #[test]
+    fn a_timed_out_test_follows_the_test_failed_flow() {
+        let mut i = test_failure("still running...");
+        let r = i.review.as_mut().unwrap();
+        r.findings[0].code = code::TEST_TIMED_OUT.into();
+        r.test_runs[0].timed_out = true;
+        r.test_runs[0].exit_code = None;
+        let g = guidance::build(&i);
+        assert_eq!(g.findings[0].plain, "`pnpm test` didn't finish in time.");
+        assert_eq!(g.actions[0].kind, GuidanceActionKind::SendToAgent);
+    }
+
+    #[test]
+    fn a_change_to_rules_design_claude_or_the_plan_is_revert_and_tell_the_agent() {
+        for path in [
+            "AGENTS.md",
+            "agents/roles.json",
+            "docs/design/a.png",
+            ".claude/x.json",
+            ".foundry/plan.json",
+        ] {
+            let g = guidance::build(&inputs(review(
+                false,
+                vec![at(
+                    mk(code::PROTECTED_FILE_CHANGED, FindingSeverity::Danger),
+                    path,
+                )],
+            )));
+            assert_eq!(g.headline.kind, HeadlineKind::NeedsFix, "{path}");
+            assert!(g.findings[0].what_to_do.starts_with("Revert it"), "{path}");
+            let send = &g.actions[0];
+            assert_eq!(send.kind, GuidanceActionKind::SendToAgent);
+            assert!(send.message.as_deref().unwrap().contains(path));
+        }
+    }
+
+    #[test]
+    fn a_file_of_another_slice_is_safe_to_override_with_a_reason_template() {
+        let mut i = inputs(review(
+            false,
+            vec![at(
+                mk(code::PROTECTED_FILE_CHANGED, FindingSeverity::Danger),
+                "packages/server/a.ts",
+            )],
+        ));
+        i.paths.insert(
+            "packages/server/a.ts".into(),
+            PathFacts {
+                elsewhere: Some("lisa on slice s-api".into()),
+                ..PathFacts::default()
+            },
+        );
+        let g = guidance::build(&i);
+        assert_eq!(g.headline.kind, HeadlineKind::SafeToOverride);
+        assert_eq!(g.findings[0].group, FindingGroup::Override);
+        assert_eq!(
+            kinds(&g),
+            [GuidanceActionKind::Override, GuidanceActionKind::Commit]
+        );
+        assert_eq!(
+            g.actions[0].reason_template.as_deref(),
+            Some(
+                "packages/server/a.ts was changed by lisa on slice s-api, not this slice; <reason>"
+            )
+        );
+        assert_eq!(g.findings[0].action_ids, ["override"]);
+    }
+
+    #[test]
+    fn one_small_out_of_scope_edit_gets_a_reason_template_naming_the_file() {
+        let outside = |n| {
+            let mut i = inputs(review(
+                true,
+                vec![at(
+                    mk(code::OUTSIDE_WRITE_GLOBS, FindingSeverity::Warn),
+                    "turbo.json",
+                )],
+            ));
+            i.paths.insert(
+                "turbo.json".into(),
+                PathFacts {
+                    changed_lines: Some(n),
+                    ..PathFacts::default()
+                },
+            );
+            guidance::build(&i)
+        };
+        let small = outside(3);
+        assert_eq!(small.headline.kind, HeadlineKind::SafeToOverride);
+        assert_eq!(
+            small.actions[0].reason_template.as_deref(),
+            Some("Edit to turbo.json needed for this slice; <reason>")
+        );
+        let big = outside(200);
+        assert_eq!(big.headline.kind, HeadlineKind::NeedsDecision);
+        assert_eq!(big.findings[0].group, FindingGroup::Decide);
+    }
+
+    #[test]
+    fn shared_file_touched_needs_a_decision_to_check_the_merged_result() {
+        let g = guidance::build(&inputs(review(
+            true,
+            vec![at(
+                mk(code::SHARED_FILE_TOUCHED, FindingSeverity::Warn),
+                "src/app.ts",
+            )],
+        )));
+        assert_eq!(g.headline.kind, HeadlineKind::NeedsDecision);
+        assert_eq!(
+            g.findings[0].plain,
+            "Both slices changed src/app.ts: open it and check the merged result."
+        );
+        assert_eq!(
+            kinds(&g),
+            [GuidanceActionKind::Manual, GuidanceActionKind::Reverify]
+        );
+    }
+
+    #[test]
+    fn missing_evidence_doesnt_block_and_asks_the_agent_to_update_its_report() {
+        let mut f = mk(code::MISSING_EVIDENCE, FindingSeverity::Warn);
+        f.requirement_id = Some("r-1".into());
+        f.agent = Some("ada".into());
+        let g = guidance::build(&inputs(review(true, vec![f])));
+        assert_eq!(g.headline.kind, HeadlineKind::Passed);
+        assert_eq!(g.findings[0].group, FindingGroup::FollowUp);
+        assert_eq!(
+            kinds(&g),
+            [
+                GuidanceActionKind::MarkDone,
+                GuidanceActionKind::Commit,
+                GuidanceActionKind::SendToAgent
+            ]
+        );
+        assert_eq!(
+            g.actions[2].message.as_deref(),
+            Some(
+                "Update your report for requirement r-1 to name the test and command that \
+                 cover it. Don't change any code."
+            )
+        );
+    }
+
+    #[test]
+    fn a_not_met_or_partly_requirement_goes_back_with_its_text_and_what_the_report_says() {
+        let mut r = review(true, Vec::new());
+        r.reports.push(VerifiedReport {
+            path: format!(".foundry/reports/{S}.ada.json"),
+            agent: "ada".into(),
+            report: json!({ "requirements": [
+                { "id": "r-1", "status": "not_met", "evidence": "the API isn't there yet" }
+            ]}),
+        });
+        for (id, status) in [
+            ("r-1", RequirementStatus::NotMet),
+            ("r-2", RequirementStatus::Partly),
+        ] {
+            r.requirements.push(RequirementOutcome {
+                id: id.into(),
+                status: Some(status),
+                reported_by: vec![ReportedStatus {
+                    agent: "ada".into(),
+                    status,
+                }],
+            });
+        }
+        let mut i = inputs(r);
+        i.requirement_text
+            .insert("r-1".into(), "Users can log in".into());
+        let g = guidance::build(&i);
+        assert_eq!(g.headline.kind, HeadlineKind::NeedsFix);
+        let ids: Vec<&str> = g.findings.iter().map(|f| f.finding_id.as_str()).collect();
+        assert_eq!(ids, ["r:r-1", "r:r-2"]);
+        assert_eq!(
+            g.findings[0].plain,
+            "Requirement r-1 (\"Users can log in\") is not met."
+        );
+        let message = g.actions[0].message.as_deref().unwrap();
+        assert_eq!(g.actions[0].agent_id.as_deref(), Some("ada"));
+        assert!(message.contains("(\"Users can log in\")"), "{message}");
+        assert!(message.contains("Your report says not met: the API isn't there yet"));
+        assert!(g.actions[1]
+            .message
+            .as_deref()
+            .unwrap()
+            .contains("Your report says partly."));
+    }
+
+    #[test]
+    fn foundry_file_changed_is_ignored() {
+        let g = guidance::build(&inputs(review(
+            true,
+            vec![at(
+                mk(code::FOUNDRY_FILE_CHANGED, FindingSeverity::Info),
+                "vsm_data.js",
+            )],
+        )));
+        assert_eq!(g.findings[0].group, FindingGroup::Ignore);
+        assert_eq!(g.findings[0].plain, "Foundry rewrites this file itself.");
+        assert_eq!(g.headline.kind, HeadlineKind::Passed);
+    }
+
+    #[test]
+    fn the_codes_without_their_own_spec_rule_get_the_agreed_defaults() {
+        let group = |code: &str, severity| {
+            guidance::build(&inputs(review(false, vec![mk(code, severity)]))).findings[0].group
+        };
+        use FindingSeverity::{Danger, Info, Warn};
+        assert_eq!(
+            group(code::UNREPORTED_REQUIREMENT, Danger),
+            FindingGroup::Fix
+        );
+        assert_eq!(group(code::CONTRADICTION, Danger), FindingGroup::Fix);
+        assert_eq!(
+            group(code::UNKNOWN_REQUIREMENT, Warn),
+            FindingGroup::FollowUp
+        );
+        assert_eq!(group(code::SLICE_MISMATCH, Warn), FindingGroup::FollowUp);
+        assert_eq!(group(code::NO_TEST_COMMAND, Warn), FindingGroup::FollowUp);
+        assert_eq!(group(code::BOUNDARY_SKIPPED, Warn), FindingGroup::FollowUp);
+        assert_eq!(group(code::REPORTED_BLOCKER, Warn), FindingGroup::Decide);
+        assert_eq!(group(code::PARTLY_REPORTED, Info), FindingGroup::Info);
+        assert_eq!(
+            group(code::AMBIGUOUS_SHELL_CHANGE, Info),
+            FindingGroup::Info
+        );
+        assert_eq!(group(code::OWNED_BY_OTHER_SLICE, Info), FindingGroup::Info);
+    }
+
+    #[test]
+    fn a_fix_and_an_override_together_need_a_fix_first() {
+        let mut i = test_failure("assertion failed");
+        let r = i.review.as_mut().unwrap();
+        r.findings.push(at(
+            mk(code::OUTSIDE_WRITE_GLOBS, FindingSeverity::Warn),
+            "turbo.json",
+        ));
+        i.paths.insert(
+            "turbo.json".into(),
+            PathFacts {
+                changed_lines: Some(2),
+                ..PathFacts::default()
+            },
+        );
+        let g = guidance::build(&i);
+        assert_eq!(g.headline.kind, HeadlineKind::NeedsFix);
+        let groups: Vec<FindingGroup> = g.findings.iter().map(|f| f.group).collect();
+        assert_eq!(groups, [FindingGroup::Fix, FindingGroup::Override]);
+        assert_eq!(
+            kinds(&g),
+            [
+                GuidanceActionKind::SendToAgent,
+                GuidanceActionKind::Reverify
+            ],
+            "no override while something needs a fix"
+        );
+    }
+
+    #[test]
+    fn a_failed_review_with_only_info_findings_is_passed_with_a_note() {
+        let g = guidance::build(&inputs(review(
+            false,
+            vec![mk(code::PARTLY_REPORTED, FindingSeverity::Info)],
+        )));
+        assert_eq!(g.headline.kind, HeadlineKind::Passed);
+        assert!(g
+            .headline
+            .text
+            .starts_with("Passed (the saved result says failed"));
+        assert_eq!(
+            kinds(&g),
+            [GuidanceActionKind::MarkDone, GuidanceActionKind::Commit]
+        );
+    }
+
+    #[test]
+    fn a_setup_skip_offers_commit_setup() {
+        let mut i = inputs(review(true, Vec::new()));
+        i.skip = Some(VerifySkip {
+            slice_id: S.into(),
+            reason: SkipReason::SetupNotCommitted,
+            code: ErrorCode::SetupNotCommitted,
+            message: "\"Feed\" has no start commit, and Foundry's setup isn't committed.".into(),
+            at: 1,
+        });
+        let g = guidance::build(&i);
+        assert_eq!(g.headline.kind, HeadlineKind::Skipped);
+        assert_eq!(g.headline.text, i.skip.as_ref().unwrap().message);
+        assert_eq!(g.actions[0].kind, GuidanceActionKind::CommitSetup);
+    }
+
+    #[test]
+    fn headline_priority_is_waiting_skipped_stale_then_fix_decision_override_passed() {
+        let all = || {
+            let mut i = inputs(review(
+                false,
+                vec![
+                    at(mk(code::SHARED_FILE_TOUCHED, FindingSeverity::Warn), "a.ts"),
+                    at(mk(code::OUTSIDE_WRITE_GLOBS, FindingSeverity::Warn), "b.ts"),
+                    mk(code::UNREPORTED_REQUIREMENT, FindingSeverity::Danger),
+                ],
+            ));
+            i.paths.insert(
+                "b.ts".into(),
+                PathFacts {
+                    elsewhere: Some("bo on slice s-web".into()),
+                    ..PathFacts::default()
+                },
+            );
+            i.on_slice.push("bo".into());
+            i.stale = true;
+            i.skip = Some(VerifySkip {
+                slice_id: S.into(),
+                reason: SkipReason::TestCommandsUnconfirmed,
+                code: ErrorCode::TestCommandsUnconfirmed,
+                message: "confirm them".into(),
+                at: 1,
+            });
+            i
+        };
+        let kind = |i: &Inputs| guidance::build(i).headline.kind;
+        let mut i = all();
+        assert_eq!(kind(&i), HeadlineKind::Waiting);
+        i.on_slice.pop();
+        assert_eq!(kind(&i), HeadlineKind::Skipped);
+        i.skip = None;
+        assert_eq!(kind(&i), HeadlineKind::Stale);
+        i.stale = false;
+        assert_eq!(kind(&i), HeadlineKind::NeedsFix);
+        i.review.as_mut().unwrap().findings.pop();
+        assert_eq!(kind(&i), HeadlineKind::NeedsDecision);
+        i.review.as_mut().unwrap().findings.remove(0);
+        assert_eq!(kind(&i), HeadlineKind::SafeToOverride);
+        i.review.as_mut().unwrap().findings.clear();
+        assert_eq!(kind(&i), HeadlineKind::Passed);
+        // While not final, findings are described but carry no actions.
+        let waiting = guidance::build(&all());
+        assert!(waiting.actions.is_empty());
+        assert_eq!(waiting.findings.len(), 3);
+    }
+}
+
+// End to end, through the store.
+
+#[test]
+fn guidance_passed_offers_mark_done_then_commit() {
+    let env = Env::new();
+    env.commands(&[]);
+    env.write_agent_report(
+        "ada",
+        &report_by("ada", json!([met("r-1", "test a"), met("r-2", "test b")])),
+    );
+    env.verify().unwrap();
+    let g = env.store.guidance(P, S).unwrap();
+    assert_eq!(
+        (g.headline.kind, g.headline.text.as_str()),
+        (HeadlineKind::Passed, "Passed")
+    );
+    let kinds: Vec<GuidanceActionKind> = g.actions.iter().map(|a| a.kind).collect();
+    // `no_test_command` is a follow-up after them.
+    assert_eq!(
+        kinds[..2],
+        [GuidanceActionKind::MarkDone, GuidanceActionKind::Commit]
+    );
+}
+
+#[test]
+fn guidance_waits_for_the_slices_agents_from_task_prompts_and_ledger_sessions() {
+    let env = Env::new();
+    env.commands(&[]);
+    env.repo
+        .write(&format!(".foundry/prompts/{S}-ada.md"), "# task");
+    env.repo
+        .write(&format!(".foundry/prompts/{S}-bo.md"), "# task");
+    env.repo.write(".foundry/prompts/handoff.md", "# handoff");
+    env.ledger(writes::EntryKind::Start, "sess-cy", S, "cy", 100);
+    env.write_agent_report(
+        "ada",
+        &report_by("ada", json!([met("r-1", "test a"), met("r-2", "test b")])),
+    );
+    env.verify().unwrap();
+    let g = env.store.guidance(P, S).unwrap();
+    assert_eq!(g.headline.kind, HeadlineKind::Waiting);
+    assert_eq!(
+        g.headline.text,
+        "Waiting for bo and cy. Earlier results aren't final."
+    );
+    assert!(g.actions.is_empty());
+}
+
+#[test]
+fn guidance_for_a_stale_verification_is_reverify() {
+    let env = Env::new();
+    env.commands(&[]);
+    env.write_agent_report(
+        "ada",
+        &report_by("ada", json!([met("r-1", "test a"), met("r-2", "test b")])),
+    );
+    env.verify().unwrap();
+    env.write_agent_report(
+        "ada",
+        &report_by("ada", json!([met("r-1", "test a2"), met("r-2", "test b")])),
+    );
+    let g = env.store.guidance(P, S).unwrap();
+    assert_eq!(g.headline.kind, HeadlineKind::Stale);
+    let kinds: Vec<GuidanceActionKind> = g.actions.iter().map(|a| a.kind).collect();
+    assert_eq!(kinds, [GuidanceActionKind::Reverify]);
+}
+
+#[test]
+fn guidance_for_a_skip_gives_its_plain_reason_and_fix() {
+    let env = Env::new();
+    env.store
+        .set_test_commands(P, vec!["cargo test".into()])
+        .unwrap();
+    env.write_agent_report(
+        "ada",
+        &report_by("ada", json!([met("r-1", "test a"), met("r-2", "test b")])),
+    );
+    let refused = env.verify().unwrap_err();
+    let g = env.store.guidance(P, S).unwrap();
+    assert_eq!(g.headline.kind, HeadlineKind::Skipped);
+    assert_eq!(g.headline.text, refused.message);
+    assert_eq!(g.actions[0].id, "confirm_test_commands");
+    assert_eq!(g.actions[1].kind, GuidanceActionKind::Reverify);
+}
+
+#[test]
+fn guidance_sees_another_slices_folders_and_a_small_untracked_edit() {
+    let env = Env::new();
+    env.commands(&[]);
+    env.plan_two(&env.repo.git(&["rev-parse", "HEAD"]));
+    env.repo
+        .write(&format!(".foundry/prompts/{S}-ada.md"), "# task");
+    env.repo
+        .write(&format!(".foundry/prompts/{OTHER}-cy.md"), "# task");
+    // Legacy run (no ledger): protected for ada, but cy's folder on s-other.
+    env.repo.write("src/secret/key.rs", "// cy's\n");
+    env.write_agent_report(
+        "ada",
+        &report_by("ada", json!([met("r-1", "test a"), met("r-2", "test b")])),
+    );
+    env.verify().unwrap();
+    let g = env.store.guidance(P, S).unwrap();
+    assert_eq!(g.headline.kind, HeadlineKind::SafeToOverride);
+    let template = g.actions[0].reason_template.as_deref().unwrap();
+    assert!(
+        template.contains("cy's folders (slice s-other)"),
+        "{template}"
+    );
+
+    // One small file outside every glob, nobody else's.
+    let env = Env::new();
+    env.commands(&[]);
+    env.repo.write("docs/notes.md", "one\ntwo\n");
+    env.write_agent_report(
+        "ada",
+        &report_by("ada", json!([met("r-1", "test a"), met("r-2", "test b")])),
+    );
+    env.verify().unwrap();
+    let g = env.store.guidance(P, S).unwrap();
+    assert_eq!(g.headline.kind, HeadlineKind::SafeToOverride);
+    assert_eq!(
+        g.actions[0].reason_template.as_deref(),
+        Some("Edit to docs/notes.md needed for this slice; <reason>")
+    );
+}

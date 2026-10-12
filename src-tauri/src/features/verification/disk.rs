@@ -146,6 +146,8 @@ pub struct PlanSlice {
 pub struct PlanRequirement {
     pub id: String,
     #[serde(default)]
+    pub text: String,
+    #[serde(default)]
     pub slice_id: Option<String>,
     /// A rule for the whole project, in no slice. Missing in older plans: `false`.
     #[serde(default)]
@@ -171,6 +173,8 @@ pub fn plan(repo: &Path) -> Result<Plan, AppError> {
 #[serde(rename_all = "camelCase")]
 pub struct Role {
     pub id: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
     #[serde(default)]
     pub write_globs: Vec<String>,
     #[serde(default)]

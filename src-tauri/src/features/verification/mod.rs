@@ -15,6 +15,7 @@ mod attribution;
 pub mod commands;
 mod digest;
 mod disk;
+mod guidance;
 mod run;
 #[cfg(test)]
 mod tests;
@@ -40,6 +41,10 @@ use crate::core::{glob, hook_policy, repo_write, setup, AppError, ErrorCode};
 pub use digest::{
     AgentDigest, AttentionItem, AttentionKind, ManagerDigest, SliceDigest, VerificationState,
 };
+pub use guidance::{
+    FindingGroup, GuidanceAction, GuidanceActionKind, GuidedFinding, Headline, HeadlineKind,
+    VerificationGuidance,
+};
 
 /// Each test command gets this long before its process tree is killed.
 pub const TEST_TIMEOUT: Duration = Duration::from_secs(10 * 60);
@@ -48,6 +53,9 @@ pub const TEST_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 /// through Foundry rewrites it after a slice's start commit, and an agent's edit of them can't
 /// run anyway (the confirmation gate).
 const IGNORED_FILES: &[&str] = &[".foundry/project.json"];
+
+/// Where task prompts live (`<sliceId>-<agentId>.md`), written by the prompts feature.
+const PROMPTS_DIR: &str = ".foundry/prompts";
 
 /// Foundry's own folders, left out of the boundary check.
 const IGNORED_DIRS: &[&str] = &[
@@ -1478,6 +1486,121 @@ impl VerificationStore {
         legacy(&rules, &team, agents, &sessions, &changed)
     }
 
+    // ---------- guidance ----------
+
+    /// What to do after the slice's last verification, in plain words. Read-only: it never
+    /// performs an action. Errors: `invalid_input` (bad slice id), `not_found` (project or
+    /// slice), `folder_missing`, `invalid_json` (unreadable plan or review).
+    pub fn guidance(
+        &self,
+        project_id: &str,
+        slice_id: &str,
+    ) -> Result<VerificationGuidance, AppError> {
+        check_slice_id(slice_id)?;
+        let repo = self.repos.repo(project_id)?;
+        let plan = disk::plan(&repo)?;
+        let slice = plan
+            .slices
+            .iter()
+            .find(|s| s.id == slice_id)
+            .ok_or_else(|| AppError::not_found(format!("no slice with id {slice_id}")))?;
+        let verification = self.get_verification(project_id, slice_id)?;
+        let skip = match (self.verify_skip(project_id, slice_id), &verification) {
+            (Some(skip), _) => Some(skip),
+            (None, None) => self.check_verify(project_id, slice_id)?,
+            (None, Some(_)) => None,
+        };
+        let roles = disk::roles(&repo)?.unwrap_or_default();
+        let sessions = attribution::load(&repo).unwrap_or_else(|err| {
+            tracing::warn!(error = %err, "writes ledger unreadable; guidance without it");
+            Vec::new()
+        });
+        let by_slice = slice_agents(&repo, &plan, &roles, &sessions)?;
+        let on_slice: BTreeSet<String> = by_slice.get(slice_id).cloned().unwrap_or_default();
+        let start = slice
+            .start_commit
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| is_commit_id(s));
+        let mut paths = BTreeMap::new();
+        if let Some(v) = &verification {
+            for path in v.review.findings.iter().filter_map(|f| {
+                (f.code == code::PROTECTED_FILE_CHANGED || f.code == code::OUTSIDE_WRITE_GLOBS)
+                    .then_some(f.path.as_deref())
+                    .flatten()
+            }) {
+                let facts = guidance::PathFacts {
+                    writer: sessions
+                        .iter()
+                        .find(|s| s.on(slice_id) && s.owns(path))
+                        .map(|s| s.agent_id.clone()),
+                    elsewhere: elsewhere(slice_id, path, &sessions, &roles, &by_slice),
+                    changed_lines: start.and_then(|start| self.changed_lines(&repo, start, path)),
+                };
+                paths.insert(path.to_string(), facts);
+            }
+        }
+        let (review, stale) = match verification {
+            Some(v) => (Some(v.review), v.stale),
+            None => (None, false),
+        };
+        Ok(guidance::build(&guidance::Inputs {
+            slice_id: slice_id.to_string(),
+            review,
+            stale,
+            skip,
+            on_slice: on_slice.into_iter().collect(),
+            reported: reported_agents(&repo, slice_id)?,
+            names: roles
+                .iter()
+                .filter_map(|r| Some((r.id.clone(), r.display_name.clone()?)))
+                .collect(),
+            requirement_text: plan
+                .requirements
+                .iter()
+                .map(|r| (r.id.clone(), r.text.clone()))
+                .collect(),
+            paths,
+        }))
+    }
+
+    /// Lines added plus removed in `path` since `start` (an untracked file: its line count).
+    /// `None` for a binary file or when git can't say.
+    fn changed_lines(&self, repo: &Path, start: &str, path: &str) -> Option<u32> {
+        let args = [
+            "--no-optional-locks",
+            "diff",
+            "--numstat",
+            "--no-renames",
+            start,
+            "--",
+            path,
+        ];
+        let GitRun::Ok(output) = self.git.run(repo, &args).ok()? else {
+            return None;
+        };
+        let text = String::from_utf8_lossy(&output.stdout);
+        if let Some(line) = text.lines().next() {
+            let mut cols = line.split('\t');
+            let added: u32 = cols.next()?.parse().ok()?;
+            let removed: u32 = cols.next()?.parse().ok()?;
+            return Some(added + removed);
+        }
+        // Not in the diff: untracked (or unchanged).
+        let file = crate::core::paths::resolve(repo, path).ok()?;
+        match std::fs::read(file) {
+            Ok(bytes) if bytes.contains(&0) => None,
+            Ok(bytes) => {
+                let lines = bytes
+                    .split(|b| *b == b'\n')
+                    .filter(|l| !l.is_empty())
+                    .count();
+                Some(u32::try_from(lines).unwrap_or(u32::MAX))
+            }
+            Err(_) => Some(0),
+        }
+    }
+
     // ---------- digest ----------
 
     /// The digest. Recorded skips are looked at again first, so each slice's `skip` is current.
@@ -1538,6 +1661,115 @@ struct Checked<'a> {
     reports: &'a [LoadedReport],
     commands: &'a [String],
     cancel: &'a AtomicBool,
+}
+
+// ---------- guidance helpers ----------
+
+/// Slice id → its agents: those with a task prompt for it (`.foundry/prompts/<sliceId>-
+/// <agentId>.md`, the agent in `roles.json`) and those with a writes-ledger session on it.
+/// A prompt name is matched to the longest slice id it starts with.
+fn slice_agents(
+    repo: &Path,
+    plan: &disk::Plan,
+    roles: &[disk::Role],
+    sessions: &[attribution::Session],
+) -> Result<BTreeMap<String, BTreeSet<String>>, AppError> {
+    let mut out: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut slice_ids: Vec<&str> = plan.slices.iter().map(|s| s.id.as_str()).collect();
+    slice_ids.sort_by_key(|id| std::cmp::Reverse(id.len()));
+    let dir = crate::core::paths::resolve(repo, PROMPTS_DIR)?;
+    let names: Vec<String> = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries
+            .filter_map(Result::ok)
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect(),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(err) => return Err(err.into()),
+    };
+    for name in &names {
+        let Some(stem) = name.strip_suffix(".md") else {
+            continue;
+        };
+        let found = slice_ids.iter().find_map(|slice| {
+            let agent = stem.strip_prefix(slice)?.strip_prefix('-')?;
+            Some((*slice, agent))
+        });
+        if let Some((slice, agent)) = found {
+            if roles.iter().any(|r| r.id == agent) {
+                out.entry(slice.to_string())
+                    .or_default()
+                    .insert(agent.to_string());
+            }
+        }
+    }
+    for session in sessions {
+        if let Some(slice) = &session.slice_id {
+            out.entry(slice.clone())
+                .or_default()
+                .insert(session.agent_id.clone());
+        }
+    }
+    Ok(out)
+}
+
+/// Agents with a report for the slice: from per-agent file names, and a legacy report's
+/// `agent` field.
+fn reported_agents(repo: &Path, slice_id: &str) -> Result<BTreeSet<String>, AppError> {
+    let mut out = BTreeSet::new();
+    for path in report::slice_report_paths(repo, slice_id)? {
+        let name = path.rsplit('/').next().unwrap_or(&path);
+        match report::parse_report_name(name) {
+            Some((_, Some(agent))) => {
+                out.insert(agent.to_string());
+            }
+            _ => {
+                let agent = disk::read_json(repo, &path)
+                    .ok()
+                    .flatten()
+                    .and_then(|v| v.get("agent")?.as_str().map(str::to_string));
+                out.extend(agent);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Who else `path` belongs to: another slice's session wrote it, or an agent that's only on
+/// other slices may write it (inside its write globs, not protected for it) and none of this
+/// slice's agents may.
+fn elsewhere(
+    slice_id: &str,
+    path: &str,
+    sessions: &[attribution::Session],
+    roles: &[disk::Role],
+    by_slice: &BTreeMap<String, BTreeSet<String>>,
+) -> Option<String> {
+    let writers: Vec<String> = sessions
+        .iter()
+        .filter(|s| !s.on(slice_id) && s.owns(path))
+        .map(who)
+        .collect();
+    if !writers.is_empty() {
+        return Some(joined(writers));
+    }
+    let mine = by_slice.get(slice_id);
+    let in_globs = |agent: &str| {
+        roles.iter().find(|r| r.id == agent).is_some_and(|r| {
+            Rules::protected(r, path).is_none()
+                && r.write_globs.iter().any(|g| glob::matches(g, path))
+        })
+    };
+    if mine.is_some_and(|agents| agents.iter().any(|a| in_globs(a))) {
+        return None;
+    }
+    let owners: Vec<String> = by_slice
+        .iter()
+        .filter(|(slice, _)| slice.as_str() != slice_id)
+        .flat_map(|(slice, agents)| agents.iter().map(move |a| (slice, a)))
+        .filter(|(_, agent)| !mine.is_some_and(|m| m.contains(*agent)) && in_globs(agent))
+        .map(|(slice, agent)| format!("{agent}'s folders (slice {slice})"))
+        .collect();
+    (!owners.is_empty()).then(|| joined(owners))
 }
 
 // ---------- the boundary check ----------

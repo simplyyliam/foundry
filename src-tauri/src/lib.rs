@@ -130,6 +130,7 @@ pub fn specta_builder<R: Runtime>() -> tauri_specta::Builder<R> {
             verification::commands::get_verification,
             verification::commands::cancel_verification,
             verification::commands::manager_digest,
+            verification::commands::verification_guidance,
             verification::commands::write_digest_file,
             setup_commit::commands::commit_setup,
             setup_commit::commands::setup_status,

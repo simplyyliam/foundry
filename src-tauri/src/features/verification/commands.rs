@@ -3,7 +3,8 @@ use std::sync::Arc;
 use tauri::State;
 
 use super::{
-    AgentReport, ManagerDigest, TestCommands, Verification, VerificationStore, VerifySkip,
+    AgentReport, ManagerDigest, TestCommands, Verification, VerificationGuidance,
+    VerificationStore, VerifySkip,
 };
 use crate::core::report::SliceReport;
 use crate::core::AppError;
@@ -143,4 +144,16 @@ pub async fn write_digest_file(
     project_id: String,
 ) -> Result<ManagerDigest, AppError> {
     blocking(&store, move |s| s.write_digest_file(&project_id)).await
+}
+
+/// What to do after the slice's last verification, in plain words: a headline, the actions
+/// the user can take, and one entry per finding. Read-only: it never performs an action.
+#[tauri::command]
+#[specta::specta]
+pub async fn verification_guidance(
+    store: Store<'_>,
+    project_id: String,
+    slice_id: String,
+) -> Result<VerificationGuidance, AppError> {
+    blocking(&store, move |s| s.guidance(&project_id, &slice_id)).await
 }
