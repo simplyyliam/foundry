@@ -15,6 +15,7 @@ import type { PlanRequirement, RequirementKind, SliceView } from "@/lib/bindings
 import { PressButton } from "@/shared";
 import { useAction } from "../hooks/useAction";
 import type { RequirementActions } from "../hooks/useRequirementActions";
+import { ChecksSection } from "./ChecksSection";
 import { ActionError } from "./Notices";
 import { SliceMenu } from "./SliceMenu";
 
@@ -34,7 +35,7 @@ interface RequirementDialogProps {
 export function RequirementDialog({ open, onOpenChange, ...form }: RequirementDialogProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg" showCloseButton={false}>
+      <DialogContent className="max-h-[calc(100%-2rem)] overflow-y-auto sm:max-w-lg" showCloseButton={false}>
         {/* Mounts with the dialog, so every opening starts from the saved values. */}
         <RequirementForm {...form} onClose={() => onOpenChange(false)} />
       </DialogContent>
@@ -182,6 +183,8 @@ function RequirementForm({
             className="min-h-12 text-[13px]"
           />
         </Field>
+
+        {editing && <ChecksSection requirement={requirement} actions={actions} />}
 
         {resetsToProposed && (
           <p role="status" className="flex items-start gap-2 rounded-xl bg-muted px-3 py-2 text-[13px]">

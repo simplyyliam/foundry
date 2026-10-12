@@ -25,6 +25,7 @@ import type { ProjectRuns } from "../hooks/verifyRuns";
 import { qaRuns } from "../lib/bugs";
 import { formatDuration, plural } from "../lib/verification";
 import { BugsSection } from "./BugsSection";
+import { CheckResults } from "./CheckResults";
 import { ReportChip, ReportCountChip, SliceStatusChip, VerificationChip } from "./Chips";
 import { GuidanceCard } from "./GuidanceCard";
 import { GuidedFindings } from "./GuidedFindings";
@@ -245,6 +246,8 @@ function VerificationSection({
     <>
       {guidance && <GuidedFindings findings={guidance.findings} review={load.value} team={team} requirementText={requirementText} />}
       <TestRuns runs={load.value.testRuns} />
+      {/* Verify runs them after the test commands; older reviews have none. */}
+      <CheckResults results={load.value.checkResults ?? []} requirementText={requirementText} />
     </>
   );
 }

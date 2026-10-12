@@ -1,4 +1,4 @@
-import { Check } from "lucide-react";
+import { Check, ShieldCheck } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { RequirementKind, RequirementState } from "@/lib/bindings";
@@ -39,5 +39,16 @@ export function UnsourcedBadge() {
       />
       <TooltipContent>Couldn't be matched to your brain dump</TooltipContent>
     </Tooltip>
+  );
+}
+
+/** "2 checks": how many checks Verify runs for it. Nothing at 0. */
+export function ChecksChip({ count }: { count: number }) {
+  if (count === 0) return null;
+  return (
+    <Badge variant="outline" className={`${CHIP} text-muted-foreground tabular-nums`}>
+      <ShieldCheck aria-hidden data-icon="inline-start" />
+      {count === 1 ? "1 check" : `${count} checks`}
+    </Badge>
   );
 }

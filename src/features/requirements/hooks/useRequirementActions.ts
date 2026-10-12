@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { commands, type NewRequirement, type RequirementPatch } from "@/lib/bindings";
+import { commands, type NewRequirement, type RequirementCheck, type RequirementPatch } from "@/lib/bindings";
 import type { PlanController } from "./usePlan";
 
 /** The Requirements page's plan mutations, each passing the last revision seen. */
@@ -23,6 +23,13 @@ export function useRequirementActions(projectId: string, mutate: PlanController[
       unconfirm: (requirementId: string) =>
         mutate((revision) => commands.unconfirmRequirement(projectId, requirementId, revision)),
       confirmAll: () => mutate((revision) => commands.confirmAll(projectId, revision)),
+      /** Replaces the requirement's checks (Verify runs them). Its state is unchanged. */
+      setChecks: (requirementId: string, checks: RequirementCheck[]) =>
+        mutate((revision) => commands.setRequirementChecks(projectId, requirementId, checks, revision)),
+      /** Moves `suggestedChecks[index]` into `checks`. */
+      acceptCheck: (requirementId: string, index: number) =>
+        mutate((revision) => commands.acceptRequirementCheck(projectId, requirementId, index, revision)),
+      projectId,
     }),
     [projectId, mutate],
   );

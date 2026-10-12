@@ -49,3 +49,4 @@ export {
   type CommitStatusLoad,
   type SliceCommitController,
 } from "./components/slice-commit/types";
+export { CHECK_TYPES, buildCheck, checkKey, describeCheck, type CheckField, type CheckType } from "./lib/requirement-checks";

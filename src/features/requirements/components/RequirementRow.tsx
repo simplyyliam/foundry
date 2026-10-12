@@ -16,10 +16,10 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import type { PlanRequirement, SliceView } from "@/lib/bindings";
-import { PressButton } from "@/shared";
+import { PressButton, describeCheck } from "@/shared";
 import { useAction } from "../hooks/useAction";
 import type { RequirementActions } from "../hooks/useRequirementActions";
-import { KindChip, StateChip, UnsourcedBadge } from "./Chips";
+import { ChecksChip, KindChip, StateChip, UnsourcedBadge } from "./Chips";
 import { ActionError } from "./Notices";
 import { isProjectWide } from "../lib/order";
 import { RequirementDialog } from "./RequirementDialog";
@@ -65,6 +65,7 @@ export function RequirementRow({ requirement, slices, actions }: RequirementRowP
               <KindChip kind={requirement.kind} />
               <StateChip state={requirement.state} />
               {requirement.unsourced && <UnsourcedBadge />}
+              <ChecksChip count={requirement.checks?.length ?? 0} />
               {!handled && <span className="text-[11px] text-muted-foreground">Needs a slice before it can be confirmed</span>}
             </div>
           </div>
@@ -155,6 +156,16 @@ export function RequirementRow({ requirement, slices, actions }: RequirementRowP
                 {requirement.verifiedBy || <span className="text-muted-foreground">Not said yet</span>}
               </dd>
             </div>
+            {(requirement.checks?.length ?? 0) > 0 && (
+              <div className="flex flex-col gap-1">
+                <dt className="text-[12px] text-muted-foreground">Checks</dt>
+                <dd>
+                  <ul className="flex list-disc flex-col gap-0.5 pl-4.5 leading-snug text-foreground/85 marker:text-foreground/45">
+                    {requirement.checks?.map((check, index) => <li key={index}>{describeCheck(check)}</li>)}
+                  </ul>
+                </dd>
+              </div>
+            )}
           </dl>
         </CollapsibleContent>
       </Collapsible>
