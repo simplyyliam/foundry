@@ -5,6 +5,8 @@
 //!   --echo-upper             for each stdin line, print `got:<LINE IN UPPERCASE>` until EOF
 //!                            (proves input reached this process, not just a terminal echo)
 //!   --burst <N>              print N lines `burst-00000`…, flushing after each
+//!   --burst-block <N>        print the same N lines in one write (bulk output without
+//!                            N round-trips through a terminal)
 //!   --print-cwd              print `cwd=<current directory>`
 //!   --print-env              print every environment variable as KEY=VALUE, sorted
 //!   --sleep-ms <N>           sleep N milliseconds
@@ -22,6 +24,7 @@ enum Action {
     Echo,
     EchoUpper,
     Burst(u64),
+    BurstBlock(u64),
     PrintCwd,
     PrintEnv,
     Sleep(u64),
@@ -47,6 +50,7 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<(Vec<Action>, u8), St
             "--echo" => actions.push(Action::Echo),
             "--echo-upper" => actions.push(Action::EchoUpper),
             "--burst" => actions.push(Action::Burst(number(&value("--burst")?)?)),
+            "--burst-block" => actions.push(Action::BurstBlock(number(&value("--burst-block")?)?)),
             "--print-cwd" => actions.push(Action::PrintCwd),
             "--print-env" => actions.push(Action::PrintEnv),
             "--sleep-ms" => actions.push(Action::Sleep(number(&value("--sleep-ms")?)?)),
@@ -86,6 +90,20 @@ fn run(actions: Vec<Action>) -> Result<(), String> {
                     writeln!(stdout, "burst-{i:05}").map_err(|e| e.to_string())?;
                     stdout.flush().map_err(|e| e.to_string())?;
                 }
+            }
+            Action::BurstBlock(lines) => {
+                let block: String = (0..lines)
+                    .map(|i| {
+                        format!(
+                            "burst-{i:05}
+"
+                        )
+                    })
+                    .collect();
+                stdout
+                    .write_all(block.as_bytes())
+                    .map_err(|e| e.to_string())?;
+                stdout.flush().map_err(|e| e.to_string())?;
             }
             Action::PrintCwd => {
                 let cwd = std::env::current_dir().map_err(|e| e.to_string())?;

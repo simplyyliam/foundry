@@ -22,6 +22,7 @@ pub mod setup;
 pub mod slug;
 pub mod subscription;
 pub mod text;
+pub mod time;
 pub mod trash;
 pub mod workspace;
 

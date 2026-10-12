@@ -531,3 +531,13 @@ Some requirements are rules for the whole project ("the app works well in a desk
 | command | `launch_message` | unchanged signature; the same plan gate | |
 | command | `verify_slice` | unchanged signature; project-wide requirements are never expected of a slice. A report entry for one is ignored: no `unknown_requirement`, `missing_evidence` or other finding, and no entry in the review's `requirements`. The review still stores each report as written | Verification doesn't require them. |
 | file | `vsm_data.js` (and `resources/templates/vsm_data.template.js`) | adds a top-level `project_rules: [{ id, text, verified_by, state }]`, sorted by id, only when there's at least one project-wide requirement; documented in the schema header | Mirrored in their own list, since they're on no slice. `vsm_viewer.html` reads only `meta`, `slices` and `future_horizon`, so it's unaffected. |
+
+## Round 2 — report times, report counts, relink excludes
+
+All additive. No command signature changes.
+
+| Kind | Name | Before → After | Why |
+| --- | --- | --- | --- |
+| type | `AgentReport` | adds `writtenAt: string`: ISO 8601 UTC with milliseconds (`2026-10-07T14:03:05.123Z`), the report file's modified time. Legacy `<sliceId>.json` reports have it too | The UI can show when each agent reported. Agents write reports, not Foundry, so there is no write by Foundry to stamp: the file's modified time is the only record, for new and legacy reports alike. Returned by `list_reports`, the only command that returns `AgentReport`. |
+| type | `SliceDigest` | adds `reportCount: number`: the slice's report files, one per agent, plus one for a legacy `<sliceId>.json`. `reportPresent` stays, and equals `reportCount > 0` | The digest says how many reports a slice has, without a `list_reports` call per slice. Returned by `manager_digest`. |
+| command | `relink_project` | unchanged signature; also adds `.foundry/events/` and `.foundry/reviews/digest.md` to `.git/info/exclude` (via `core::repo_write::add_git_excludes`, as create and link do). Only adds missing lines, never removes or reorders any, and keeps CRLF endings. Best effort: a failure is logged and doesn't fail the relink. A folder without a `.git` directory gets nothing | A relinked folder gets the same git hygiene as a linked one. |

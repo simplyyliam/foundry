@@ -705,7 +705,8 @@ impl ProjectsStore {
     }
 
     /// Points a project at a new folder (e.g. after the user moved it). Adds missing Foundry
-    /// files there; refuses a folder that belongs to a different project.
+    /// files and the local git excludes there (only adding lines, as link does); refuses a
+    /// folder that belongs to a different project.
     pub fn relink_project(&self, id: &str, folder: &str) -> Result<Project, AppError> {
         let folder = existing_dir(folder)?;
         let mut state = self.lock()?;
@@ -736,6 +737,7 @@ impl ProjectsStore {
                 design_family: Vec::new(),
             },
         )?;
+        self.add_excludes(&folder);
 
         let target = Self::find_mut(&mut state, id)?;
         let previous = std::mem::replace(&mut target.repo_path, path_string(&folder));

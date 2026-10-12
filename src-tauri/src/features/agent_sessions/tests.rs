@@ -610,8 +610,12 @@ fn the_session_cap_is_enforced() {
 #[test]
 fn the_ring_buffer_is_bounded_and_snapshot_returns_the_latest_bytes() {
     let env = Env::new(3);
-    env.start("builder", &["--burst", "40000"]);
-    env.events.wait_exited("builder", Duration::from_secs(60));
+    // One bulk write (~360 KB, past the ring) instead of 30 000 flushed lines: per-line
+    // flushes through ConPTY took seconds alone and over a minute under a parallel suite.
+    env.start("builder", &["--burst-block", "30000"]);
+    // Woken on each status event, so it returns as soon as the exit lands; the deadline only
+    // bounds a hang.
+    env.events.wait_exited("builder", Duration::from_secs(180));
     let all = env.events.output.lock().unwrap().concat();
     assert!(
         all.len() > RING_BYTES,
@@ -627,7 +631,7 @@ fn the_ring_buffer_is_bounded_and_snapshot_returns_the_latest_bytes() {
         all[all.len() - RING_BYTES..],
         "exactly the newest bytes"
     );
-    assert!(String::from_utf8_lossy(&snapshot).contains("burst-39999"));
+    assert!(String::from_utf8_lossy(&snapshot).contains("burst-29999"));
     assert!(env.manager.snapshot(PROJECT, "never-ran").is_empty());
 }
 

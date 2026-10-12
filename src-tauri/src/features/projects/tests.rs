@@ -1356,6 +1356,45 @@ fn relink_points_a_moved_project_at_its_new_folder() {
 }
 
 #[test]
+fn relink_adds_git_excludes_once_and_keeps_existing_lines() {
+    let env = Env::new();
+    let store = env.store();
+    let parent = TestRepo::new();
+    let project = create(&store, parent.path(), "Mover").project;
+    let moved = parent.path().join("moved-here");
+    fs::rename(&project.repo_path, &moved).unwrap();
+    assert!(moved.join(".git").is_dir(), "create made a git repo");
+    // The user's own lines, CRLF, with one of ours already present but out of order.
+    let exclude = moved.join(".git/info/exclude");
+    fs::write(
+        &exclude,
+        "# mine
+.foundry/reviews/digest.md
+*.swp
+",
+    )
+    .unwrap();
+    let gitignore = fs::read(moved.join(".gitignore")).unwrap();
+
+    store
+        .relink_project(&project.id, &moved.to_string_lossy())
+        .unwrap();
+    let expected = "# mine
+.foundry/reviews/digest.md
+*.swp
+.foundry/events/
+";
+    assert_eq!(fs::read_to_string(&exclude).unwrap(), expected);
+
+    // Relinking again (both lines now present) changes nothing.
+    store
+        .relink_project(&project.id, &moved.to_string_lossy())
+        .unwrap();
+    assert_eq!(fs::read_to_string(&exclude).unwrap(), expected);
+    assert_eq!(fs::read(moved.join(".gitignore")).unwrap(), gitignore);
+}
+
+#[test]
 fn relink_refuses_another_projects_folder() {
     let env = Env::new();
     let store = env.store();

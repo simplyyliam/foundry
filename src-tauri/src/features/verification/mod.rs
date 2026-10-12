@@ -171,6 +171,9 @@ pub struct AgentReport {
     /// From the file name; for a legacy `<sliceId>.json`, the report's `agent` field.
     pub agent: String,
     pub report: SliceReport,
+    /// When the report file was last written (its modified time), ISO 8601 UTC, e.g.
+    /// `2026-10-07T14:03:05.123Z`. Legacy `<sliceId>.json` reports have one too.
+    pub written_at: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -716,14 +719,20 @@ impl VerificationStore {
     ) -> Result<Vec<AgentReport>, AppError> {
         check_slice_id(slice_id)?;
         let repo = self.repos.repo(project_id)?;
-        Ok(load_reports(&repo, slice_id)?
-            .into_iter()
-            .map(|l| AgentReport {
+        let mut out = Vec::new();
+        for l in load_reports(&repo, slice_id)? {
+            // Gone since it was read: as if it never was, like `load_reports`.
+            let Some(written_at) = report::written_at(&repo, &l.path)? else {
+                continue;
+            };
+            out.push(AgentReport {
                 path: l.path,
                 agent: l.agent,
                 report: l.report,
-            })
-            .collect())
+                written_at,
+            });
+        }
+        Ok(out)
     }
 
     /// The slice's last verification, with `stale` worked out now; `None` if never verified.

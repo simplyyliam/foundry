@@ -418,6 +418,11 @@ export type AgentReport = {
 	/**  From the file name; for a legacy `<sliceId>.json`, the report's `agent` field. */
 	agent: string,
 	report: SliceReport,
+	/**
+	 *  When the report file was last written (its modified time), ISO 8601 UTC, e.g.
+	 *  `2026-10-07T14:03:05.123Z`. Legacy `<sliceId>.json` reports have one too.
+	 */
+	writtenAt: string,
 };
 
 /**
@@ -1365,6 +1370,11 @@ export type SliceDigest = {
 	status: string,
 	/**  At least one report file (any agent's, or the legacy one) exists for the slice. */
 	reportPresent: boolean,
+	/**
+	 *  How many report files the slice has: one per agent, plus one for a legacy
+	 *  `<sliceId>.json`. `reportPresent` is `reportCount > 0`.
+	 */
+	reportCount: number,
 	verification: VerificationState,
 	/**
 	 *  Why the latest wanted verification of this slice couldn't run, while that still holds;

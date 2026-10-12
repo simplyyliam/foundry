@@ -209,6 +209,14 @@ fn echo_upper_answers_each_line() {
 }
 
 #[test]
+fn burst_block_prints_the_same_lines_as_burst() {
+    let block = run(&["--burst-block", "3"]);
+    let lines = run(&["--burst", "3"]);
+    assert!(block.status.success());
+    assert_eq!(stdout(&block), stdout(&lines));
+}
+
+#[test]
 fn bursts_numbered_lines_and_prints_cwd() {
     let out = run(&["--burst", "3", "--print-cwd"]);
     assert!(out.status.success());

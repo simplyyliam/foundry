@@ -1537,6 +1537,69 @@ fn a_digest_counts_any_agents_report_as_present() {
     assert_eq!(slice.verification, VerificationState::None);
 }
 
+#[test]
+fn a_digest_counts_each_slices_report_files() {
+    let env = Env::new();
+    let report_count = |env: &Env| env.store.manager_digest(P).unwrap().slices[0].report_count;
+    assert_eq!(report_count(&env), 0);
+    assert!(!env.store.manager_digest(P).unwrap().slices[0].report_present);
+
+    env.write_agent_report("ada", &report_by("ada", json!([])));
+    assert_eq!(report_count(&env), 1);
+
+    env.write_agent_report("bo", &report_by("bo", json!([])));
+    assert_eq!(report_count(&env), 2);
+
+    // The legacy `<sliceId>.json` counts as one more.
+    env.write_report(&report_by("cy", json!([])));
+    let slice = &env.store.manager_digest(P).unwrap().slices[0];
+    assert_eq!(slice.report_count, 3);
+    assert!(slice.report_present);
+}
+
+#[test]
+fn listed_reports_carry_their_files_write_time_legacy_ones_too() {
+    use crate::core::time;
+    let env = Env::new();
+    env.write_report(&report_by("bo", json!([met("r-1", "test a")])));
+    env.write_agent_report("ada", &report_by("ada", json!([met("r-2", "test b")])));
+    // A legacy report from long ago: its time is the file's modified time.
+    let legacy = env.repo.path().join(".foundry/reports/s-feed.json");
+    let old = std::time::UNIX_EPOCH + Duration::from_millis(1_791_381_785_123);
+    fs::File::options()
+        .write(true)
+        .open(&legacy)
+        .unwrap()
+        .set_modified(old)
+        .unwrap();
+    let fresh = env.repo.path().join(".foundry/reports/s-feed.ada.json");
+    let fresh_ms = time::epoch_ms(fs::metadata(&fresh).unwrap().modified().unwrap());
+
+    let listed = env.store.list_reports(P, S).unwrap();
+    let times: Vec<(&str, &str)> = listed
+        .iter()
+        .map(|r| (r.path.as_str(), r.written_at.as_str()))
+        .collect();
+    assert_eq!(
+        times,
+        [
+            (".foundry/reports/s-feed.json", "2026-10-07T14:03:05.123Z"),
+            (
+                ".foundry/reports/s-feed.ada.json",
+                time::iso8601(fresh_ms).as_str()
+            )
+        ]
+    );
+    let now_ms = time::epoch_ms(std::time::SystemTime::now());
+    assert!(
+        now_ms.abs_diff(fresh_ms) < 600_000,
+        "a new report is recent"
+    );
+    // It's on the wire as `writtenAt`.
+    let wire = serde_json::to_value(&listed[0]).unwrap();
+    assert_eq!(wire["writtenAt"], json!("2026-10-07T14:03:05.123Z"));
+}
+
 // ---------- writes ----------
 
 #[test]

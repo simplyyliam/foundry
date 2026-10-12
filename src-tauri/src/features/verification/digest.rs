@@ -10,9 +10,9 @@ use serde_json::Value;
 use specta::Type;
 
 use super::{disk, FindingSeverity, VerifySkip};
-use crate::core::report;
 use crate::core::sessions::{SessionRegistry, SessionStatus};
 use crate::core::AppError;
+use crate::core::{report, time};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -47,6 +47,9 @@ pub struct SliceDigest {
     pub status: String,
     /// At least one report file (any agent's, or the legacy one) exists for the slice.
     pub report_present: bool,
+    /// How many report files the slice has: one per agent, plus one for a legacy
+    /// `<sliceId>.json`. `reportPresent` is `reportCount > 0`.
+    pub report_count: u32,
     pub verification: VerificationState,
     /// Why the latest wanted verification of this slice couldn't run, while that still holds;
     /// `null` otherwise.
@@ -188,7 +191,8 @@ pub fn build(
     let mut slices = Vec::new();
     let mut attention = Vec::new();
     for slice in disk::plan(repo)?.slices {
-        let report_present = !report::slice_report_paths(repo, &slice.id)?.is_empty();
+        let report_count = count(report::slice_report_paths(repo, &slice.id)?.len());
+        let report_present = report_count > 0;
         let verification = verification_state(repo, &slice.id)?;
         let label = format!("\"{}\"", slice.name);
         let item = match verification {
@@ -225,6 +229,7 @@ pub fn build(
             name: slice.name,
             status: slice.status,
             report_present,
+            report_count,
             verification,
             skip,
         });
@@ -249,16 +254,7 @@ pub fn utc(ms: u64) -> String {
     let secs = ms / 1000;
     let days = i64::try_from(secs / 86_400).unwrap_or(0);
     let (hour, minute) = ((secs % 86_400) / 3600, (secs % 3600) / 60);
-    // Howard Hinnant's civil_from_days.
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = yoe + era * 400 + i64::from(month <= 2);
+    let (year, month, day) = time::civil_from_days(days);
     format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02} UTC")
 }
 

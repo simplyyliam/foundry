@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use specta::Type;
 
-use super::{paths, repo_write, AppError};
+use super::{paths, repo_write, time, AppError};
 
 pub const REPORTS_DIR: &str = ".foundry/reports";
 
@@ -72,6 +72,17 @@ pub fn slice_report_paths(repo: &Path, slice_id: &str) -> Result<Vec<String>, Ap
         .into_iter()
         .chain(agents.iter().map(|agent| report_path(slice_id, agent)))
         .collect())
+}
+
+/// When the report file at `rel` was last written, as ISO 8601 UTC (its modified time:
+/// agents write reports, so the file is the only record). `None` if it's gone.
+pub fn written_at(repo: &Path, rel: &str) -> Result<Option<String>, AppError> {
+    let target = paths::resolve(repo, rel)?;
+    match fs::metadata(target) {
+        Ok(meta) => Ok(Some(time::iso8601(time::epoch_ms(meta.modified()?)))),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(err.into()),
+    }
 }
 
 /// Report path → its JSON. What "the report changed since it was verified" compares.
