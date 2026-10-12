@@ -365,3 +365,39 @@ fn porcelain_states() {
         assert!(!is_new_or_modified(state), "{state}");
     }
 }
+
+#[test]
+fn setup_status_lists_what_commit_setup_would_commit_and_is_empty_after() {
+    let env = Env::new(repo_with_history());
+    write_setup(&env.repo);
+    env.repo.write(".foundry/reports/s1.json", "{}");
+    env.repo.write("notes.txt", "mine");
+    let head = env.repo.git(&["rev-parse", "HEAD"]);
+    let before_status = env.status();
+
+    let before = env.committer.setup_status(P).unwrap();
+    assert!(before.needs_commit);
+    assert_eq!(before.files, SETUP_FILES);
+    // Read-only: nothing staged, nothing committed.
+    assert_eq!(env.status(), before_status);
+    assert_eq!(env.repo.git(&["rev-parse", "HEAD"]), head);
+
+    assert_eq!(env.commit().unwrap().files, before.files);
+
+    let after = env.committer.setup_status(P).unwrap();
+    assert!(!after.needs_commit);
+    assert!(after.files.is_empty());
+
+    // An edit to a committed setup file counts again.
+    env.repo.write("AGENTS.md", "changed\n");
+    assert_eq!(env.committer.setup_status(P).unwrap().files, ["AGENTS.md"]);
+}
+
+#[test]
+fn setup_status_outside_a_git_repo_is_not_a_git_repo() {
+    let env = Env::new(TestRepo::new());
+    assert_eq!(
+        env.committer.setup_status(P).unwrap_err().code,
+        ErrorCode::NotAGitRepo
+    );
+}

@@ -5,6 +5,8 @@ use std::io;
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
+use super::{AppError, ErrorCode};
+
 /// How to invoke git: which program, plus environment overrides. `Git::system()` in the app;
 /// tests point it at a missing program or an isolated config to control identity.
 #[derive(Debug, Clone)]
@@ -102,6 +104,91 @@ pub fn stderr_line(output: &Output) -> String {
         .unwrap_or("")
         .trim()
         .to_string()
+}
+
+/// git's output, `Ok` when it exited 0. A missing git is `git_not_found`.
+pub fn run_checked(
+    git: &Git,
+    repo: &Path,
+    args: &[&str],
+) -> Result<Result<Output, Output>, AppError> {
+    match git.run(repo, args) {
+        Ok(GitRun::Ok(output)) => Ok(Ok(output)),
+        Ok(GitRun::Failed(output)) => Ok(Err(output)),
+        Ok(GitRun::Missing) => Err(AppError::new(
+            ErrorCode::GitNotFound,
+            "git isn't installed (or isn't on PATH)",
+        )),
+        Err(err) => Err(AppError::internal(format!("could not run git: {err}"))),
+    }
+}
+
+/// `not_a_git_repo` unless `repo` is inside a git work tree.
+pub fn require_work_tree(git: &Git, repo: &Path) -> Result<(), AppError> {
+    let inside = match run_checked(git, repo, &["rev-parse", "--is-inside-work-tree"])? {
+        Ok(output) => String::from_utf8_lossy(&output.stdout).trim() == "true",
+        Err(_) => false,
+    };
+    if inside {
+        Ok(())
+    } else {
+        Err(AppError::new(
+            ErrorCode::NotAGitRepo,
+            format!(
+                "{} isn't a git repository. Run `git init` in it first",
+                repo.display()
+            ),
+        ))
+    }
+}
+
+/// `git_identity_missing` unless git has a `user.name` and a `user.email` for `repo`. Says
+/// how to set them; never sets them.
+pub fn require_identity(git: &Git, repo: &Path) -> Result<(), AppError> {
+    let missing: Vec<&str> = ["user.name", "user.email"]
+        .into_iter()
+        .filter(
+            |key| match run_checked(git, repo, &["config", "--get", key]) {
+                Ok(Ok(output)) => String::from_utf8_lossy(&output.stdout).trim().is_empty(),
+                _ => true,
+            },
+        )
+        .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    Err(AppError::new(
+        ErrorCode::GitIdentityMissing,
+        format!(
+            "git doesn't know who you are ({} not set). Set it in a terminal, then try \
+             again: git config --global user.name \"Your Name\" and git config --global \
+             user.email \"you@example.com\"",
+            missing.join(" and ")
+        ),
+    ))
+}
+
+/// HEAD's commit id; empty when there is none yet (or git fails).
+pub fn head(git: &Git, repo: &Path) -> String {
+    match git.run(repo, &["rev-parse", "--verify", "--quiet", "HEAD"]) {
+        Ok(GitRun::Ok(output)) => String::from_utf8_lossy(&output.stdout).trim().to_string(),
+        _ => String::new(),
+    }
+}
+
+/// git's whole stderr (or stdout, which some failures use), trimmed.
+pub fn message(output: &Output) -> String {
+    let text = if output.stderr.iter().all(u8::is_ascii_whitespace) {
+        &output.stdout
+    } else {
+        &output.stderr
+    };
+    let text = String::from_utf8_lossy(text).trim().to_string();
+    if text.is_empty() {
+        format!("git exited with {}", output.status)
+    } else {
+        text
+    }
 }
 
 #[cfg(test)]

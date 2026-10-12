@@ -344,6 +344,23 @@ export const commands = {
 	 *  else. Nothing to commit: `files` is empty and `commit` is the current HEAD.
 	 */
 	commitSetup: (projectId: string) => typedError<CommitSetupResult, AppError>(__TAURI_INVOKE("commit_setup", { projectId })),
+	/**
+	 *  The setup files `commit_setup` would commit now (new or modified, same pathspecs).
+	 *  Read-only.
+	 */
+	setupStatus: (projectId: string) => typedError<SetupStatus, AppError>(__TAURI_INVOKE("setup_status", { projectId })),
+	/**
+	 *  Every uncommitted file in the repo (ignored ones never), at most 500, with whether each is
+	 *  Foundry's own. With a `sliceId`, also the type `commit_slice` would pick and why.
+	 *  Read-only.
+	 */
+	commitStatus: (projectId: string, sliceId: string | null) => typedError<CommitStatus, AppError>(__TAURI_INVOKE("commit_status", { projectId, sliceId })),
+	/**
+	 *  Stages everything (`git add -A`) and commits it, with `message` as given or one generated
+	 *  from the slice. Never pushes, branches or amends. Nothing to commit: `files` is empty and
+	 *  `commit` is the current HEAD.
+	 */
+	commitSlice: (projectId: string, sliceId: string, message: string | null) => typedError<CommitSliceResult, AppError>(__TAURI_INVOKE("commit_slice", { projectId, sliceId, message })),
 };
 
 /** Events */
@@ -546,6 +563,17 @@ export type BakeryState = {
 	dir: string,
 };
 
+export type ChangedFile = {
+	/**  Repo-relative, `/`-separated. For a rename, the new path. */
+	path: string,
+	change: FileChange,
+	/**
+	 *  A setup file (what `commit_setup` commits), a report (`.foundry/reports/**`) or a
+	 *  verification (`.foundry/reviews/*.json`).
+	 */
+	foundryOwned: boolean,
+};
+
 /**  What the UI shows about the CLI. Never includes the account's email or organisation. */
 export type ClaudeStatus = {
 	/**  The executable Foundry would run (`claudePath`, or the first match on PATH). */
@@ -585,6 +613,54 @@ export type CommitSetupResult = {
 	/**  Repo-relative paths that were committed, sorted. Empty: nothing to commit. */
 	files: string[],
 };
+
+export type CommitSliceResult = {
+	/**
+	 *  HEAD after the call: the new commit, or the current HEAD when there was nothing to
+	 *  commit (empty in a repo with no commits yet).
+	 */
+	commit: string,
+	/**
+	 *  Repo-relative paths in the commit (deleted ones too), sorted. Empty: nothing to
+	 *  commit.
+	 */
+	files: string[],
+	/**  The commit message used; empty when nothing was committed. */
+	message: string,
+	/**
+	 *  The type Foundry picked; `null` when the caller's message was used or nothing was
+	 *  committed.
+	 */
+	commitType: CommitType | null,
+	/**  Why that type, in one line; `null` when `commitType` is. */
+	typeReason: string | null,
+};
+
+export type CommitStatus = {
+	/**  HEAD's commit id; empty before the first commit. */
+	head: string,
+	/**  The checked-out branch; empty when HEAD is detached. */
+	branch: string,
+	/**
+	 *  Every uncommitted file (staged, unstaged or untracked; ignored ones never), sorted by
+	 *  path, at most [`MAX_STATUS_FILES`].
+	 */
+	files: ChangedFile[],
+	/**  How many uncommitted files there are in all. */
+	total: number,
+	/**  `files` was cut at [`MAX_STATUS_FILES`]. */
+	truncated: boolean,
+	/**
+	 *  The type `commit_slice` would pick for `sliceId` now; `null` without a `sliceId` or
+	 *  with nothing to commit.
+	 */
+	commitType: CommitType | null,
+	/**  Why that type, in one line; `null` when `commitType` is. */
+	typeReason: string | null,
+};
+
+/**  The conventional-commit type of a slice commit, picked by fixed rules (never by a model). */
+export type CommitType = "feat" | "fix" | "refactor" | "test" | "docs" | "chore";
 
 /**
  *  A canvas coordinate or size. Always finite (commands reject NaN and infinities), so it
@@ -802,6 +878,8 @@ export type Feature = {
 	features: string[],
 	relatesTo: string[],
 };
+
+export type FileChange = "new" | "modified" | "deleted" | "renamed";
 
 export type Finding = {
 	severity: FindingSeverity,
@@ -1331,6 +1409,14 @@ export type Settings = {
 	defaultVerifyMode: VerifyMode,
 	osNotificationsEnabled: boolean,
 	osNotificationSeverity: NotificationSeverity,
+};
+
+/**  What `setup_status` returns: what `commit_setup` would commit right now. */
+export type SetupStatus = {
+	/**  `files` isn't empty. */
+	needsCommit: boolean,
+	/**  New or modified setup files, repo-relative, sorted. */
+	files: string[],
 };
 
 /**  Ordered: `info < warn < danger` (`minSeverity` filters on it). */

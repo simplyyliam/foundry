@@ -12,6 +12,30 @@ pub const SETUP_PATHS: &[&str] = &["AGENTS.md", "agents", "docs", "vsm_viewer.ht
 /// be committed once, but later edits don't count.
 pub const REWRITTEN_SETUP: &[&str] = &[".foundry/plan.json", "vsm_data.js"];
 
+/// What `commit_setup` stages and `setup_status` lists, as literal pathspecs. Folders cover
+/// everything under them. Covers every path the start gate checks, plus `project.json` and
+/// the prompts. Also what `commit_status` calls Foundry-owned.
+pub const COMMIT_PATHS: &[&str] = &[
+    "AGENTS.md",
+    "agents",
+    "docs",
+    "vsm_viewer.html",
+    "vsm_data.js",
+    ".foundry/plan.json",
+    ".foundry/project.json",
+    ".foundry/prompts",
+];
+
+/// `rel` is one of [`COMMIT_PATHS`] or under one of its folders.
+pub fn is_commit_path(rel: &str) -> bool {
+    COMMIT_PATHS.iter().any(|p| {
+        rel == *p
+            || rel
+                .strip_prefix(p)
+                .is_some_and(|rest| rest.starts_with('/'))
+    })
+}
+
 /// Setup files that are untracked or differ from HEAD. The rewritten ones only count while
 /// untracked. Not a git repo, or git failing: none.
 pub fn uncommitted(git: &Git, repo: &Path) -> Vec<String> {

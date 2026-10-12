@@ -17,6 +17,17 @@ use super::{paths, repo_write, time, AppError};
 
 pub const REPORTS_DIR: &str = ".foundry/reports";
 
+/// How the decision recorded when a slice is marked done without a passed verification
+/// begins. The full text is `<prefix>; it <why>): <reason>`. Plan writes it; the slice commit
+/// message reads the reason back.
+pub const DONE_OVERRIDE_PREFIX: &str = "Marked done without a passed verification (override";
+
+/// The reason of a [`DONE_OVERRIDE_PREFIX`] decision; `None` for any other decision.
+pub fn done_override_reason(decision: &str) -> Option<&str> {
+    let rest = decision.strip_prefix(DONE_OVERRIDE_PREFIX)?;
+    Some(rest.split_once("): ")?.1.trim())
+}
+
 /// Where an agent writes its report for a slice, repo-relative.
 pub fn report_path(slice_id: &str, agent_id: &str) -> String {
     format!("{REPORTS_DIR}/{slice_id}.{agent_id}.json")
@@ -190,6 +201,19 @@ mod tests {
         let mut value = sample();
         value["requirements"][0]["status"] = json!("done");
         assert!(serde_json::from_value::<SliceReport>(value).is_err());
+    }
+
+    #[test]
+    fn a_done_override_decision_gives_its_reason() {
+        let stale = format!(
+            "{DONE_OVERRIDE_PREFIX}; it has a stale verification (its report changed after it \
+             was verified)): shipped: by hand"
+        );
+        assert_eq!(done_override_reason(&stale), Some("shipped: by hand"));
+        assert_eq!(
+            done_override_reason("Started before a was done (override): x"),
+            None
+        );
     }
 
     #[test]

@@ -12,5 +12,6 @@ pub mod projects;
 pub mod prompts;
 pub mod roadmap;
 pub mod setup_commit;
+pub mod slice_commit;
 pub mod team;
 pub mod verification;

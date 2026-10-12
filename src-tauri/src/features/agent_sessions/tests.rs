@@ -273,8 +273,10 @@ fn spawned_env_has_no_api_or_provider_variables_and_has_foundrys() {
 #[test]
 fn output_streams_and_coalesces_a_burst() {
     let env = Env::new(3);
+    let started = Instant::now();
     env.start("builder", &["--burst", "300"]);
     env.events.wait_exited("builder", LONG);
+    let elapsed = started.elapsed();
     let text = env.events.text();
 
     let mut at = 0;
@@ -285,10 +287,16 @@ fn output_streams_and_coalesces_a_burst() {
             .unwrap_or_else(|| panic!("{line} missing or out of order"));
         at += found + line.len();
     }
+    // A batch only closes once its window has passed (300 lines are far below the size cap),
+    // or when the output ends. So however slowly a loaded machine delivers the lines, there
+    // can't be more batches than windows that fit in the run, plus the final one. A fixed
+    // bound (`< 100`) failed under a parallel suite, when the lines trickled in over > 1.6 s.
     let batches = env.events.batches();
+    let windows = elapsed.as_millis() / BATCH.as_millis() + 1;
     assert!(
-        batches < 100,
-        "300 flushed lines arrived in {batches} batches"
+        batches as u128 <= windows,
+        "300 flushed lines arrived in {batches} batches over {elapsed:?} \
+         (at most {windows} windows of {BATCH:?})"
     );
 }
 

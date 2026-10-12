@@ -22,7 +22,7 @@ use crate::core::AppError;
 use crate::core::ErrorCode;
 use crate::features::{
     agent_events, agent_sessions, app, bakery, design, folders, hooks, plan, projects, prompts,
-    roadmap, setup_commit, team, verification,
+    roadmap, setup_commit, slice_commit, team, verification,
 };
 
 /// Where the generated TypeScript bindings live. Never hand-edit that file.
@@ -132,6 +132,9 @@ pub fn specta_builder<R: Runtime>() -> tauri_specta::Builder<R> {
             verification::commands::manager_digest,
             verification::commands::write_digest_file,
             setup_commit::commands::commit_setup,
+            setup_commit::commands::setup_status,
+            slice_commit::commands::commit_status,
+            slice_commit::commands::commit_slice,
         ])
         .events(collect_events![
             app::AppReady,
@@ -481,6 +484,11 @@ pub fn app_builder<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> 
                 Arc::clone(&projects),
             )));
             app.manage(Arc::new(setup_commit::SetupCommitter::new(
+                Arc::clone(&repos),
+                Arc::clone(&sessions),
+                Git::system(),
+            )));
+            app.manage(Arc::new(slice_commit::SliceCommitter::new(
                 Arc::clone(&repos),
                 Arc::clone(&sessions),
                 Git::system(),
@@ -2108,6 +2116,12 @@ opus-test"
             "\"verification_running\"",
             "\"test_commands_changed\"",
             "commitSetup",
+            "setupStatus",
+            "commitStatus",
+            "commitSlice",
+            "export type CommitStatus",
+            "export type CommitSliceResult",
+            "export type SetupStatus",
             "export type CommitSetupResult",
             "\"not_a_git_repo\"",
             "\"git_identity_missing\"",

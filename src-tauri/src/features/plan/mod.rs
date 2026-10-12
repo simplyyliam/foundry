@@ -784,7 +784,8 @@ impl PlanStore {
                         ));
                     };
                     plan.slices[index].decisions.push(format!(
-                        "Marked done without a passed verification (override; it {why}): {reason}"
+                        "{}; it {why}): {reason}",
+                        report::DONE_OVERRIDE_PREFIX
                     ));
                 }
             }
