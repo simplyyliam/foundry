@@ -128,6 +128,14 @@ export const commands = {
 	uncoveredParagraphs: string[],
 	/**  1, or 2 when the first reply was rejected. */
 	attempts: number,
+	/**
+	 *  Where the brain dump contradicts the design family files or the Bakery's Take and
+	 *  Skip notes about the UI (validated, at most 12, unresolved). `load_roadmap` carries
+	 *  them into the plan, where they're ruled on. Missing in older roadmaps: none.
+	 */
+	conflicts?: RoadmapConflict[],
+	/**  Whether that comparison ran. Missing in older roadmaps: `not_run`. */
+	conflictCheck?: ConflictCheck,
 	generatedAt: number,
 } | null, AppError>(__TAURI_INVOKE("get_roadmap", { projectId })),
 	/**
@@ -203,6 +211,17 @@ export const commands = {
 	 *  unless `discardConfirmed`. Call after `generate_roadmap` succeeds.
 	 */
 	loadRoadmap: (projectId: string, options: LoadRoadmapOptions, expectedRevision: number | null) => typedError<RoadmapLoaded, AppError>(__TAURI_INVOKE("load_roadmap", { projectId, options, expectedRevision })),
+	/**
+	 *  The UI conflicts between the brain dump and the references (design family files, Bakery
+	 *  Take and Skip notes) that the loaded roadmap found, resolved or not. Read-only.
+	 */
+	listRoadmapConflicts: (projectId: string) => typedError<RoadmapConflict[], AppError>(__TAURI_INVOKE("list_roadmap_conflicts", { projectId })),
+	/**
+	 *  Records a ruling on one conflict. With `addAsRule`, also adds a confirmed, project-wide
+	 *  constraint stating it (its id is in the result). `invalid_input` for a custom ruling
+	 *  without text, `not_found` for an unknown conflict.
+	 */
+	resolveRoadmapConflict: (projectId: string, conflictId: string, ruling: ConflictRuling, addAsRule: boolean, expectedRevision: number | null) => typedError<ConflictResolved, AppError>(__TAURI_INVOKE("resolve_roadmap_conflict", { projectId, conflictId, ruling, addAsRule, expectedRevision })),
 	/**  The Role Handbook (seeded with the starter roles the first time). */
 	roleHandbookList: () => typedError<HandbookRole[], AppError>(__TAURI_INVOKE("role_handbook_list")),
 	roleHandbookAdd: (role: NewHandbookRole) => typedError<HandbookRole[], AppError>(__TAURI_INVOKE("role_handbook_add", { role })),
@@ -725,6 +744,49 @@ export type CommitStatus = {
 /**  The conventional-commit type of a slice commit, picked by fixed rules (never by a model). */
 export type CommitType = "feat" | "fix" | "refactor" | "test" | "docs" | "chore";
 
+/**  How the conflict check after generation went. */
+export type ConflictCheck = 
+/**  It ran; `conflicts` is what it found. */
+"done" | 
+/**  No design family file and no Bakery note to compare with, so the model wasn't asked. */
+"no_references" | 
+/**  The model failed, timed out or gave an unreadable reply. The roadmap is still saved. */
+"failed" | 
+/**  A roadmap saved before the check existed. */
+"not_run";
+
+/**  What `resolve_roadmap_conflict` returns. */
+export type ConflictResolved = {
+	conflict: RoadmapConflict,
+	/**
+	 *  The project-wide constraint stating the ruling, when there is one (`addAsRule`, or
+	 *  one made by an earlier ruling, which is rewritten to match).
+	 */
+	ruleRequirementId: string | null,
+	plan: Plan,
+};
+
+export type ConflictRuling = {
+	kind: RulingKind,
+	/**  Required for `custom` (the ruling itself); otherwise an optional note. */
+	text?: string | null,
+};
+
+export type ConflictSource = {
+	kind: ConflictSourceKind,
+	/**
+	 *  `design_family`: the file name in `docs/design/` (e.g. `dashboard.md`).
+	 *  `bakery`: the entry's image file name in `docs/bakery/` (e.g. `03-red-door.png`).
+	 */
+	ref: string,
+};
+
+export type ConflictSourceKind = 
+/**  A design guideline file in `docs/design/`. */
+"design_family" | 
+/**  A Bakery entry's Take or Skip note. */
+"bakery";
+
 /**
  *  A canvas coordinate or size. Always finite (commands reject NaN and infinities), so it
  *  exports as a plain TS `number`; a bare `f64` would export as `number | null`.
@@ -1241,6 +1303,11 @@ export type Plan = {
 	deferred: PlanDeferred[],
 	/**  Project-wide open questions. */
 	openQuestions: OpenQuestion[],
+	/**
+	 *  Roadmap conflicts with no ruling yet (`list_roadmap_conflicts`). Never blocks
+	 *  confirming: it's for the UI to warn.
+	 */
+	unresolvedConflicts: number,
 };
 
 /**  What an `add_*` command returns: the new item's id and the plan after it. */
@@ -1485,6 +1552,23 @@ export type Roadmap = {
 	openQuestions: string[],
 };
 
+export type RoadmapConflict = {
+	id: string,
+	/**  What it's about, e.g. "minimap". */
+	topic: string,
+	/**  Found word for word (whitespace-normalized) in `docs/brain-dump.md`. */
+	brainDumpExcerpt: string,
+	otherSource: ConflictSource,
+	/**  Found word for word (whitespace-normalized) in that source. */
+	otherExcerpt: string,
+	/**  Always `reference_wins`. */
+	suggested: RulingKind,
+	/**  Null until `resolve_roadmap_conflict`. */
+	ruling?: ConflictRuling | null,
+	/**  The project-wide constraint made from the ruling (`addAsRule`), if any. */
+	ruleRequirementId?: string | null,
+};
+
 /**  What `load_roadmap` loaded. */
 export type RoadmapLoaded = {
 	plan: Plan,
@@ -1516,6 +1600,14 @@ export type RoadmapResult = {
 	uncoveredParagraphs: string[],
 	/**  1, or 2 when the first reply was rejected. */
 	attempts: number,
+	/**
+	 *  Where the brain dump contradicts the design family files or the Bakery's Take and
+	 *  Skip notes about the UI (validated, at most 12, unresolved). `load_roadmap` carries
+	 *  them into the plan, where they're ruled on. Missing in older roadmaps: none.
+	 */
+	conflicts?: RoadmapConflict[],
+	/**  Whether that comparison ran. Missing in older roadmaps: `not_run`. */
+	conflictCheck?: ConflictCheck,
 	generatedAt: number,
 };
 
@@ -1542,6 +1634,8 @@ export type RosterAgent = {
 	/**  Defaults to the handbook role's typical protected globs. The floor is always added. */
 	protectedGlobs: string[] | null,
 };
+
+export type RulingKind = "reference_wins" | "brain_dump_wins" | "custom";
 
 /**
  *  A session as `agent_list` reports it: a live one (`starting` or `running`, held here), or
@@ -1680,7 +1774,9 @@ export type SliceView = {
 	ready: boolean,
 } & PlanSlice;
 
-export type Stage = "preflight" | "running" | "validating" | "retrying" | "done" | "failed";
+export type Stage = "preflight" | "running" | "validating" | "retrying" | 
+/**  Comparing the brain dump with the design family files and Bakery notes. */
+"checking_conflicts" | "done" | "failed";
 
 export type StatusOptions = {
 	/**

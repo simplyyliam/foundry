@@ -2,6 +2,7 @@
 
 pub mod checks;
 pub mod claude;
+pub mod conflicts;
 pub mod error;
 pub mod events;
 pub mod fsx;

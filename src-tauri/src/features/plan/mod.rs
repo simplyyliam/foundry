@@ -18,6 +18,7 @@ use specta::Type;
 use tauri_specta::Event;
 
 use crate::core::checks::{self, RequirementCheck};
+use crate::core::conflicts::{ConflictRuling, ConflictSourceKind, RoadmapConflict, RulingKind};
 use crate::core::events::EventMeta;
 use crate::core::git::{Git, GitRun};
 use crate::core::repos::RepoIndex;
@@ -148,6 +149,10 @@ pub struct PlanFile {
     /// Project-wide open questions (a slice's own live on the slice).
     #[serde(default)]
     pub open_questions: Vec<OpenQuestion>,
+    /// UI conflicts between the brain dump and the references, from the loaded roadmap.
+    /// Missing in older plans: none.
+    #[serde(default)]
+    pub conflicts: Vec<RoadmapConflict>,
 }
 
 // ---------- what the UI gets ----------
@@ -175,6 +180,9 @@ pub struct Plan {
     pub deferred: Vec<Deferred>,
     /// Project-wide open questions.
     pub open_questions: Vec<OpenQuestion>,
+    /// Roadmap conflicts with no ruling yet (`list_roadmap_conflicts`). Never blocks
+    /// confirming: it's for the UI to warn.
+    pub unresolved_conflicts: u32,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, Type)]
@@ -282,6 +290,17 @@ pub struct StatusOptions {
     #[serde(rename = "override")]
     pub override_gate: bool,
     pub reason: Option<String>,
+}
+
+/// What `resolve_roadmap_conflict` returns.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ConflictResolved {
+    pub conflict: RoadmapConflict,
+    /// The project-wide constraint stating the ruling, when there is one (`addAsRule`, or
+    /// one made by an earlier ruling, which is rewritten to match).
+    pub rule_requirement_id: Option<String>,
+    pub plan: Plan,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -419,6 +438,10 @@ pub fn view(plan: &PlanFile) -> Plan {
         requirements: plan.requirements.clone(),
         deferred: plan.deferred.clone(),
         open_questions: plan.open_questions.clone(),
+        unresolved_conflicts: u32::try_from(
+            plan.conflicts.iter().filter(|c| c.ruling.is_none()).count(),
+        )
+        .unwrap_or(u32::MAX),
     }
 }
 
@@ -1223,6 +1246,96 @@ impl PlanStore {
         })
     }
 
+    // ---------- roadmap conflicts ----------
+
+    /// The plan's roadmap conflicts, resolved or not, in the order they were found.
+    pub fn list_conflicts(&self, project_id: &str) -> Result<Vec<RoadmapConflict>, AppError> {
+        let repo = self.repos.repo(project_id)?;
+        let guard = self.project_lock(project_id);
+        let _guard = lock(&guard);
+        Ok(Self::load(&repo)?.conflicts)
+    }
+
+    /// Records the ruling (again, if it had one). With `add_as_rule`, also adds a confirmed,
+    /// project-wide constraint stating it; a rule made by an earlier ruling is rewritten
+    /// instead, so there's never more than one per conflict. One mutation either way.
+    pub fn resolve_conflict(
+        &self,
+        project_id: &str,
+        conflict_id: &str,
+        ruling: ConflictRuling,
+        add_as_rule: bool,
+        expected: Option<u32>,
+    ) -> Result<ConflictResolved, AppError> {
+        let text = ruling
+            .text
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map(str::to_string);
+        if ruling.kind == RulingKind::Custom && text.is_none() {
+            return Err(AppError::invalid_input("a custom ruling needs its text"));
+        }
+        let ruling = ConflictRuling {
+            kind: ruling.kind,
+            text,
+        };
+        let ((conflict, rule_id), plan) = self.mutate(project_id, expected, |plan, repo| {
+            let index = plan
+                .conflicts
+                .iter()
+                .position(|c| c.id == conflict_id)
+                .ok_or_else(|| AppError::not_found(format!("no conflict with id {conflict_id}")))?;
+            let mut conflict = plan.conflicts[index].clone();
+            conflict.ruling = Some(ruling);
+            let rule_text = rule_text(&conflict);
+            let existing = conflict
+                .rule_requirement_id
+                .as_deref()
+                .and_then(|id| plan.requirements.iter().position(|r| r.id == id));
+            let rule_id = match existing {
+                Some(at) => {
+                    let r = &mut plan.requirements[at];
+                    r.text = rule_text;
+                    Some(r.id.clone())
+                }
+                None if add_as_rule => {
+                    let id = ids::new_id();
+                    plan.requirements.push(Requirement {
+                        id: id.clone(),
+                        text: rule_text,
+                        kind: RequirementKind::Constraint,
+                        slice_id: None,
+                        unsourced: !is_sourced(repo, &conflict.brain_dump_excerpt)?,
+                        source_excerpt: conflict.brain_dump_excerpt.clone(),
+                        verified_by: "Review the UI against this ruling.".into(),
+                        // The human's own ruling: nothing left to confirm.
+                        state: RequirementState::Confirmed,
+                        project_wide: true,
+                        checks: Vec::new(),
+                        suggested_checks: Vec::new(),
+                    });
+                    Some(id)
+                }
+                None => None,
+            };
+            conflict.rule_requirement_id = rule_id.clone();
+            plan.conflicts[index] = conflict.clone();
+            Ok((conflict, rule_id))
+        })?;
+        tracing::info!(
+            project_id,
+            conflict_id,
+            rule = rule_id.is_some(),
+            "roadmap conflict resolved"
+        );
+        Ok(ConflictResolved {
+            conflict,
+            rule_requirement_id: rule_id,
+            plan,
+        })
+    }
+
     // ---------- deferred ----------
 
     pub fn add_deferred(
@@ -1262,6 +1375,48 @@ impl PlanStore {
         })?;
         Ok(plan)
     }
+}
+
+/// The project rule a ruling becomes: one line naming both sides and which one wins.
+fn rule_text(conflict: &RoadmapConflict) -> String {
+    let source = match conflict.other_source.kind {
+        ConflictSourceKind::DesignFamily => {
+            format!(
+                "the design family file `{}`",
+                conflict.other_source.reference
+            )
+        }
+        ConflictSourceKind::Bakery => {
+            format!("the Bakery reference `{}`", conflict.other_source.reference)
+        }
+    };
+    let topic = normalize_ws(&conflict.topic);
+    let brain = normalize_ws(&conflict.brain_dump_excerpt);
+    let other = normalize_ws(&conflict.other_excerpt);
+    let Some(ruling) = &conflict.ruling else {
+        return String::new();
+    };
+    let mut text = match ruling.kind {
+        RulingKind::ReferenceWins => format!(
+            "UI ruling ({topic}): follow {source} (\"{other}\"), not the brain dump \
+             (\"{brain}\")."
+        ),
+        RulingKind::BrainDumpWins => format!(
+            "UI ruling ({topic}): follow the brain dump (\"{brain}\"), not {source} \
+             (\"{other}\")."
+        ),
+        RulingKind::Custom => format!(
+            "UI ruling ({topic}): {}",
+            normalize_ws(ruling.text.as_deref().unwrap_or(""))
+        ),
+    };
+    if ruling.kind != RulingKind::Custom {
+        if let Some(note) = &ruling.text {
+            text.push(' ');
+            text.push_str(&normalize_ws(note));
+        }
+    }
+    text
 }
 
 /// `meta.title` / `meta.subtitle` for the mirror: the project's name and tagline from

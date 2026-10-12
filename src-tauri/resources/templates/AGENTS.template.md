@@ -87,6 +87,8 @@ Design guideline files are the user's own input from their Design Library, copie
 5. The design guideline files in `docs/design/`, per the manifest's routing
 6. Component-library defaults
 
+UI direction precedence, highest first: the user's rulings (project rules), then the design family files and Bakery references, then the wording of requirements, then the brain dump.
+
 **Principles, not templates.** These files study why designs work, often via a named reference product. Never reproduce a reference product's signature elements — its wordmark treatment, illustrations, layout composition, or brand details. Apply the principle (restraint, one accent, hierarchy through type and space) with this project's own identity.
 
 **Gate.** In the first response of any UI-touching slice, state the design family and which manifest files you will apply before writing code — or that none matched, if that's the case. Before calling the slice done, if any matched file names a Do/Don't checklist, run it and report anything you could not satisfy. Design requirements in the hand-off count under Law 9: each is assigned to a slice and checked off individually.

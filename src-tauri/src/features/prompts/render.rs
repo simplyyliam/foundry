@@ -2,7 +2,8 @@
 
 use std::collections::BTreeMap;
 
-use super::disk::{Agent, Plan, Slice, BAKERY_MANIFEST, DESIGN_MANIFEST};
+use super::disk::{Agent, BakeryItem, Plan, Slice, BAKERY_MANIFEST, DESIGN_MANIFEST};
+use crate::core::conflicts::PRECEDENCE_LINE;
 use crate::core::hook_policy;
 use crate::core::report::{
     self, Bug, BugSeverity, Bugs, FailingTest, RequirementReport, RequirementStatus, SliceReport,
@@ -40,6 +41,7 @@ pub mod field {
     pub const PERSISTENCE: &str = "PERSISTENCE LAYER";
     pub const REQUIREMENTS: &str = "CORE MVP USER CONSTRAINTS & FEATURE PRIMITIVES";
     pub const HORIZON: &str = "FUTURE HORIZON ROADMAP PRIMITIVES";
+    pub const REFERENCES: &str = "REFERENCES";
 }
 
 /// The template without what's only there for filling it in by hand: the usage note (the
@@ -142,19 +144,18 @@ pub fn handoff_requirements(plan: &Plan) -> Vec<String> {
     out
 }
 
-/// The confirmed project-wide requirements, each with its "Verified by" line, after a blank
-/// line and `PROJECT_RULES_HEADING`. Nothing at all when there are none, so the hand-off is
-/// unchanged for a plan without them.
+/// After a blank line, `PROJECT_RULES_HEADING`, the UI precedence line, then the confirmed
+/// project-wide requirements, each with its "Verified by" line.
 pub fn handoff_project_rules(plan: &Plan) -> Vec<String> {
-    let rules: Vec<&super::disk::Requirement> = plan
+    let rules = plan
         .requirements
         .iter()
-        .filter(|r| r.project_wide && r.state == super::disk::RequirementState::Confirmed)
-        .collect();
-    if rules.is_empty() {
-        return Vec::new();
-    }
-    let mut out = vec![String::new(), PROJECT_RULES_HEADING.to_string()];
+        .filter(|r| r.project_wide && r.state == super::disk::RequirementState::Confirmed);
+    let mut out = vec![
+        String::new(),
+        PROJECT_RULES_HEADING.to_string(),
+        format!("- {PRECEDENCE_LINE}"),
+    ];
     for requirement in rules {
         out.push(format!("- {}: {}", requirement.id, requirement.text));
         out.push(format!(
@@ -180,6 +181,42 @@ pub fn handoff_horizon(plan: &Plan) -> Vec<String> {
                 "- {} (anchored to: {})",
                 normalize_ws(&d.label),
                 normalize_ws(anchor)
+            )
+        })
+        .collect()
+}
+
+/// A Take or Skip note as written (trimmed), its later lines indented under the bullet.
+fn verbatim(text: &str) -> String {
+    let text = text.trim();
+    if text.is_empty() {
+        return "(empty)".into();
+    }
+    text.replace("\r\n", "\n")
+        .lines()
+        .collect::<Vec<_>>()
+        .join("\n    ")
+}
+
+/// One bullet per Bakery entry: its file and label, then its Take and Skip notes verbatim.
+/// `- (none)` with no entries.
+pub fn references(items: &[&BakeryItem]) -> Vec<String> {
+    if items.is_empty() {
+        return vec!["- (none)".into()];
+    }
+    items
+        .iter()
+        .map(|item| {
+            let label = normalize_ws(&item.label);
+            let head = if label.is_empty() {
+                format!("- `{}`", item.file)
+            } else {
+                format!("- `{}` ({label})", item.file)
+            };
+            format!(
+                "{head}\n  Take: {}\n  Skip: {}",
+                verbatim(&item.take),
+                verbatim(&item.skip)
             )
         })
         .collect()
@@ -249,6 +286,8 @@ pub struct TaskInputs<'a> {
     pub forced: &'a [String],
     /// At least one of the Bakery and design manifests exists.
     pub design_pointers: bool,
+    /// The Bakery entries that apply to this slice and agent.
+    pub references: &'a [&'a BakeryItem],
 }
 
 /// The line that starts a session, and the first line of every task prompt.
@@ -277,6 +316,7 @@ pub fn task_prompt(input: &TaskInputs<'_>) -> Result<String, AppError> {
         agent,
         forced,
         design_pointers,
+        references: bakery,
     } = input;
     let mut out = role_line(agent);
     out.push_str("\n\n");
@@ -376,6 +416,16 @@ pub fn task_prompt(input: &TaskInputs<'_>) -> Result<String, AppError> {
             "For UI work, read `{BAKERY_MANIFEST}` and `{DESIGN_MANIFEST}` (where present) \
              first, as AGENTS.md section 6 describes.\n\n"
         ));
+    }
+
+    // 7a. The Bakery entries that apply, Take and Skip verbatim.
+    if !bakery.is_empty() {
+        out.push_str("## References\n\n");
+        for line in references(bakery) {
+            out.push_str(&line);
+            out.push('\n');
+        }
+        out.push('\n');
     }
 
     // 7b. QA and Test Engineer roles.

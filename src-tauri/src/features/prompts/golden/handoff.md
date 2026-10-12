@@ -30,8 +30,14 @@ CORE MVP USER CONSTRAINTS & FEATURE PRIMITIVES:
 - Share
   - r-4: A shared link opens without signing in.
 
+PROJECT RULES (apply to everything built, in every slice):
+- UI direction precedence, highest first: the user's rulings (project rules), then the design family files and Bakery references, then the wording of requirements, then the brain dump.
+
 FUTURE HORIZON ROADMAP PRIMITIVES:
 - Offline mode (anchored to: Feed)
+
+REFERENCES:
+- (none)
 ==================================================================================
 
 ---

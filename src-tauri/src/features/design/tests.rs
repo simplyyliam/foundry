@@ -545,3 +545,19 @@ fn the_ui_component_library_hint_asks_for_library_primitives_and_install_command
         );
     }
 }
+
+#[test]
+fn generated_agents_md_states_the_ui_precedence_in_its_design_section() {
+    let env = Env::new();
+    env.confirm_all("");
+    env.generate(false).unwrap();
+    let text = String::from_utf8(env.read("AGENTS.md").unwrap()).unwrap();
+    let line = crate::core::conflicts::PRECEDENCE_LINE;
+    let at = text
+        .find(&format!("\n{line}\n"))
+        .expect("the precedence line");
+    let design = text.find("### 6. DESIGN REFERENCE").unwrap();
+    let team = text.find("### 7. TEAM").unwrap();
+    assert!(design < at && at < team, "inside section 6");
+    assert_eq!(text.matches(line).count(), 1);
+}

@@ -8,6 +8,7 @@ use std::sync::Arc;
 use serde_json::{json, Value};
 
 use super::*;
+use crate::core::conflicts::PRECEDENCE_LINE;
 use crate::core::report::SliceReport;
 use crate::testing::TestRepo;
 
@@ -415,7 +416,13 @@ fn unlabeled_bakery_images_are_a_warning_not_a_refusal() {
     let handoff = fix.store.generate_handoff(P).unwrap();
     let task = fix.task("s-auth", "ada", false).unwrap();
     for warnings in [&handoff.warnings, &task.warnings] {
-        assert_eq!(warnings.len(), 1);
+        // The second is bakery_note_incomplete: every entry here has an empty Skip.
+        assert_eq!(warnings.len(), 2);
+        assert!(
+            warnings[1].starts_with(BAKERY_NOTE_INCOMPLETE),
+            "{}",
+            warnings[1]
+        );
         assert!(warnings[0].contains("2 Bakery image(s)"), "{}", warnings[0]);
         assert!(
             warnings[0].contains("02-sky.png, 03-blank.png"),
@@ -1117,10 +1124,18 @@ fn handoff_lists_project_rules_with_their_verified_by_line() {
     let fix = Fix::ready();
     fix.store.generate_handoff(P).unwrap();
     let before = fix.repo.read(".foundry/prompts/handoff.md");
-    assert!(
-        !before.contains(render::PROJECT_RULES_HEADING),
-        "none: no section"
+    // No rules: the section still holds the precedence line.
+    let empty = format!(
+        "  - r-4: A shared link opens without signing in.\n\
+         \n\
+         {}\n\
+         - {}\n\
+         \n\
+         FUTURE HORIZON ROADMAP PRIMITIVES:\n",
+        render::PROJECT_RULES_HEADING,
+        PRECEDENCE_LINE
     );
+    assert!(before.contains(&empty), "{before}");
 
     add_rules(&fix);
     fix.store.generate_handoff(P).unwrap();
@@ -1129,18 +1144,17 @@ fn handoff_lists_project_rules_with_their_verified_by_line() {
         "  - r-4: A shared link opens without signing in.\n\
          \n\
          {}\n\
+         - {}\n\
          - r-5: The app works well in a desktop browser.\n  Verified by: test r-5\n\
          - r-6: Compare, inspect and search run entirely in the browser.\n  Verified by: test r-6\n\
          \n\
          FUTURE HORIZON ROADMAP PRIMITIVES:\n",
-        render::PROJECT_RULES_HEADING
+        render::PROJECT_RULES_HEADING,
+        PRECEDENCE_LINE
     );
     assert!(text.contains(&section), "{text}");
-    // Nothing else changed: take the section out and it's the hand-off without rules.
-    let without = text.replace(
-        &section,
-        "  - r-4: A shared link opens without signing in.\n\nFUTURE HORIZON ROADMAP PRIMITIVES:\n",
-    );
+    // Nothing else changed: take the rules out and it's the hand-off without them.
+    let without = text.replace(&section, &empty);
     assert_eq!(without, before);
 
     // A proposed project rule isn't listed (and the plan isn't confirmed, so no hand-off);
@@ -1632,4 +1646,170 @@ fn fix_prompts_need_a_known_slice_a_team_and_valid_reports() {
         fix.store.generate_fix_prompts(P, "s-feed"),
         ErrorCode::TeamNotConfirmed,
     );
+}
+
+// ---------- Bakery references ----------
+
+fn bakery_fixture(fix: &Fix) {
+    fix.json(
+        ".foundry/bakery.json",
+        &json!({
+            "version": 1, "nextNumber": 4, "maxImages": 40,
+            "items": [
+                { "id": "a", "file": "01-map.png", "label": "Map",
+                  "take": "The floating minimap in the corner.\nKeep it small.",
+                  "skip": "The neon colours.", "appliesTo": [] },
+                { "id": "b", "file": "02-panels.png", "label": "Panels",
+                  "take": "Floating panels over the canvas.", "skip": "",
+                  "appliesTo": ["lin"] },
+                { "id": "c", "file": "03-feed.png", "label": "Feed",
+                  "take": "Dense rows.", "skip": "The avatars.",
+                  "appliesTo": ["Feed"] }
+            ]
+        }),
+    );
+}
+
+#[test]
+fn task_prompts_carry_the_take_and_skip_of_entries_that_apply() {
+    let fix = Fix::ready();
+    bakery_fixture(&fix);
+    let result = fix.task("s-feed", "ada", true).unwrap();
+    let text = fix.repo.read(&result.path);
+    let section = "## References\n\n\
+        - `01-map.png` (Map)\n  Take: The floating minimap in the corner.\n    Keep it small.\n  \
+        Skip: The neon colours.\n\
+        - `03-feed.png` (Feed)\n  Take: Dense rows.\n  Skip: The avatars.\n\n";
+    assert!(text.contains(section), "{text}");
+    // 02 applies to Lin only.
+    assert!(!text.contains("02-panels.png"), "{text}");
+    // Every entry that applies has both notes: no warning about them.
+    assert!(
+        !result
+            .warnings
+            .iter()
+            .any(|w| w.starts_with(BAKERY_NOTE_INCOMPLETE)),
+        "{:?}",
+        result.warnings
+    );
+}
+
+#[test]
+fn an_empty_skip_in_a_referenced_entry_is_a_bakery_note_incomplete_warning() {
+    let fix = Fix::ready();
+    bakery_fixture(&fix);
+    let result = fix.task("s-share", "lin", true).unwrap();
+    let text = fix.repo.read(&result.path);
+    assert!(
+        text.contains("- `02-panels.png` (Panels)\n  Take: Floating panels over the canvas.\n  Skip: (empty)\n"),
+        "{text}"
+    );
+    let warning = result
+        .warnings
+        .iter()
+        .find(|w| w.starts_with(BAKERY_NOTE_INCOMPLETE))
+        .expect("a bakery_note_incomplete warning");
+    assert!(warning.contains("02-panels.png (no Skip)"), "{warning}");
+    assert!(!warning.contains("01-map.png"), "{warning}");
+
+    // The hand-off lists every entry, so it warns about the same one.
+    let handoff = fix.store.generate_handoff(P).unwrap();
+    let text = fix.repo.read(&handoff.path);
+    assert!(
+        text.contains("REFERENCES:\n- `01-map.png` (Map)\n  Take: The floating minimap"),
+        "{text}"
+    );
+    assert!(text.contains("  Skip: The avatars.\n"), "{text}");
+    assert!(handoff
+        .warnings
+        .iter()
+        .any(|w| w.starts_with(BAKERY_NOTE_INCOMPLETE) && w.contains("02-panels.png (no Skip)")));
+}
+
+#[test]
+fn without_bakery_entries_task_prompts_have_no_references_and_the_handoff_says_none() {
+    let fix = Fix::ready();
+    let text = fix
+        .repo
+        .read(&fix.task("s-feed", "ada", true).unwrap().path);
+    assert!(!text.contains("## References"), "{text}");
+    fix.store.generate_handoff(P).unwrap();
+    let handoff = fix.repo.read(".foundry/prompts/handoff.md");
+    assert!(handoff.contains("REFERENCES:\n- (none)\n"), "{handoff}");
+}
+
+// ---------- a conflict ruling, end to end ----------
+
+struct NoEvents;
+
+impl crate::features::plan::PlanEvents for NoEvents {
+    fn changed(&self, _: crate::features::plan::PlanChanged) {}
+}
+
+/// Through the plan's public api, as the app wires it: a ruling added as a rule lands in the
+/// hand-off's project rules, under the precedence line.
+#[test]
+fn a_conflict_ruling_added_as_a_rule_appears_in_the_handoff() {
+    use crate::core::conflicts::{ConflictRuling, RulingKind};
+    use crate::features::plan::{LoadRoadmapOptions, PlanStore};
+
+    let fix = Fix::ready();
+    fix.repo
+        .write("docs/brain-dump.md", "There is no minimap.\n");
+    fix.json(
+        ".foundry/roadmap.json",
+        &json!({
+            "roadmap": { "goal": "Read anywhere",
+                "slices": [{ "name": "Core", "delivers": ["read"], "dependsOn": [] }],
+                "requirements": [{ "text": "Reading works", "kind": "behavior",
+                    "sourceExcerpt": "x", "sliceName": "Core", "verifiedBy": "a test" }],
+                "deferred": [], "openQuestions": [] },
+            "conflicts": [{ "id": "c-1", "topic": "minimap",
+                "brainDumpExcerpt": "There is no minimap.",
+                "otherSource": { "kind": "bakery", "ref": "01-map.png" },
+                "otherExcerpt": "The floating minimap in the corner.",
+                "suggested": "reference_wins" }]
+        }),
+    );
+    let repos = Arc::new(RepoIndex::default());
+    repos.replace_all([(P, fix.repo.path())]);
+    let plan = PlanStore::new(repos, crate::core::git::Git::system(), Arc::new(NoEvents));
+    plan.load_roadmap(
+        P,
+        LoadRoadmapOptions {
+            discard_confirmed: true,
+        },
+        None,
+    )
+    .unwrap();
+    plan.confirm_all(P, None).unwrap();
+    let resolved = plan
+        .resolve_conflict(
+            P,
+            "c-1",
+            ConflictRuling {
+                kind: RulingKind::ReferenceWins,
+                text: None,
+            },
+            true,
+            None,
+        )
+        .unwrap();
+    let rule_id = resolved.rule_requirement_id.unwrap();
+    let rule = resolved
+        .plan
+        .requirements
+        .iter()
+        .find(|r| r.id == rule_id)
+        .unwrap();
+
+    fix.store.generate_handoff(P).unwrap();
+    let text = fix.repo.read(".foundry/prompts/handoff.md");
+    let expected = format!(
+        "{}\n- {}\n- {rule_id}: {}\n  Verified by: ",
+        render::PROJECT_RULES_HEADING,
+        PRECEDENCE_LINE,
+        rule.text
+    );
+    assert!(text.contains(&expected), "{text}");
 }

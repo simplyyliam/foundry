@@ -2026,3 +2026,238 @@ fn suggested_checks_load_from_the_roadmap_and_move_into_checks_only_when_accepte
         }]
     );
 }
+
+// ---------- roadmap conflicts ----------
+
+use crate::core::conflicts::{ConflictRuling, ConflictSourceKind, RulingKind};
+
+/// A roadmap with two conflicts, as roadmap generation saves them, loaded into the plan.
+/// The brain dump holds the first conflict's excerpt.
+fn load_with_conflicts(env: &Env) -> Plan {
+    env.repo.write(
+        "docs/brain-dump.md",
+        "Save a reading list.\n\nThere is no minimap.\n",
+    );
+    let mut roadmap = roadmap_json();
+    roadmap["conflicts"] = json!([
+        { "id": "c-1", "topic": "minimap", "brainDumpExcerpt": "There is no minimap.",
+          "otherSource": { "kind": "design_family", "ref": "canvas.md" },
+          "otherExcerpt": "Show a minimap in the corner.", "suggested": "reference_wins",
+          "ruling": null, "ruleRequirementId": null },
+        { "id": "c-2", "topic": "sidebar", "brainDumpExcerpt": "The sidebar is persistent.",
+          "otherSource": { "kind": "bakery", "ref": "01-panels.png" },
+          "otherExcerpt": "Floating panels.", "suggested": "reference_wins" }
+    ]);
+    roadmap["conflictCheck"] = json!("done");
+    write_roadmap(env, &roadmap);
+    load(env, false).unwrap().plan
+}
+
+fn ruling(kind: RulingKind, text: Option<&str>) -> ConflictRuling {
+    ConflictRuling {
+        kind,
+        text: text.map(str::to_string),
+    }
+}
+
+/// Assigns everything and confirms it, so the plan is confirmed apart from conflicts.
+fn confirm_plan(env: &Env) -> Plan {
+    let plan = env.plan();
+    let core = plan.slices[0].slice.id.clone();
+    for r in plan.requirements.iter().filter(|r| r.slice_id.is_none()) {
+        env.store
+            .assign_requirement(P, &r.id, Some(core.clone()), None)
+            .unwrap();
+    }
+    env.store.confirm_all(P, None).unwrap()
+}
+
+#[test]
+fn loaded_conflicts_are_listed_and_counted_as_unresolved() {
+    let env = Env::new();
+    let plan = load_with_conflicts(&env);
+    assert_eq!(plan.unresolved_conflicts, 2);
+    let listed = env.store.list_conflicts(P).unwrap();
+    assert_eq!(listed.len(), 2);
+    assert_eq!(listed[0].id, "c-1");
+    assert_eq!(listed[1].other_source.kind, ConflictSourceKind::Bakery);
+    assert!(listed.iter().all(|c| c.ruling.is_none()));
+    // A plan without any: none, and plans from before conflicts still read.
+    let fresh = Env::new();
+    assert!(fresh.store.list_conflicts(P).unwrap().is_empty());
+    assert_eq!(fresh.plan().unresolved_conflicts, 0);
+}
+
+#[test]
+fn resolving_without_add_as_rule_records_the_ruling_only() {
+    let env = Env::new();
+    let before = load_with_conflicts(&env);
+
+    let resolved = env
+        .store
+        .resolve_conflict(
+            P,
+            "c-1",
+            ruling(RulingKind::BrainDumpWins, None),
+            false,
+            Some(before.revision),
+        )
+        .unwrap();
+
+    assert_eq!(resolved.rule_requirement_id, None);
+    assert_eq!(
+        resolved.conflict.ruling,
+        Some(ruling(RulingKind::BrainDumpWins, None))
+    );
+    assert_eq!(resolved.plan.revision, before.revision + 1);
+    assert_eq!(resolved.plan.unresolved_conflicts, 1);
+    assert_eq!(resolved.plan.requirements.len(), before.requirements.len());
+    let stored = &env.plan_json().conflicts[0];
+    assert_eq!(stored.ruling, Some(ruling(RulingKind::BrainDumpWins, None)));
+}
+
+#[test]
+fn resolving_with_add_as_rule_adds_a_confirmed_project_wide_constraint() {
+    let env = Env::new();
+    load_with_conflicts(&env);
+    let confirmed = confirm_plan(&env);
+    assert!(env.store.summary(P).unwrap().confirmed);
+
+    let resolved = env
+        .store
+        .resolve_conflict(
+            P,
+            "c-1",
+            ruling(RulingKind::ReferenceWins, None),
+            true,
+            Some(confirmed.revision),
+        )
+        .unwrap();
+
+    let id = resolved.rule_requirement_id.clone().expect("a rule id");
+    assert_eq!(
+        resolved.conflict.rule_requirement_id.as_deref(),
+        Some(id.as_str())
+    );
+    let rule = resolved
+        .plan
+        .requirements
+        .iter()
+        .find(|r| r.id == id)
+        .unwrap();
+    assert!(rule.project_wide);
+    assert_eq!(rule.slice_id, None);
+    assert_eq!(rule.kind, RequirementKind::Constraint);
+    assert_eq!(rule.state, RequirementState::Confirmed);
+    assert!(!rule.unsourced, "its excerpt is the brain dump's");
+    assert_eq!(rule.source_excerpt, "There is no minimap.");
+    assert!(rule.text.contains("minimap"), "{}", rule.text);
+    assert!(rule.text.contains("`canvas.md`"), "{}", rule.text);
+    assert!(
+        rule.text.find("Show a minimap").unwrap() < rule.text.find("not the brain dump").unwrap(),
+        "{}",
+        rule.text
+    );
+    // The human's own ruling doesn't unconfirm the plan.
+    assert!(env.store.summary(P).unwrap().confirmed);
+
+    // Ruling again rewrites that rule rather than adding a second.
+    let again = env
+        .store
+        .resolve_conflict(
+            P,
+            "c-1",
+            ruling(
+                RulingKind::Custom,
+                Some("Show a minimap, collapsed by default."),
+            ),
+            true,
+            None,
+        )
+        .unwrap();
+    assert_eq!(again.rule_requirement_id.as_deref(), Some(id.as_str()));
+    let rules: Vec<&Requirement> = again
+        .plan
+        .requirements
+        .iter()
+        .filter(|r| r.project_wide)
+        .collect();
+    assert_eq!(rules.len(), 1);
+    assert_eq!(
+        rules[0].text,
+        "UI ruling (minimap): Show a minimap, collapsed by default."
+    );
+}
+
+#[test]
+fn resolve_validates_its_input_and_honours_expected_revision() {
+    let env = Env::new();
+    let plan = load_with_conflicts(&env);
+    let (state, ..) = plan_state(&env);
+
+    let stale = env.store.resolve_conflict(
+        P,
+        "c-1",
+        ruling(RulingKind::ReferenceWins, None),
+        true,
+        Some(plan.revision - 1),
+    );
+    assert_eq!(stale.unwrap_err().code, ErrorCode::StaleRevision);
+    let custom = env.store.resolve_conflict(
+        P,
+        "c-1",
+        ruling(RulingKind::Custom, Some("  ")),
+        false,
+        None,
+    );
+    assert_eq!(custom.unwrap_err().code, ErrorCode::InvalidInput);
+    let unknown = env.store.resolve_conflict(
+        P,
+        "c-9",
+        ruling(RulingKind::ReferenceWins, None),
+        false,
+        None,
+    );
+    assert_eq!(unknown.unwrap_err().code, ErrorCode::NotFound);
+    assert_eq!(plan_state(&env).0, state, "nothing written");
+}
+
+#[test]
+fn confirming_isnt_blocked_by_unresolved_conflicts_but_reports_their_count() {
+    let env = Env::new();
+    load_with_conflicts(&env);
+    env.store
+        .resolve_conflict(
+            P,
+            "c-2",
+            ruling(RulingKind::ReferenceWins, None),
+            false,
+            None,
+        )
+        .unwrap();
+
+    let confirmed = confirm_plan(&env);
+
+    assert_eq!(confirmed.unresolved_conflicts, 1);
+    assert!(env.store.summary(P).unwrap().confirmed);
+    let one = env.plan().requirements[0].id.clone();
+    let plan = env.store.confirm_requirement(P, &one, None).unwrap();
+    assert_eq!(plan.unresolved_conflicts, 1);
+}
+
+#[test]
+fn reloading_the_roadmap_brings_its_conflicts_back_unresolved() {
+    let env = Env::new();
+    load_with_conflicts(&env);
+    env.store
+        .resolve_conflict(
+            P,
+            "c-1",
+            ruling(RulingKind::ReferenceWins, None),
+            false,
+            None,
+        )
+        .unwrap();
+    let reloaded = load(&env, true).unwrap().plan;
+    assert_eq!(reloaded.unresolved_conflicts, 2);
+}

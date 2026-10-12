@@ -240,13 +240,44 @@ struct PlaceholdersFile {
     values: BTreeMap<String, String>,
 }
 
-#[derive(Debug, Deserialize)]
-struct BakeryItem {
-    file: String,
+/// One Bakery entry (`.foundry/bakery.json`).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BakeryItem {
+    pub file: String,
     #[serde(default)]
-    label: String,
+    pub label: String,
     #[serde(default)]
-    take: String,
+    pub take: String,
+    #[serde(default)]
+    pub skip: String,
+    /// Agents or tasks it applies to; empty means everything.
+    #[serde(default)]
+    pub applies_to: Vec<String>,
+}
+
+impl BakeryItem {
+    /// Whether a task prompt for this slice and agent refers to it: `appliesTo` is empty, or
+    /// names the agent (id, display name or title) or the slice (id or name), ignoring case.
+    pub fn applies(&self, slice: &Slice, agent: &Agent) -> bool {
+        let names = [
+            agent.id.as_str(),
+            agent.display_name.as_str(),
+            agent.title.as_str(),
+            slice.id.as_str(),
+            slice.name.as_str(),
+        ];
+        let targets: Vec<&str> = self
+            .applies_to
+            .iter()
+            .map(|t| t.trim())
+            .filter(|t| !t.is_empty())
+            .collect();
+        targets.is_empty()
+            || targets
+                .iter()
+                .any(|t| names.iter().any(|n| n.trim().eq_ignore_ascii_case(t)))
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -304,6 +335,15 @@ pub fn unlabeled_bakery_images(repo: &Path) -> Result<Vec<String>, AppError> {
         .collect();
     files.sort();
     Ok(files)
+}
+
+/// Every Bakery entry, by file name (`NN-` first, so in number order).
+pub fn bakery_items(repo: &Path) -> Result<Vec<BakeryItem>, AppError> {
+    let mut items = read_json::<BakeryFile>(repo, BAKERY_FILE)?
+        .unwrap_or_default()
+        .items;
+    items.sort_by(|a, b| a.file.cmp(&b.file));
+    Ok(items)
 }
 
 /// Whether a repo-relative file exists, through the same path checks as reads.

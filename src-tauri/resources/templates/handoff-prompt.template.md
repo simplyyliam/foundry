@@ -30,6 +30,9 @@ CORE MVP USER CONSTRAINTS & FEATURE PRIMITIVES:
 
 FUTURE HORIZON ROADMAP PRIMITIVES:
 - [[ FILL IN: features you deliberately aren't building yet — listed so the agent designs the architecture to allow for them later without building them now ]]
+
+REFERENCES:
+- [[ FILL IN: the Bakery entries that apply, each with its Take and Skip notes copied word for word ]]
 ==================================================================================
 
 ---

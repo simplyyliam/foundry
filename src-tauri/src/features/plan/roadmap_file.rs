@@ -11,6 +11,7 @@ use super::{
     SliceStatus, PLAN_VERSION,
 };
 use crate::core::checks::{self, RequirementCheck};
+use crate::core::conflicts::RoadmapConflict;
 use crate::core::{ids, AppError, ErrorCode};
 
 #[derive(Deserialize)]
@@ -19,6 +20,9 @@ pub struct RoadmapFile {
     roadmap: Body,
     #[serde(default)]
     unassigned: Vec<Req>,
+    /// Older roadmaps have none.
+    #[serde(default)]
+    conflicts: Vec<RoadmapConflict>,
 }
 
 #[derive(Deserialize)]
@@ -221,6 +225,16 @@ pub fn to_plan(file: RoadmapFile) -> Result<(PlanFile, Vec<String>), AppError> {
             requirements,
             deferred,
             open_questions,
+            // As found, all unresolved: rulings are made in the plan.
+            conflicts: file
+                .conflicts
+                .into_iter()
+                .map(|c| RoadmapConflict {
+                    ruling: None,
+                    rule_requirement_id: None,
+                    ..c
+                })
+                .collect(),
         },
         unanchored,
     ))

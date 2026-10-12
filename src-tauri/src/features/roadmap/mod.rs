@@ -5,6 +5,7 @@
 //! plan store (P2).
 
 pub mod commands;
+mod conflicts;
 mod validate;
 
 use std::collections::HashMap;
@@ -18,6 +19,7 @@ use tauri_specta::Event;
 
 use crate::core::checks::RequirementCheck;
 use crate::core::claude::ClaudeStatus;
+use crate::core::conflicts::RoadmapConflict;
 use crate::core::events::EventMeta;
 pub use crate::core::llm::{ClaudeRunner, LlmRunner, RunControl};
 use crate::core::repos::RepoIndex;
@@ -105,9 +107,32 @@ pub struct RoadmapResult {
     pub uncovered_paragraphs: Vec<String>,
     /// 1, or 2 when the first reply was rejected.
     pub attempts: u32,
+    /// Where the brain dump contradicts the design family files or the Bakery's Take and
+    /// Skip notes about the UI (validated, at most 12, unresolved). `load_roadmap` carries
+    /// them into the plan, where they're ruled on. Missing in older roadmaps: none.
+    #[serde(default)]
+    pub conflicts: Vec<RoadmapConflict>,
+    /// Whether that comparison ran. Missing in older roadmaps: `not_run`.
+    #[serde(default)]
+    pub conflict_check: ConflictCheck,
     // u32 stands in for the exported type only (TS `number`), as with EventMeta.ts.
     #[specta(type = u32)]
     pub generated_at: u64,
+}
+
+/// How the conflict check after generation went.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum ConflictCheck {
+    /// It ran; `conflicts` is what it found.
+    Done,
+    /// No design family file and no Bakery note to compare with, so the model wasn't asked.
+    NoReferences,
+    /// The model failed, timed out or gave an unreadable reply. The roadmap is still saved.
+    Failed,
+    /// A roadmap saved before the check existed.
+    #[default]
+    NotRun,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -117,6 +142,8 @@ pub enum Stage {
     Running,
     Validating,
     Retrying,
+    /// Comparing the brain dump with the design family files and Bakery notes.
+    CheckingConflicts,
     Done,
     Failed,
 }
@@ -331,11 +358,15 @@ impl RoadmapStore {
                 }
             }
         };
+        let (conflicts, conflict_check) =
+            self.check_conflicts(repo, runner.as_ref(), &brain_dump, control, emit)?;
         let result = RoadmapResult {
             roadmap: checked.roadmap,
             unassigned: checked.unassigned,
             uncovered_paragraphs: checked.uncovered_paragraphs,
             attempts,
+            conflicts,
+            conflict_check,
             generated_at: now_ms(),
         };
         let json = serde_json::to_string_pretty(&result)
@@ -344,6 +375,47 @@ impl RoadmapStore {
         // TODO(P2): load slices and requirements into the plan as `proposed` (refusing over
         // confirmed requirements unless discardConfirmed).
         Ok(result)
+    }
+}
+
+impl RoadmapStore {
+    /// One more model call comparing the brain dump with the references. Only `cancelled`
+    /// fails the generation: anything else saves the roadmap with `failed`.
+    fn check_conflicts(
+        &self,
+        repo: &Path,
+        runner: &dyn LlmRunner,
+        brain_dump: &str,
+        control: &RunControl,
+        emit: &dyn Fn(Stage),
+    ) -> Result<(Vec<RoadmapConflict>, ConflictCheck), AppError> {
+        let sources = conflicts::sources(repo)?;
+        if sources.is_empty() {
+            return Ok((Vec::new(), ConflictCheck::NoReferences));
+        }
+        control.check()?;
+        emit(Stage::CheckingConflicts);
+        let reply = match runner.run(&conflicts::prompt(brain_dump, &sources), control) {
+            Ok(reply) => reply,
+            Err(err) if err.code == ErrorCode::Cancelled => return Err(err),
+            Err(err) => {
+                tracing::warn!(code = err.code.as_str(), "roadmap conflict check failed");
+                return Ok((Vec::new(), ConflictCheck::Failed));
+            }
+        };
+        if control.is_cancelled() {
+            return Err(AppError::new(ErrorCode::Cancelled, "generation cancelled"));
+        }
+        match conflicts::check(&reply, brain_dump, &sources) {
+            Ok(found) => {
+                tracing::info!(count = found.len(), "roadmap conflicts checked");
+                Ok((found, ConflictCheck::Done))
+            }
+            Err(_) => {
+                tracing::warn!("roadmap conflict check reply was unreadable");
+                Ok((Vec::new(), ConflictCheck::Failed))
+            }
+        }
     }
 }
 

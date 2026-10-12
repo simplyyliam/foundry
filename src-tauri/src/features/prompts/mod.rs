@@ -31,6 +31,8 @@ pub use render::FORCED_PREFIX;
 /// `launch_message` returns at most this many characters (built in `core::launch_message`).
 pub use crate::core::launch_message::{MAX_LAUNCH_CHARS, PROMPTS_DIR};
 const HANDOFF_FILE: &str = ".foundry/prompts/handoff.md";
+/// Starts the warning for referenced Bakery entries with an empty Take or Skip note.
+pub const BAKERY_NOTE_INCOMPLETE: &str = "bakery_note_incomplete";
 /// `read_prompt` refuses files over this size (200 KB).
 pub const MAX_PROMPT_BYTES: u64 = 200 * 1000;
 
@@ -190,6 +192,34 @@ fn bakery_warnings(repo: &Path) -> Result<Vec<String>, AppError> {
     )])
 }
 
+/// `bakery_note_incomplete`, naming each referenced entry with an empty Take or Skip.
+fn incomplete_notes_warning(items: &[&disk::BakeryItem]) -> Option<String> {
+    let incomplete: Vec<String> = items
+        .iter()
+        .filter_map(|item| {
+            let missing: Vec<&str> = [("Take", &item.take), ("Skip", &item.skip)]
+                .into_iter()
+                .filter(|(_, text)| text.trim().is_empty())
+                .map(|(name, _)| name)
+                .collect();
+            (!missing.is_empty()).then(|| format!("{} (no {})", item.file, missing.join(", no ")))
+        })
+        .collect();
+    (!incomplete.is_empty()).then(|| {
+        format!(
+            "{BAKERY_NOTE_INCOMPLETE}: {} referenced Bakery entr{} an empty Take or Skip \
+             note: {}",
+            incomplete.len(),
+            if incomplete.len() == 1 {
+                "y has"
+            } else {
+                "ies have"
+            },
+            incomplete.join(", ")
+        )
+    })
+}
+
 fn dependencies_not_done(names: &[String]) -> AppError {
     AppError::new(
         ErrorCode::DependenciesNotDone,
@@ -281,9 +311,13 @@ impl PromptsStore {
         requirements.extend(render::handoff_project_rules(&plan));
         lists.insert(field::REQUIREMENTS, requirements);
         lists.insert(field::HORIZON, render::handoff_horizon(&plan));
+        let bakery = disk::bakery_items(&repo)?;
+        let referenced: Vec<&disk::BakeryItem> = bakery.iter().collect();
+        lists.insert(field::REFERENCES, render::references(&referenced));
 
         let text = render::handoff(&scalars, &lists)?;
-        let warnings = bakery_warnings(&repo)?;
+        let mut warnings = bakery_warnings(&repo)?;
+        warnings.extend(incomplete_notes_warning(&referenced));
         repo_write::write(&repo, HANDOFF_FILE, text)?;
         tracing::info!(project_id, "hand-off prompt generated");
         Ok(HandoffResult {
@@ -324,14 +358,19 @@ impl PromptsStore {
 
         let design_pointers = disk::is_file(&repo, disk::BAKERY_MANIFEST)?
             || disk::is_file(&repo, disk::DESIGN_MANIFEST)?;
+        let bakery = disk::bakery_items(&repo)?;
+        let referenced: Vec<&disk::BakeryItem> =
+            bakery.iter().filter(|i| i.applies(slice, &agent)).collect();
         let text = render::task_prompt(&render::TaskInputs {
             plan: &plan,
             slice,
             agent: &agent,
             forced: &unfinished,
             design_pointers,
+            references: &referenced,
         })?;
-        let warnings = bakery_warnings(&repo)?;
+        let mut warnings = bakery_warnings(&repo)?;
+        warnings.extend(incomplete_notes_warning(&referenced));
         let path = task_file(slice_id, agent_id);
         repo_write::write(&repo, &path, text)?;
         tracing::info!(

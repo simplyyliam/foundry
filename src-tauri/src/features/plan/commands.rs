@@ -6,10 +6,12 @@ use std::sync::Arc;
 use tauri::State;
 
 use super::{
-    LoadRoadmapOptions, NewDeferred, NewRequirement, NewSlice, Plan, PlanAdded, PlanStore,
-    PlanSummary, RequirementPatch, RoadmapLoaded, SlicePatch, SliceStatus, StatusOptions,
+    ConflictResolved, LoadRoadmapOptions, NewDeferred, NewRequirement, NewSlice, Plan, PlanAdded,
+    PlanStore, PlanSummary, RequirementPatch, RoadmapLoaded, SlicePatch, SliceStatus,
+    StatusOptions,
 };
 use crate::core::checks::RequirementCheck;
+use crate::core::conflicts::{ConflictRuling, RoadmapConflict};
 use crate::core::AppError;
 
 type Store<'a> = State<'a, Arc<PlanStore>>;
@@ -388,6 +390,42 @@ pub async fn load_roadmap(
 ) -> Result<RoadmapLoaded, AppError> {
     blocking(&store, move |s| {
         s.load_roadmap(&project_id, options, expected_revision)
+    })
+    .await
+}
+
+/// The UI conflicts between the brain dump and the references (design family files, Bakery
+/// Take and Skip notes) that the loaded roadmap found, resolved or not. Read-only.
+#[tauri::command]
+#[specta::specta]
+pub async fn list_roadmap_conflicts(
+    store: Store<'_>,
+    project_id: String,
+) -> Result<Vec<RoadmapConflict>, AppError> {
+    blocking(&store, move |s| s.list_conflicts(&project_id)).await
+}
+
+/// Records a ruling on one conflict. With `addAsRule`, also adds a confirmed, project-wide
+/// constraint stating it (its id is in the result). `invalid_input` for a custom ruling
+/// without text, `not_found` for an unknown conflict.
+#[tauri::command]
+#[specta::specta]
+pub async fn resolve_roadmap_conflict(
+    store: Store<'_>,
+    project_id: String,
+    conflict_id: String,
+    ruling: ConflictRuling,
+    add_as_rule: bool,
+    expected_revision: Option<u32>,
+) -> Result<ConflictResolved, AppError> {
+    blocking(&store, move |s| {
+        s.resolve_conflict(
+            &project_id,
+            &conflict_id,
+            ruling,
+            add_as_rule,
+            expected_revision,
+        )
     })
     .await
 }

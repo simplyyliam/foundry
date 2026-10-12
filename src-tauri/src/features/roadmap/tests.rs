@@ -818,3 +818,181 @@ fn a_roadmap_saved_before_suggested_checks_still_loads() {
     let old: Requirement = serde_json::from_value(roadmap["requirements"][1].clone()).unwrap();
     assert!(old.suggested_checks.is_empty());
 }
+
+// ---------- conflicts with the design family and the Bakery ----------
+
+use crate::core::conflicts::{ConflictSourceKind, RulingKind, MAX_CONFLICTS};
+
+const UI_BRAIN: &str = "There is no minimap. The sidebar is persistent.";
+
+/// BRAIN plus UI statements, a design family file and a Bakery entry to compare them with.
+fn with_references(env: &Env) {
+    env.repo
+        .write("docs/brain-dump.md", &format!("{BRAIN}\n{UI_BRAIN}\n"));
+    env.repo
+        .write(".foundry/design-files.json", r#"["canvas.md"]"#);
+    env.repo.write(
+        "docs/design/canvas.md",
+        "# Canvas\n\nShow a minimap in the\nbottom-right corner of the canvas.\n",
+    );
+    env.repo.write(
+        ".foundry/bakery.json",
+        &json!({ "items": [{ "id": "a", "file": "01-panels.png", "label": "Panels",
+            "take": "Floating panels over the canvas.", "skip": "The dark theme." }] })
+        .to_string(),
+    );
+}
+
+fn conflict(topic: &str, brain: &str, kind: &str, reference: &str, other: &str) -> Value {
+    json!({ "topic": topic, "brainDumpExcerpt": brain,
+            "otherSource": { "kind": kind, "ref": reference }, "otherExcerpt": other })
+}
+
+#[test]
+fn a_planted_conflict_is_found_and_saved_with_the_roadmap() {
+    let reply = json!({ "conflicts": [
+        conflict("minimap", "There is no minimap.", "design_family", "canvas.md",
+                 "Show a minimap in the bottom-right corner"),
+        conflict("panels", "The sidebar is persistent.", "bakery", "01-panels.png",
+                 "Floating panels over the canvas."),
+    ]});
+    let env = Env::new(vec![text(&valid()), text(&reply)]);
+    with_references(&env);
+
+    let result = env.store.generate(P).unwrap();
+
+    assert_eq!(result.conflict_check, ConflictCheck::Done);
+    assert_eq!(result.conflicts.len(), 2, "{:?}", result.conflicts);
+    let minimap = &result.conflicts[0];
+    assert_eq!(minimap.topic, "minimap");
+    assert_eq!(minimap.brain_dump_excerpt, "There is no minimap.");
+    assert_eq!(minimap.other_source.kind, ConflictSourceKind::DesignFamily);
+    assert_eq!(minimap.other_source.reference, "canvas.md");
+    assert_eq!(minimap.suggested, RulingKind::ReferenceWins);
+    assert!(minimap.ruling.is_none() && minimap.rule_requirement_id.is_none());
+    assert_eq!(
+        result.conflicts[1].other_source.kind,
+        ConflictSourceKind::Bakery
+    );
+    assert!(!minimap.id.is_empty() && minimap.id != result.conflicts[1].id);
+
+    let saved: RoadmapResult = serde_json::from_str(&env.file(ROADMAP_FILE).unwrap()).unwrap();
+    assert_eq!(saved, result);
+    assert_eq!(
+        env.stages.all(),
+        [
+            Stage::Preflight,
+            Stage::Running,
+            Stage::Validating,
+            Stage::CheckingConflicts,
+            Stage::Done
+        ]
+    );
+    let prompt = &env.runner.prompts()[1];
+    assert!(prompt.contains(UI_BRAIN), "brain dump embedded");
+    assert!(
+        prompt.contains("<design_family ref=\"canvas.md\">"),
+        "{prompt}"
+    );
+    assert!(
+        prompt.contains("Take: Floating panels over the canvas."),
+        "{prompt}"
+    );
+    assert!(prompt.contains("Skip: The dark theme."), "{prompt}");
+    assert!(!prompt.contains("{{"), "{prompt}");
+}
+
+#[test]
+fn conflicts_whose_excerpts_or_sources_dont_validate_are_dropped() {
+    let reply = json!({ "conflicts": [
+        // Not in the brain dump.
+        conflict("minimap", "Never show a minimap.", "design_family", "canvas.md",
+                 "Show a minimap"),
+        // Not in the design file.
+        conflict("minimap", "There is no minimap.", "design_family", "canvas.md",
+                 "A large minimap"),
+        // Not in that entry's notes (it's in the design file).
+        conflict("minimap", "There is no minimap.", "bakery", "01-panels.png",
+                 "Show a minimap"),
+        // No such source; wrong kind for the ref; unknown kind; missing topic.
+        conflict("x", "There is no minimap.", "design_family", "other.md", "Show a minimap"),
+        conflict("x", "There is no minimap.", "bakery", "canvas.md", "Show a minimap"),
+        conflict("x", "There is no minimap.", "figma", "canvas.md", "Show a minimap"),
+        { "brainDumpExcerpt": "There is no minimap.",
+          "otherSource": { "kind": "design_family", "ref": "canvas.md" },
+          "otherExcerpt": "Show a minimap" },
+        // Valid, then repeated.
+        conflict("theme", "The sidebar is persistent.", "bakery", "01-panels.png",
+                 "The dark theme."),
+        conflict("theme again", "The sidebar  is\npersistent.", "bakery", "01-panels.png",
+                 "The dark theme."),
+    ]});
+    let env = Env::new(vec![text(&valid()), text(&reply)]);
+    with_references(&env);
+
+    let result = env.store.generate(P).unwrap();
+
+    assert_eq!(result.conflict_check, ConflictCheck::Done);
+    assert_eq!(result.conflicts.len(), 1, "{:?}", result.conflicts);
+    assert_eq!(result.conflicts[0].topic, "theme");
+}
+
+#[test]
+fn at_most_twelve_conflicts_are_kept() {
+    let words = "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike \
+                 november oscar";
+    let reply = json!({ "conflicts": words.split_whitespace()
+        .map(|w| conflict(w, "There is no minimap.", "design_family", "canvas.md", w))
+        .collect::<Vec<_>>() });
+    let env = Env::new(vec![text(&valid()), text(&reply)]);
+    with_references(&env);
+    env.repo
+        .write("docs/design/canvas.md", &format!("# Canvas\n\n{words}\n"));
+
+    let kept = env.store.generate(P).unwrap().conflicts;
+
+    assert_eq!(kept.len(), MAX_CONFLICTS);
+    assert_eq!(kept[11].topic, "lima", "the first twelve, in order");
+}
+
+#[test]
+fn with_no_references_the_model_is_asked_once_and_no_conflicts_are_saved() {
+    let env = Env::new(vec![text(&valid())]);
+    // A Bakery entry with neither note has nothing to compare.
+    env.repo.write(
+        ".foundry/bakery.json",
+        r#"{ "items": [{ "id": "a", "file": "01-x.png", "take": " ", "skip": "" }] }"#,
+    );
+
+    let result = env.store.generate(P).unwrap();
+
+    assert_eq!(result.conflict_check, ConflictCheck::NoReferences);
+    assert!(result.conflicts.is_empty());
+    assert_eq!(env.runner.prompts().len(), 1);
+}
+
+#[test]
+fn an_unreadable_conflict_reply_still_saves_the_roadmap() {
+    let env = Env::new(vec![text(&valid()), Reply::Text("not json".into())]);
+    with_references(&env);
+
+    let result = env.store.generate(P).unwrap();
+
+    assert_eq!(result.conflict_check, ConflictCheck::Failed);
+    assert!(result.conflicts.is_empty());
+    assert_eq!(env.store.get(P).unwrap(), Some(result));
+}
+
+#[test]
+fn an_older_roadmap_without_conflicts_still_loads() {
+    let env = Env::new(vec![text(&valid())]);
+    let result = env.store.generate(P).unwrap();
+    let mut value: Value = serde_json::to_value(&result).unwrap();
+    let object = value.as_object_mut().unwrap();
+    object.remove("conflicts");
+    object.remove("conflictCheck");
+    env.repo.write(ROADMAP_FILE, &value.to_string());
+    let read = env.store.get(P).unwrap().unwrap();
+    assert!(read.conflicts.is_empty());
+    assert_eq!(read.conflict_check, ConflictCheck::NotRun);
+}
