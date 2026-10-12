@@ -1,7 +1,7 @@
 import { act, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { backend } from "@/test/fake-backend";
-import { PROJECT_ID, plan, slice, summary } from "@/test/fixtures";
+import { PROJECT_ID, commitStatus, plan, slice, summary } from "@/test/fixtures";
 import { renderWithApp } from "@/test/render";
 import { Blueprint } from "./blueprint";
 
@@ -13,6 +13,8 @@ describe("Blueprint slice sheet", () => {
     const foundation = slice({ id: "s-foundation", name: "Foundation" });
     backend.respond("getPlan", plan({ revision: 1, slices: [foundation] }));
     backend.respond("planSummary", summary());
+    backend.respond("commitStatus", commitStatus());
+    backend.respond("agentList", []);
 
     const { user } = renderWithApp(
       <Blueprint projectId={PROJECT_ID} requirementsHref={`/projects/${PROJECT_ID}/requirements`} />,

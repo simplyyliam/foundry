@@ -75,7 +75,7 @@ function ProjectBlueprint({ projectId, requirementsHref }: BlueprintProps) {
           </div>
         )}
       </div>
-      <SliceSheet plan={plan} sliceId={openSliceId} actions={actions} onClose={() => setOpenSliceId(null)} />
+      <SliceSheet projectId={projectId} plan={plan} sliceId={openSliceId} actions={actions} onClose={() => setOpenSliceId(null)} />
       <DeferredSheet
         plan={plan}
         deferredId={openDeferredId}

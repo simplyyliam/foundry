@@ -26,6 +26,8 @@ interface SliceStatusControlProps {
   plan: Plan;
   slice: SliceView;
   actions: PlanActions;
+  /** A move to done succeeded (directly or overridden): the sheet then offers to commit. */
+  onMarkedDone?: () => void;
 }
 
 /**
@@ -34,7 +36,7 @@ interface SliceStatusControlProps {
  * Marking done without a passed verification (`not_verified`) asks for a reason the same way.
  * A start refused with `setup_not_committed` offers "Commit setup", which retries the start.
  */
-export function SliceStatusControl({ plan, slice, actions }: SliceStatusControlProps) {
+export function SliceStatusControl({ plan, slice, actions, onMarkedDone }: SliceStatusControlProps) {
   const { busy, error, run } = useAction();
   const [committed, setCommitted] = useState<CommitSetupResult | null>(null);
   const setup = useCommitSetup(actions.commitSetup, setCommitted);
@@ -54,6 +56,7 @@ export function SliceStatusControl({ plan, slice, actions }: SliceStatusControlP
       return;
     }
     const outcome = await run(() => actions.setStatus(slice.id, status));
+    if (outcome.ok && status === "done") onMarkedDone?.();
     // The plan moved on under us (a dependency was reopened): ask for the reason after all.
     if (!outcome.ok && outcome.error.code === "dependencies_not_done") setOverrideOpen(true);
     if (!outcome.ok && outcome.error.code === "not_verified") setNotVerifiedOpen(true);
@@ -95,7 +98,11 @@ export function SliceStatusControl({ plan, slice, actions }: SliceStatusControlP
       <NotVerifiedDialog
         open={notVerifiedOpen}
         onOpenChange={setNotVerifiedOpen}
-        onOverride={(reason) => actions.setStatus(slice.id, "done", reason)}
+        onOverride={async (reason) => {
+          const outcome = await actions.setStatus(slice.id, "done", reason);
+          if (outcome.ok) onMarkedDone?.();
+          return outcome;
+        }}
       />
     </div>
   );

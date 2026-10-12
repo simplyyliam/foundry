@@ -40,3 +40,12 @@ export { DropOverlay } from "./components/DropOverlay";
 export { TagEditor } from "./components/TagEditor";
 export { SetupSection } from "./components/SetupSection";
 export { NotVerifiedDialog, type OverrideOutcome } from "./components/NotVerifiedDialog";
+export { CommitSliceButton, CommitSlicePrompt } from "./components/slice-commit/CommitSliceButton";
+export { CommitSliceDialog } from "./components/slice-commit/CommitSliceDialog";
+export {
+  commitAvailability,
+  type CommitAvailability,
+  type CommitOutcome,
+  type CommitStatusLoad,
+  type SliceCommitController,
+} from "./components/slice-commit/types";

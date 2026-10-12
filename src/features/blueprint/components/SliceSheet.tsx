@@ -9,6 +9,7 @@ import { useAction } from "../hooks/useAction";
 import type { PlanActions } from "../hooks/usePlanActions";
 import { plural } from "../lib/order";
 import { ActionError } from "./Notices";
+import { SliceCommit } from "./SliceCommit";
 import { SliceDependencies } from "./SliceDependencies";
 import { SliceLaterItems } from "./SliceLaterItems";
 import { SliceDecisions, SliceQuestions } from "./SliceNotes";
@@ -17,6 +18,7 @@ import { SliceWorkspaceAccess } from "./SliceWorkspaceAccess";
 import { StatusChip } from "./StatusChip";
 
 interface SliceSheetProps {
+  projectId: string;
   plan: Plan;
   /** The slice to show, or null when closed. */
   sliceId: string | null;
@@ -25,7 +27,7 @@ interface SliceSheetProps {
 }
 
 /** A slice's details and every edit to it, opened by clicking its box. */
-export function SliceSheet({ plan, sliceId, actions, onClose }: SliceSheetProps) {
+export function SliceSheet({ projectId, plan, sliceId, actions, onClose }: SliceSheetProps) {
   // Keep showing the last slice while the sheet animates out.
   const [shown, setShown] = useState<string | null>(sliceId);
   if (sliceId !== null && sliceId !== shown) setShown(sliceId);
@@ -34,21 +36,23 @@ export function SliceSheet({ plan, sliceId, actions, onClose }: SliceSheetProps)
   return (
     <Sheet open={sliceId !== null && slice !== null} onOpenChange={(open) => !open && onClose()}>
       <SheetContent className="w-full gap-0 sm:max-w-md">
-        {slice && <SliceDetails key={slice.id} plan={plan} slice={slice} actions={actions} onRemoved={onClose} />}
+        {slice && <SliceDetails key={slice.id} projectId={projectId} plan={plan} slice={slice} actions={actions} onRemoved={onClose} />}
       </SheetContent>
     </Sheet>
   );
 }
 
 interface SliceDetailsProps {
+  projectId: string;
   plan: Plan;
   slice: SliceView;
   actions: PlanActions;
   onRemoved: () => void;
 }
 
-function SliceDetails({ plan, slice, actions, onRemoved }: SliceDetailsProps) {
+function SliceDetails({ projectId, plan, slice, actions, onRemoved }: SliceDetailsProps) {
   const count = plan.requirements.filter((requirement) => requirement.sliceId === slice.id).length;
+  const [promptCommit, setPromptCommit] = useState(false);
 
   return (
     <>
@@ -59,10 +63,11 @@ function SliceDetails({ plan, slice, actions, onRemoved }: SliceDetailsProps) {
           <span>{plural(count, "requirement")}</span>
           {slice.ready && <span className="text-slice-foreground">· ready to start</span>}
         </SheetDescription>
+        <SliceCommit projectId={projectId} slice={slice} prompt={promptCommit} onPromptDone={() => setPromptCommit(false)} />
       </SheetHeader>
       <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-6 pb-6">
         <Section title="Status">
-          <SliceStatusControl plan={plan} slice={slice} actions={actions} />
+          <SliceStatusControl plan={plan} slice={slice} actions={actions} onMarkedDone={() => setPromptCommit(true)} />
         </Section>
         <Section title="Workspace access">
           <SliceWorkspaceAccess slice={slice} actions={actions} />

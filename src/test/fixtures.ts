@@ -4,6 +4,8 @@
  */
 import type {
   AgentReport,
+  ChangedFile,
+  CommitStatus,
   ManagerDigest,
   Plan,
   PlanRequirement,
@@ -95,4 +97,24 @@ export function teamAgent(overrides: Partial<TeamAgent> & Pick<TeamAgent, "id" |
 
 export function testCommands(overrides: Partial<TestCommands> = {}): TestCommands {
   return { commands: [], confirmed: true, ...overrides };
+}
+
+export function changedFile(path: string, overrides: Partial<ChangedFile> = {}): ChangedFile {
+  return { path, change: "modified", foundryOwned: false, ...overrides };
+}
+
+/** `commitStatus` with nothing to commit unless `files` is given (`total` follows `files`). */
+export function commitStatus(overrides: Partial<CommitStatus> = {}): CommitStatus {
+  const files = overrides.files ?? [];
+  return {
+    head: "0123456789abcdef",
+    branch: "main",
+    files,
+    total: files.length,
+    truncated: false,
+    commitType: null,
+    typeReason: null,
+    message: null,
+    ...overrides,
+  };
 }

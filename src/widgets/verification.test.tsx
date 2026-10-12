@@ -1,7 +1,7 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { backend, type EventPayload } from "@/test/fake-backend";
-import { PROJECT_ID, agentReport, digest, plan, slice, sliceDigest, teamAgent, testCommands } from "@/test/fixtures";
+import { PROJECT_ID, agentReport, commitStatus, digest, plan, slice, sliceDigest, teamAgent, testCommands } from "@/test/fixtures";
 import { renderWithApp } from "@/test/render";
 import { Verification } from "./verification";
 
@@ -49,6 +49,8 @@ describe("Verification widget", () => {
     const qa = { ...agentReport("s-feed", "qa", { notes: "Checked empty and error states." }), writtenAt: "2026-10-01T15:30:00.000Z" };
     backend.respond("listReports", [builder, qa]);
     backend.respond("getVerification", null);
+    backend.respond("commitStatus", commitStatus());
+    backend.respond("agentList", []);
 
     const { user } = renderWithApp(<Verification projectId={PROJECT_ID} />);
 
@@ -92,6 +94,8 @@ describe("Verification widget", () => {
     );
     backend.respond("getTeam", { agents: [] });
     backend.respond("getVerification", null);
+    backend.respond("commitStatus", commitStatus());
+    backend.respond("agentList", []);
     const builder = { ...agentReport("s-feed", "builder", { notes: "First pass." }), writtenAt: "2026-10-01T15:00:00.000Z" };
     const qa = { ...agentReport("s-feed", "qa", { notes: "QA pass." }), writtenAt: "2026-10-01T09:00:00.000Z" };
     backend.respondOnce("listReports", [builder, qa]);

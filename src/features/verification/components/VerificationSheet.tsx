@@ -5,8 +5,16 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import type { CommandRun, Finding, Plan, SliceDigest, TeamAgent, Verification } from "@/lib/bindings";
 import { cn } from "@/lib/utils";
-import { NotVerifiedDialog, PressButton } from "@/shared";
+import {
+  CommitSliceButton,
+  CommitSliceDialog,
+  CommitSlicePrompt,
+  NotVerifiedDialog,
+  PressButton,
+  commitAvailability,
+} from "@/shared";
 import { useAction } from "../hooks/useAction";
+import { useSliceCommit } from "../hooks/useSliceCommit";
 import { useSliceDetail, type Loaded } from "../hooks/useSliceDetail";
 import type { VerifyPlan } from "../hooks/useVerifyPlan";
 import type { ProjectRuns } from "../hooks/verifyRuns";
@@ -64,6 +72,15 @@ function SliceDetails({
   const running = runs.running?.sliceId === sliceId ? runs.running : null;
   const done = useAction();
   const [notVerifiedOpen, setNotVerifiedOpen] = useState(false);
+  const commit = useSliceCommit(projectId, sliceId);
+  const commitState = commitAvailability(commit);
+  const [commitOpen, setCommitOpen] = useState(false);
+  // Asked once, right after Mark done succeeds; it only opens the dialog.
+  const [promptCommit, setPromptCommit] = useState(false);
+  const openCommit = () => {
+    setPromptCommit(false);
+    setCommitOpen(true);
+  };
 
   // The reports as read now (fresher than the digest right after a report_ready).
   const reportPresent = reports.status === "ready" ? reports.value.length > 0 : (sliceDigest?.reportPresent ?? false);
@@ -76,6 +93,7 @@ function SliceDetails({
 
   const onMarkDone = async () => {
     const outcome = await done.run(() => markDone(sliceId));
+    if (outcome.ok) setPromptCommit(true);
     if (!outcome.ok && outcome.error.code === "not_verified") {
       done.clear();
       setNotVerifiedOpen(true);
@@ -106,7 +124,11 @@ function SliceDetails({
               {slice.status === "done" ? "Done" : "Mark done"}
             </PressButton>
           )}
+          {slice && !(promptCommit && slice.status === "done") && <CommitSliceButton availability={commitState} onOpen={openCommit} />}
         </div>
+        {slice && promptCommit && slice.status === "done" && (
+          <CommitSlicePrompt availability={commitState} onOpen={openCommit} onDismiss={() => setPromptCommit(false)} className="mt-1" />
+        )}
         {running && <ProgressLine projectId={projectId} run={running} className="mt-1" />}
         {skip && !running && (
           <SkipNotice projectId={projectId} skip={skip} onReviewCommands={onReviewCommands} detailed className="mt-1" />
@@ -125,8 +147,13 @@ function SliceDetails({
       <NotVerifiedDialog
         open={notVerifiedOpen}
         onOpenChange={setNotVerifiedOpen}
-        onOverride={(reason) => markDone(sliceId, reason)}
+        onOverride={async (reason) => {
+          const outcome = await markDone(sliceId, reason);
+          if (outcome.ok) setPromptCommit(true);
+          return outcome;
+        }}
       />
+      {slice && <CommitSliceDialog open={commitOpen} onOpenChange={setCommitOpen} sliceName={slice.name} controller={commit} />}
     </>
   );
 }
