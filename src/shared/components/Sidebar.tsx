@@ -31,7 +31,7 @@ import { usePressScale } from "../hook/usePressScale";
 
 const SIDEBAR_WIDTH = "16rem";
 const SIDEBAR_WIDTH_ICON = "3rem";
-/** Space between a floating/inset sidebar and the content. Matches WindowFrame's p-1.5. */
+/** Space between a floating/inset sidebar and the content. Matches WindowFrame's --shell-padding. */
 const SIDEBAR_GAP = "0.375rem";
 const SIDEBAR_KEYBOARD_SHORTCUT = "mod+b";
 

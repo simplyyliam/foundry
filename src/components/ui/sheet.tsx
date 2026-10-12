@@ -19,7 +19,7 @@ function SheetClose({ ...props }: SheetPrimitive.Close.Props) {
 }
 
 function SheetPortal({ container, ...props }: SheetPrimitive.Portal.Props) {
-  // Inside the window card (see WindowFrame), not over its transparent margin.
+  // Into the window card's modal layer (see WindowFrame).
   const frame = usePortalContainer()
   return <SheetPrimitive.Portal data-slot="sheet-portal" container={container ?? frame} {...props} />
 }

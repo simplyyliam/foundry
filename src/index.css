@@ -177,8 +177,22 @@
     }
 }
 
-body {
-    background-color: transparent;
+:root {
+    /* The window card's padding (WindowFrame). Keep equal to SHELL_PADDING in lib/window-radius.ts. */
+    --shell-padding: 6px;
+}
+
+/*
+  The OS rounds the window itself (no CSS radius on html/body/#root, that would double it).
+  When the backend reports that radius, the sidebar and inset cards become concentric with
+  it. data-inset-radius is only set when the result is at least 4px (lib/window-radius.ts);
+  otherwise their default radii stay.
+*/
+:root[data-window-radius="custom"][data-inset-radius="window"] {
+    & [data-slot="sidebar"]:is([data-variant="inset"], [data-variant="floating"]) > [data-slot="sidebar-container"] > [data-slot="sidebar-inner"],
+    & [data-slot="sidebar-wrapper"]:has(> [data-variant="inset"]) [data-slot="sidebar-inset"] {
+        border-radius: calc(var(--window-radius) - var(--shell-padding));
+    }
 }
 
 button {

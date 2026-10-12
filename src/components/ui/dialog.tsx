@@ -15,7 +15,7 @@ function DialogTrigger({ ...props }: DialogPrimitive.Trigger.Props) {
 }
 
 function DialogPortal({ container, ...props }: DialogPrimitive.Portal.Props) {
-  // Inside the window card (see WindowFrame), not over its transparent margin.
+  // Into the window card's modal layer (see WindowFrame).
   const frame = usePortalContainer()
   return <DialogPrimitive.Portal data-slot="dialog-portal" container={container ?? frame} {...props} />
 }
