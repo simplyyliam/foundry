@@ -1662,3 +1662,129 @@ fn a_burst_from_one_agent_gives_one_notification() {
     n.env.store.ingest(&blocked_rm()).unwrap();
     assert_eq!(n.shown.count(), 4);
 }
+
+// ---------- the writes ledger ----------
+
+/// `post` from session `session` on slice `feed`.
+fn in_session(mut post: HookPost, session: &str) -> HookPost {
+    post.payload["session_id"] = json!(session);
+    post.slice_id = Some("feed".into());
+    post
+}
+
+#[test]
+fn ingest_records_edit_tool_writes_and_snapshots_each_session_in_the_writes_ledger() {
+    use crate::core::writes::{self, EntryKind, Moment};
+    let repo = TestRepo::with_git();
+    repo.write("src/lib.rs", "// start\n");
+    repo.git(&["add", "-A"]);
+    repo.git(&["commit", "--quiet", "-m", "start"]);
+    let repos = Arc::new(RepoIndex::default());
+    repos.replace_all([(P1, repo.path())]);
+    let clock = Arc::new(FakeClock(AtomicU64::new(1_000)));
+    let store = AgentEventsStore::new(
+        repos,
+        Arc::new(SessionRegistry::default()),
+        Arc::new(Recorded::default()),
+    )
+    .with_clock(clock.clone());
+    let start = |event: &str| {
+        in_session(
+            post(
+                event,
+                json!({ "hook_event_name": event, "source": "startup" }),
+            ),
+            "sess-1",
+        )
+    };
+
+    store.ingest(&start("SessionStart")).unwrap();
+    clock.set(2_000);
+    repo.write("src/feed.rs", "// edited\n");
+    store
+        .ingest(&in_session(
+            write_tool("Edit", &repo.path().join("src").join("feed.rs")),
+            "sess-1",
+        ))
+        .unwrap();
+    // A shell write: a command event, no ledger write, but the snapshots see it.
+    repo.write("gen/out.txt", "generated\n");
+    store
+        .ingest(&in_session(
+            bash("PostToolUse", "make gen", json!({})),
+            "sess-1",
+        ))
+        .unwrap();
+    // Blocked, failed, and session-less calls add nothing.
+    let mut blocked = in_session(
+        write_tool("Write", &repo.path().join("AGENTS.md")),
+        "sess-1",
+    );
+    blocked.decision = Some(HookDecision {
+        blocked: true,
+        rule: None,
+    });
+    store.ingest(&blocked).unwrap();
+    store
+        .ingest(&write_tool("Write", &repo.path().join("src/anon.rs")))
+        .unwrap();
+    clock.set(3_000);
+    // The agent's report: a write, then an end snapshot.
+    let report = repo.write(".foundry/reports/feed.builder.json", "{}");
+    store
+        .ingest(&in_session(write_tool("Write", &report), "sess-1"))
+        .unwrap();
+    clock.set(4_000);
+    store.ingest(&start("SessionEnd")).unwrap();
+
+    let ledger: Vec<(EntryKind, Option<String>, u64)> = writes::read_ledger(repo.path())
+        .unwrap()
+        .into_iter()
+        .inspect(|e| {
+            assert_eq!(
+                (
+                    e.session_id.as_str(),
+                    e.slice_id.as_deref(),
+                    e.agent_id.as_str()
+                ),
+                ("sess-1", Some("feed"), AGENT)
+            )
+        })
+        .map(|e| (e.kind, e.path, e.ts))
+        .collect();
+    assert_eq!(
+        ledger,
+        [
+            (EntryKind::Start, None, 1_000),
+            (EntryKind::Write, Some("src/feed.rs".into()), 2_000),
+            (
+                EntryKind::Write,
+                Some(".foundry/reports/feed.builder.json".into()),
+                3_000
+            ),
+            (EntryKind::Snapshot, None, 3_000),
+            (EntryKind::Snapshot, None, 4_000),
+            (EntryKind::End, None, 4_000),
+        ]
+    );
+    let before = writes::read_snapshot(repo.path(), "sess-1", Moment::Start)
+        .unwrap()
+        .unwrap();
+    let after = writes::read_snapshot(repo.path(), "sess-1", Moment::End)
+        .unwrap()
+        .unwrap();
+    let changed = before.changed(&after);
+    assert!(changed.contains("gen/out.txt"), "{changed:?}");
+    assert!(changed.contains("src/feed.rs"), "{changed:?}");
+    assert!(!changed.contains("src/lib.rs"), "{changed:?}");
+
+    // A second SessionStart (a resume) keeps the first start snapshot.
+    clock.set(5_000);
+    store.ingest(&start("SessionStart")).unwrap();
+    assert_eq!(
+        writes::read_snapshot(repo.path(), "sess-1", Moment::Start)
+            .unwrap()
+            .unwrap(),
+        before
+    );
+}

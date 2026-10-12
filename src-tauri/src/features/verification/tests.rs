@@ -9,6 +9,7 @@ use serde_json::{json, Value};
 use super::*;
 use crate::core::process_tree::pid_alive;
 use crate::core::sessions::SessionKey;
+use crate::core::writes;
 use crate::testing::{fake_agent_path, TestRepo};
 
 const P: &str = "project-1";
@@ -137,7 +138,8 @@ impl Env {
             "agents/roles.json",
             &json!({ "agents": [
                 { "id": "ada", "writeGlobs": ["src/**"], "protectedGlobs": ["src/secret/**"] },
-                { "id": "bo", "writeGlobs": ["web/**"], "protectedGlobs": [] }
+                { "id": "bo", "writeGlobs": ["web/**"], "protectedGlobs": [] },
+                { "id": "cy", "writeGlobs": ["src/secret/**"], "protectedGlobs": [] }
             ]})
             .to_string(),
         );
@@ -1912,4 +1914,360 @@ fn verification_neither_requires_nor_checks_project_rules() {
     assert_eq!(ids, ["r-1", "r-2"]);
     // The stored report is kept exactly as written.
     assert_eq!(v.review.reports[0].report, report);
+}
+
+// ---------- attribution: the writes ledger ----------
+
+const OTHER: &str = "s-other";
+
+impl Env {
+    /// One ledger entry.
+    fn ledger(&self, kind: writes::EntryKind, session: &str, slice: &str, agent: &str, ts: u64) {
+        self.ledger_path(kind, session, slice, agent, None, ts);
+    }
+
+    fn ledger_path(
+        &self,
+        kind: writes::EntryKind,
+        session: &str,
+        slice: &str,
+        agent: &str,
+        path: Option<&str>,
+        ts: u64,
+    ) {
+        writes::record(
+            self.repo.path(),
+            &writes::LedgerEntry {
+                kind,
+                session_id: session.into(),
+                slice_id: Some(slice.into()),
+                agent_id: agent.into(),
+                path: path.map(str::to_string),
+                ts,
+            },
+        )
+        .unwrap();
+    }
+
+    /// A session from `from` to `to` (start and end entries) whose edit tools wrote `paths`
+    /// (to disk too) in between.
+    fn session(&self, id: &str, slice: &str, agent: &str, from: u64, to: u64, paths: &[&str]) {
+        use writes::EntryKind::{End, Start, Write};
+        self.ledger(Start, id, slice, agent, from);
+        for path in paths {
+            self.repo.write(path, &format!("// {agent} on {slice}\n"));
+            self.ledger_path(Write, id, slice, agent, Some(path), from + 1);
+        }
+        self.ledger(End, id, slice, agent, to);
+    }
+
+    /// Takes and saves the session's snapshot now.
+    fn snap(&self, session: &str, moment: writes::Moment, ts: u64) {
+        let snapshot = writes::take_snapshot(&Git::system(), self.repo.path(), ts).unwrap();
+        writes::save_snapshot(self.repo.path(), session, moment, &snapshot).unwrap();
+    }
+
+    /// The plan with both `s-feed` and `s-other` in progress from `start`.
+    fn plan_two(&self, start: &str) {
+        let slice = |id: &str, name: &str| {
+            json!({
+                "id": id, "name": name, "delivers": [], "dependsOn": [],
+                "status": "in_progress", "decisions": [], "openQuestions": [],
+                "startCommit": start
+            })
+        };
+        self.repo.write(
+            ".foundry/plan.json",
+            &json!({
+                "version": 1, "revision": 3,
+                "slices": [slice(S, "Feed"), slice(OTHER, "Other")],
+                "requirements": [
+                    { "id": "r-1", "sliceId": S },
+                    { "id": "r-2", "sliceId": S },
+                    { "id": "r-9", "sliceId": OTHER }
+                ]
+            })
+            .to_string(),
+        );
+    }
+
+    /// Ada's report for `s-feed`, everything met.
+    fn ada_reports(&self) {
+        self.write_agent_report(
+            "ada",
+            &report_by("ada", json!([met("r-1", "test a"), met("r-2", "test b")])),
+        );
+    }
+}
+
+/// Boundary findings (those with a path, Foundry's own files left out) by path.
+fn boundary_by_path(v: &Verification) -> BTreeMap<&str, (&str, FindingSeverity)> {
+    v.review
+        .findings
+        .iter()
+        .filter_map(|f| Some((f.path.as_deref()?, (f.code.as_str(), f.severity))))
+        .filter(|(p, _)| !p.starts_with(".foundry/"))
+        .collect()
+}
+
+#[test]
+fn two_concurrent_slices_writing_different_folders_give_no_false_protected_finding() {
+    let env = Env::new();
+    env.commands(&[]);
+    // Both slices start from the same commit; cy's folder is protected for ada.
+    env.session("sess-ada", S, "ada", 100, 500, &["src/feed.rs"]);
+    env.session("sess-cy", OTHER, "cy", 200, 600, &["src/secret/key.rs"]);
+    env.ada_reports();
+
+    let v = env.verify().unwrap();
+    assert_eq!(
+        boundary_by_path(&v),
+        BTreeMap::from([(
+            "src/secret/key.rs",
+            (code::OWNED_BY_OTHER_SLICE, FindingSeverity::Info)
+        )])
+    );
+    let owned = finding(&v, code::OWNED_BY_OTHER_SLICE);
+    assert!(
+        owned.message.contains("cy on slice s-other"),
+        "{}",
+        owned.message
+    );
+    assert!(v.review.passed, "{:?}", v.review.findings);
+}
+
+#[test]
+fn the_same_file_written_by_two_overlapping_slices_is_shared_file_touched_on_both() {
+    let env = Env::new();
+    env.commands(&[]);
+    env.plan_two(&env.repo.git(&["rev-parse", "HEAD"]));
+    env.session("sess-ada", S, "ada", 100, 500, &["src/feed.rs"]);
+    env.session("sess-cy", OTHER, "cy", 200, 600, &["src/feed.rs"]);
+    env.ada_reports();
+    env.repo.write(
+        &format!(".foundry/reports/{OTHER}.cy.json"),
+        &json!({
+            "sliceId": OTHER, "agent": "cy",
+            "requirements": [met("r-9", "test c")],
+            "testsRun": [], "blockers": [], "notes": ""
+        })
+        .to_string(),
+    );
+
+    let feed = env.verify().unwrap();
+    let shared = finding(&feed, code::SHARED_FILE_TOUCHED);
+    assert_eq!(
+        (shared.severity, shared.path.as_deref()),
+        (FindingSeverity::Warn, Some("src/feed.rs"))
+    );
+    assert!(
+        shared.message.contains("cy on slice s-other"),
+        "{}",
+        shared.message
+    );
+
+    let other = env.store.verify(P, OTHER).unwrap();
+    let shared = finding(&other, code::SHARED_FILE_TOUCHED);
+    assert_eq!(
+        (shared.severity, shared.path.as_deref()),
+        (FindingSeverity::Warn, Some("src/feed.rs"))
+    );
+    assert!(
+        shared.message.contains("ada on slice s-feed"),
+        "{}",
+        shared.message
+    );
+
+    // One after the other, not overlapping: no warning.
+    let env = Env::new();
+    env.commands(&[]);
+    env.session("sess-cy", OTHER, "cy", 100, 200, &["src/feed.rs"]);
+    env.session("sess-ada", S, "ada", 300, 400, &["src/feed.rs"]);
+    env.ada_reports();
+    assert!(!codes(&env.verify().unwrap()).contains(&code::SHARED_FILE_TOUCHED));
+}
+
+#[test]
+fn a_shell_write_is_attributed_to_the_session_by_its_snapshots() {
+    use writes::EntryKind::{Snapshot, Start};
+    let env = Env::new();
+    env.commands(&[]);
+    env.ledger(Start, "sess-ada", S, "ada", 100);
+    env.snap("sess-ada", writes::Moment::Start, 100);
+    // No edit tool: a shell command wrote these.
+    env.repo.write("src/gen.rs", "// generated\n");
+    env.repo.write("web/gen.html", "<p>generated</p>");
+    env.snap("sess-ada", writes::Moment::End, 300);
+    env.ledger(Snapshot, "sess-ada", S, "ada", 300);
+    // After the session's end snapshot: not its change, and nobody's.
+    env.repo.write("docs/human.md", "the human's\n");
+    env.ada_reports();
+
+    let v = env.verify().unwrap();
+    assert_eq!(
+        boundary_by_path(&v),
+        BTreeMap::from([(
+            "web/gen.html",
+            (code::OUTSIDE_WRITE_GLOBS, FindingSeverity::Warn)
+        )])
+    );
+    let outside = finding(&v, code::OUTSIDE_WRITE_GLOBS);
+    assert!(
+        outside.message.starts_with("ada wrote web/gen.html"),
+        "{}",
+        outside.message
+    );
+}
+
+#[test]
+fn two_sequential_sessions_in_one_slice_are_both_counted() {
+    let env = Env::new();
+    env.commands(&[]);
+    env.session("sess-1", S, "ada", 100, 200, &["src/secret/key.rs"]);
+    env.session("sess-2", S, "bo", 300, 400, &["docs/notes.md"]);
+    env.ada_reports();
+
+    let v = env.verify().unwrap();
+    assert_eq!(
+        boundary_by_path(&v),
+        BTreeMap::from([
+            (
+                "src/secret/key.rs",
+                (code::PROTECTED_FILE_CHANGED, FindingSeverity::Danger)
+            ),
+            (
+                "docs/notes.md",
+                (code::OUTSIDE_WRITE_GLOBS, FindingSeverity::Warn)
+            ),
+        ])
+    );
+    let outside = finding(&v, code::OUTSIDE_WRITE_GLOBS);
+    assert!(
+        outside.message.starts_with("bo wrote"),
+        "{}",
+        outside.message
+    );
+}
+
+#[test]
+fn a_shell_change_while_another_slice_ran_is_ambiguous_info() {
+    use writes::EntryKind::{End, Snapshot, Start};
+    let env = Env::new();
+    env.commands(&[]);
+    env.ledger(Start, "sess-ada", S, "ada", 100);
+    env.snap("sess-ada", writes::Moment::Start, 100);
+    env.ledger(Start, "sess-bo", OTHER, "bo", 200);
+    env.repo.write("docs/gen.md", "whose?\n");
+    env.ledger(End, "sess-bo", OTHER, "bo", 300);
+    env.snap("sess-ada", writes::Moment::End, 400);
+    env.ledger(Snapshot, "sess-ada", S, "ada", 400);
+    env.ada_reports();
+
+    let v = env.verify().unwrap();
+    assert_eq!(
+        boundary_by_path(&v),
+        BTreeMap::from([(
+            "docs/gen.md",
+            (code::AMBIGUOUS_SHELL_CHANGE, FindingSeverity::Info)
+        )])
+    );
+    let ambiguous = finding(&v, code::AMBIGUOUS_SHELL_CHANGE);
+    assert!(
+        ambiguous.message.contains("bo on slice s-other"),
+        "{}",
+        ambiguous.message
+    );
+    assert!(!ambiguous.message.contains('\n'));
+    assert!(v.review.passed);
+}
+
+#[test]
+fn a_real_protected_edit_is_still_danger_for_the_session_that_made_it() {
+    let env = Env::new();
+    env.commands(&[]);
+    env.session(
+        "sess-ada",
+        S,
+        "ada",
+        100,
+        500,
+        &["src/feed.rs", "src/secret/key.rs", "AGENTS.md"],
+    );
+    env.session("sess-bo", OTHER, "bo", 200, 600, &["web/page.html"]);
+    env.ada_reports();
+
+    let v = env.verify().unwrap();
+    assert_eq!(
+        boundary_by_path(&v),
+        BTreeMap::from([
+            (
+                "AGENTS.md",
+                (code::PROTECTED_FILE_CHANGED, FindingSeverity::Danger)
+            ),
+            (
+                "src/secret/key.rs",
+                (code::PROTECTED_FILE_CHANGED, FindingSeverity::Danger)
+            ),
+            (
+                "web/page.html",
+                (code::OWNED_BY_OTHER_SLICE, FindingSeverity::Info)
+            ),
+        ])
+    );
+    assert!(finding(&v, code::PROTECTED_FILE_CHANGED)
+        .message
+        .contains("protected for ada"));
+    assert!(!v.review.passed);
+}
+
+#[test]
+fn without_ledger_sessions_the_slice_falls_back_to_the_diff() {
+    let env = Env::new();
+    env.commands(&[]);
+    // Only another slice is in the ledger; this slice's run predates it.
+    env.session("sess-cy", OTHER, "cy", 100, 200, &["src/secret/key.rs"]);
+    env.repo.write("src/feed.rs", "// ada's, unrecorded\n");
+    env.repo.write("AGENTS.md", "# rewritten, unrecorded\n");
+    env.repo.write("docs/notes.md", "nobody's\n");
+    env.ada_reports();
+
+    let v = env.verify().unwrap();
+    assert_eq!(
+        boundary_by_path(&v),
+        BTreeMap::from([
+            (
+                "AGENTS.md",
+                (code::PROTECTED_FILE_CHANGED, FindingSeverity::Danger)
+            ),
+            (
+                "docs/notes.md",
+                (code::OUTSIDE_WRITE_GLOBS, FindingSeverity::Warn)
+            ),
+            (
+                "src/secret/key.rs",
+                (code::OWNED_BY_OTHER_SLICE, FindingSeverity::Info)
+            ),
+        ])
+    );
+}
+
+#[test]
+fn another_slices_change_after_verifying_doesnt_make_the_verification_stale() {
+    let env = Env::new();
+    env.commands(&[]);
+    env.session("sess-ada", S, "ada", 100, 200, &["src/feed.rs"]);
+    env.ada_reports();
+    let v = env.verify().unwrap();
+    assert!(!v.stale);
+
+    env.session(
+        "sess-cy",
+        OTHER,
+        "cy",
+        300,
+        400,
+        &["src/secret/key.rs", "src/other.rs"],
+    );
+    let now = env.store.get_verification(P, S).unwrap().unwrap();
+    assert!(!now.stale);
 }

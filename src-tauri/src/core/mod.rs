@@ -25,5 +25,6 @@ pub mod text;
 pub mod time;
 pub mod trash;
 pub mod workspace;
+pub mod writes;
 
 pub use error::{AppError, ErrorCode};

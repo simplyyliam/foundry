@@ -11,6 +11,7 @@
 //! the human's rights. So `verify_slice` runs them only when they equal, exactly, the list the
 //! human last confirmed, which is kept in app data, never in the repo.
 
+mod attribution;
 pub mod commands;
 mod digest;
 mod disk;
@@ -78,6 +79,13 @@ pub mod code {
     pub const PARTLY_REPORTED: &str = "partly_reported";
     /// A blocker an agent listed in its report.
     pub const REPORTED_BLOCKER: &str = "reported_blocker";
+    /// A changed file that only another slice's session wrote (info).
+    pub const OWNED_BY_OTHER_SLICE: &str = "owned_by_other_slice";
+    /// A file this slice wrote that an overlapping session of another slice also wrote (warn).
+    pub const SHARED_FILE_TOUCHED: &str = "shared_file_touched";
+    /// A file that changed during this slice's session without an edit tool while another
+    /// slice's session was running too, so it can't be told whose it is (info).
+    pub const AMBIGUOUS_SHELL_CHANGE: &str = "ambiguous_shell_change";
 }
 
 // ---------- types ----------
@@ -1334,7 +1342,13 @@ impl VerificationStore {
         let mut agents: Vec<&str> = c.reports.iter().map(|l| l.agent.as_str()).collect();
         agents.sort_unstable();
         agents.dedup();
-        findings.extend(self.boundary(c.repo, c.start_commit, &agents, c.workspace_access));
+        findings.extend(self.boundary(
+            c.repo,
+            c.slice_id,
+            c.start_commit,
+            &agents,
+            c.workspace_access,
+        ));
 
         // 7. "Everything met" while a test failed.
         let all_met = outcomes.iter().any(|o| o.status.is_some())
@@ -1356,20 +1370,30 @@ impl VerificationStore {
         })
     }
 
-    /// Changed files since `start_commit`: committed, staged, unstaged and untracked (not
-    /// ignored). A file is fine when one of `agents` may write it (inside its write globs and
-    /// not protected for it), or, with `workspace_access`, when it's one of the
-    /// `hook_policy::WORKSPACE_FILES` not protected for one of them. Otherwise one protected
-    /// for any of them is `danger`, and one outside every write glob only `warn`, since
-    /// others' edits in the same period look the same.
+    /// The boundary check. Candidates are the files changed since `start_commit`: committed,
+    /// staged, unstaged and untracked (not ignored).
+    ///
+    /// When the writes ledger has sessions on this slice, only the slice's own paths (what its
+    /// sessions' edit tools wrote, plus their snapshot changes nobody else can have made) are
+    /// held to the rules, each against the agent that wrote it: protected for that agent is
+    /// `danger`, outside its write globs (and not a workspace file, with `workspace_access`)
+    /// `warn`. An own path that an overlapping session of another slice also wrote is
+    /// `shared_file_touched` (`warn`); a snapshot change that can't be told apart is
+    /// `ambiguous_shell_change` (`info`); a changed file only other slices' sessions wrote is
+    /// `owned_by_other_slice` (`info`). Other changed files aren't the slice's: no finding.
+    ///
+    /// Without ledger sessions on this slice (a run from before the ledger), every changed
+    /// file is checked as before against the reporting `agents` together, except that one only
+    /// other slices' sessions wrote is `owned_by_other_slice`.
     fn boundary(
         &self,
         repo: &Path,
+        slice_id: &str,
         start_commit: Option<&str>,
         agents: &[&str],
         workspace_access: bool,
     ) -> Vec<Finding> {
-        use FindingSeverity::{Danger, Info, Warn};
+        use FindingSeverity::Warn;
         let skipped = |why: String| {
             vec![Finding::new(
                 Warn,
@@ -1392,13 +1416,12 @@ impl VerificationStore {
             Ok(None) => return skipped(format!("{} is missing or unreadable", disk::ROLES_FILE)),
             Err(err) => return skipped(err.message),
         };
-        let mut team = Vec::new();
-        for agent in agents {
-            let Some(role) = roles.iter().find(|r| r.id == *agent) else {
-                return skipped(format!("agent {agent:?} isn't in {}", disk::ROLES_FILE));
-            };
-            team.push(role);
-        }
+        let sessions = match attribution::load(repo) {
+            Ok(sessions) => sessions,
+            Err(err) => {
+                return skipped(format!("the writes ledger is unreadable: {}", err.message))
+            }
+        };
         let diff = [
             "--no-optional-locks",
             "diff",
@@ -1436,58 +1459,23 @@ impl VerificationStore {
             }
         }
 
-        let who = agents.join(" and ");
-        let mut findings = Vec::new();
-        for path in changed
-            .iter()
-            .filter(|p| !IGNORED_DIRS.iter().any(|dir| p.starts_with(dir)))
-            .filter(|p| !IGNORED_FILES.contains(&p.as_str()))
-        {
-            fn protected_for<'r>(role: &'r disk::Role, path: &str) -> Option<&'r str> {
-                hook_policy::PROTECTED_FLOOR
-                    .iter()
-                    .copied()
-                    .chain(role.protected_globs.iter().map(String::as_str))
-                    .find(|g| glob::matches(g, path))
-            }
-            let workspace_file =
-                workspace_access && hook_policy::WORKSPACE_FILES.contains(&path.as_str());
-            let writable = team.iter().any(|role| {
-                protected_for(role, path).is_none()
-                    && (workspace_file || role.write_globs.iter().any(|g| glob::matches(g, path)))
-            });
-            let protected = team
-                .iter()
-                .find_map(|role| protected_for(role, path).map(|hit| (role.id.as_str(), hit)));
-            let finding = if FOUNDRY_WRITTEN.contains(&path.as_str()) {
-                Finding::new(
-                    Info,
-                    code::FOUNDRY_FILE_CHANGED,
-                    format!(
-                        "{path} changed; Foundry rewrites it too, so this may not be the agent"
-                    ),
-                )
-            } else if writable {
-                continue;
-            } else if let Some((agent, hit)) = protected {
-                Finding::new(
-                    Danger,
-                    code::PROTECTED_FILE_CHANGED,
-                    format!("{path} changed, and it's protected for {agent} (\"{hit}\")"),
-                )
-            } else {
-                Finding::new(
-                    Warn,
-                    code::OUTSIDE_WRITE_GLOBS,
-                    format!(
-                        "{path} changed outside {who}'s write globs (someone else may have \
-                         changed it)"
-                    ),
-                )
-            };
-            findings.push(finding.path(path));
+        changed.retain(|p| checked_path(p));
+
+        let rules = Rules {
+            roles: &roles,
+            workspace_access,
+        };
+        if sessions.iter().any(|s| s.on(slice_id)) {
+            return attributed(&rules, slice_id, &sessions, &changed).unwrap_or_else(skipped);
         }
-        findings
+        let mut team = Vec::new();
+        for agent in agents {
+            let Some(role) = rules.role(agent) else {
+                return skipped(format!("agent {agent:?} isn't in {}", disk::ROLES_FILE));
+            };
+            team.push(role);
+        }
+        legacy(&rules, &team, agents, &sessions, &changed)
     }
 
     // ---------- digest ----------
@@ -1550,6 +1538,263 @@ struct Checked<'a> {
     reports: &'a [LoadedReport],
     commands: &'a [String],
     cancel: &'a AtomicBool,
+}
+
+// ---------- the boundary check ----------
+
+/// Not one of Foundry's own files or folders, which the boundary check leaves out.
+fn checked_path(path: &str) -> bool {
+    !IGNORED_DIRS.iter().any(|dir| path.starts_with(dir)) && !IGNORED_FILES.contains(&path)
+}
+
+/// The team's rules, for the boundary check.
+struct Rules<'a> {
+    roles: &'a [disk::Role],
+    workspace_access: bool,
+}
+
+impl Rules<'_> {
+    fn role(&self, agent: &str) -> Option<&disk::Role> {
+        self.roles.iter().find(|r| r.id == agent)
+    }
+
+    /// The protected-floor or role glob `path` matches for `role`, if any.
+    fn protected<'r>(role: &'r disk::Role, path: &str) -> Option<&'r str> {
+        hook_policy::PROTECTED_FLOOR
+            .iter()
+            .copied()
+            .chain(role.protected_globs.iter().map(String::as_str))
+            .find(|g| glob::matches(g, path))
+    }
+
+    /// Not protected for `role`, and inside its write globs (or, with `workspace_access`, one
+    /// of the `hook_policy::WORKSPACE_FILES`).
+    fn writable(&self, role: &disk::Role, path: &str) -> bool {
+        let workspace_file = self.workspace_access && hook_policy::WORKSPACE_FILES.contains(&path);
+        Self::protected(role, path).is_none()
+            && (workspace_file || role.write_globs.iter().any(|g| glob::matches(g, path)))
+    }
+}
+
+fn foundry_written(path: &str) -> Option<Finding> {
+    FOUNDRY_WRITTEN.contains(&path).then(|| {
+        Finding::new(
+            FindingSeverity::Info,
+            code::FOUNDRY_FILE_CHANGED,
+            format!("{path} changed; Foundry rewrites it too, so this may not be the agent"),
+        )
+        .path(path)
+    })
+}
+
+/// `ada on slice s-feed`, or `ada (no slice)`.
+fn who(session: &attribution::Session) -> String {
+    match &session.slice_id {
+        Some(slice) => format!("{} on slice {slice}", session.agent_id),
+        None => format!("{} (no slice)", session.agent_id),
+    }
+}
+
+/// Distinct items, in first-seen order, joined with "and".
+fn joined(items: impl IntoIterator<Item = String>) -> String {
+    let mut seen: Vec<String> = Vec::new();
+    for item in items {
+        if !seen.contains(&item) {
+            seen.push(item);
+        }
+    }
+    seen.join(" and ")
+}
+
+/// `owned_by_other_slice` when sessions wrote `path` and none of them is on `slice_id`.
+fn owned_by_others(
+    slice_id: Option<&str>,
+    sessions: &[attribution::Session],
+    path: &str,
+) -> Option<Finding> {
+    let owners: Vec<&attribution::Session> = sessions.iter().filter(|s| s.owns(path)).collect();
+    if owners.is_empty() || slice_id.is_some_and(|id| owners.iter().any(|s| s.on(id))) {
+        return None;
+    }
+    Some(
+        Finding::new(
+            FindingSeverity::Info,
+            code::OWNED_BY_OTHER_SLICE,
+            format!(
+                "{path} changed, but {} wrote it, not this slice",
+                joined(owners.iter().map(|s| who(s)))
+            ),
+        )
+        .path(path),
+    )
+}
+
+/// The boundary check on the slice's own paths, for a slice with sessions in the ledger.
+/// `Err` says why it was skipped.
+fn attributed(
+    rules: &Rules<'_>,
+    slice_id: &str,
+    sessions: &[attribution::Session],
+    changed: &BTreeSet<String>,
+) -> Result<Vec<Finding>, String> {
+    use FindingSeverity::{Danger, Info, Warn};
+    let own: Vec<&attribution::Session> = sessions.iter().filter(|s| s.on(slice_id)).collect();
+    // Each own path → the own sessions that wrote it.
+    let mut paths: BTreeMap<&str, Vec<&attribution::Session>> = BTreeMap::new();
+    for session in &own {
+        for path in session.written.iter().chain(&session.shell) {
+            if checked_path(path) {
+                paths.entry(path.as_str()).or_default().push(session);
+            }
+        }
+    }
+    let mut findings = Vec::new();
+    for (path, writers) in &paths {
+        if let Some(finding) = foundry_written(path) {
+            findings.push(finding);
+        } else {
+            let mut protected = None;
+            let mut outside = None;
+            for writer in writers {
+                let Some(role) = rules.role(&writer.agent_id) else {
+                    return Err(format!(
+                        "agent {:?} isn't in {}",
+                        writer.agent_id,
+                        disk::ROLES_FILE
+                    ));
+                };
+                if let Some(hit) = Rules::protected(role, path) {
+                    protected.get_or_insert((role.id.as_str(), hit));
+                } else if !rules.writable(role, path) {
+                    outside.get_or_insert(role.id.as_str());
+                }
+            }
+            if let Some((agent, hit)) = protected {
+                findings.push(
+                    Finding::new(
+                        Danger,
+                        code::PROTECTED_FILE_CHANGED,
+                        format!("{path} changed, and it's protected for {agent} (\"{hit}\")"),
+                    )
+                    .path(path),
+                );
+            } else if let Some(agent) = outside {
+                findings.push(
+                    Finding::new(
+                        Warn,
+                        code::OUTSIDE_WRITE_GLOBS,
+                        format!("{agent} wrote {path}, outside {agent}'s write globs"),
+                    )
+                    .path(path),
+                );
+            }
+        }
+        let others: Vec<String> = sessions
+            .iter()
+            .filter(|other| !other.on(slice_id) && other.owns(path))
+            .filter(|other| writers.iter().any(|mine| mine.overlaps(other)))
+            .map(who)
+            .collect();
+        if !others.is_empty() {
+            findings.push(
+                Finding::new(
+                    Warn,
+                    code::SHARED_FILE_TOUCHED,
+                    format!(
+                        "{path} was written by {} and, at the same time, by {}",
+                        joined(writers.iter().map(|s| s.agent_id.clone())),
+                        joined(others)
+                    ),
+                )
+                .path(path),
+            );
+        }
+    }
+    // Path → (own sessions it changed in, the other slices' sessions running then).
+    let mut ambiguous: BTreeMap<&str, (Vec<&attribution::Session>, Vec<usize>)> = BTreeMap::new();
+    for session in &own {
+        for (path, rivals) in &session.ambiguous {
+            if checked_path(path) && !paths.contains_key(path.as_str()) {
+                let entry = ambiguous.entry(path.as_str()).or_default();
+                entry.0.push(session);
+                entry.1.extend(rivals);
+            }
+        }
+    }
+    for (path, (mine, rivals)) in &ambiguous {
+        findings.push(
+            Finding::new(
+                Info,
+                code::AMBIGUOUS_SHELL_CHANGE,
+                format!(
+                    "{path} changed during {}'s session without an edit tool (a shell \
+                     command?) while {} was working too, so it can't be told whose change it is",
+                    joined(mine.iter().map(|s| s.agent_id.clone())),
+                    joined(rivals.iter().map(|&j| who(&sessions[j])))
+                ),
+            )
+            .path(path),
+        );
+    }
+    for path in changed
+        .iter()
+        .filter(|p| !paths.contains_key(p.as_str()) && !ambiguous.contains_key(p.as_str()))
+    {
+        findings.extend(owned_by_others(Some(slice_id), sessions, path));
+    }
+    Ok(findings)
+}
+
+/// The boundary check from before the ledger, for a slice with no sessions in it: every
+/// changed file against the reporting agents together. A file one of them may write is fine;
+/// otherwise one that only other slices' sessions wrote is `info`, one protected for any of
+/// them `danger`, and one outside every write glob only `warn`, since others' edits in the
+/// same period look the same.
+fn legacy(
+    rules: &Rules<'_>,
+    team: &[&disk::Role],
+    agents: &[&str],
+    sessions: &[attribution::Session],
+    changed: &BTreeSet<String>,
+) -> Vec<Finding> {
+    use FindingSeverity::{Danger, Warn};
+    let who = agents.join(" and ");
+    let mut findings = Vec::new();
+    for path in changed {
+        if let Some(finding) = foundry_written(path) {
+            findings.push(finding);
+            continue;
+        }
+        if team.iter().any(|role| rules.writable(role, path)) {
+            continue;
+        }
+        // The slice has no session in the ledger, so every owner is another slice's.
+        if let Some(finding) = owned_by_others(None, sessions, path) {
+            findings.push(finding);
+            continue;
+        }
+        let protected = team
+            .iter()
+            .find_map(|role| Rules::protected(role, path).map(|hit| (role.id.as_str(), hit)));
+        let finding = if let Some((agent, hit)) = protected {
+            Finding::new(
+                Danger,
+                code::PROTECTED_FILE_CHANGED,
+                format!("{path} changed, and it's protected for {agent} (\"{hit}\")"),
+            )
+        } else {
+            Finding::new(
+                Warn,
+                code::OUTSIDE_WRITE_GLOBS,
+                format!(
+                    "{path} changed outside {who}'s write globs (someone else may have \
+                     changed it)"
+                ),
+            )
+        };
+        findings.push(finding.path(path));
+    }
+    findings
 }
 
 fn parse_report(rel: &str, value: Value) -> Result<SliceReport, AppError> {

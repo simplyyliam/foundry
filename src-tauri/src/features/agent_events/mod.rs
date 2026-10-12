@@ -25,12 +25,15 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use tauri_specta::Event;
 
+use crate::core::git::Git;
 use crate::core::repos::RepoIndex;
 use crate::core::sessions::{SessionRegistry, SessionStatus};
-use crate::core::{repo_write, AppError};
+use crate::core::writes::{self, EntryKind, LedgerEntry, Moment};
+use crate::core::{hook_policy, repo_write, report, AppError};
 use classify::{Classified, Context, Draft, Streak};
 use notify::Notifications;
 pub use notify::{NotifyPolicy, OsNotifier};
+use payload::{Hook, Outcome};
 pub use payload::{HookDecision, HookPost};
 pub use store::{READ_FILE, ROTATE_AT};
 
@@ -180,6 +183,8 @@ pub struct AgentEventsStore {
     /// One lock for every agent: appends, id assignment and markers stay in order.
     state: Mutex<HashMap<Key, AgentState>>,
     notifications: Option<Notifications>,
+    /// Lists the files for the writes ledger's snapshots.
+    git: Git,
 }
 
 impl AgentEventsStore {
@@ -197,7 +202,13 @@ impl AgentEventsStore {
             quiet_after_ms: QUIET_AFTER.as_millis() as u64,
             state: Mutex::new(HashMap::new()),
             notifications: None,
+            git: Git::system(),
         }
+    }
+
+    pub fn with_git(mut self, git: Git) -> Self {
+        self.git = git;
+        self
     }
 
     /// Shows OS notifications for stored events, per `policy` (read on every event).
@@ -279,6 +290,7 @@ impl AgentEventsStore {
             if let Some(slice) = post.slice_id.as_deref().filter(|s| !s.trim().is_empty()) {
                 agent.slice_id = Some(slice.trim().to_string());
             }
+            self.record_writes(&repo, post, now);
             let mut events = Vec::with_capacity(drafts.len());
             for draft in drafts {
                 events.push(self.store(
@@ -297,6 +309,102 @@ impl AgentEventsStore {
         }
         self.notify(&events);
         Ok(events)
+    }
+
+    /// Adds what the hook call means to the writes ledger (`core::writes`): a start snapshot
+    /// and `start` on `SessionStart`, a `write` per successful edit-tool call, an end snapshot
+    /// when the agent writes a report, and an end snapshot and `end` on `SessionEnd`. Calls
+    /// without a usable `session_id`, and blocked ones, add nothing. Failures are logged,
+    /// never returned: the events still go out.
+    fn record_writes(&self, repo: &Path, post: &HookPost, now: u64) {
+        let Some(session_id) = post
+            .payload
+            .get("session_id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|id| writes::valid_session_id(id))
+        else {
+            return;
+        };
+        if post.decision.as_ref().is_some_and(|d| d.blocked) {
+            return;
+        }
+        let entry = |kind, path: Option<String>| LedgerEntry {
+            kind,
+            session_id: session_id.to_string(),
+            slice_id: post
+                .slice_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+            agent_id: post.agent_id.clone(),
+            path,
+            ts: now,
+        };
+        let result = match payload::parse(post) {
+            Hook::SessionStart { .. } => {
+                let fresh = writes::read_snapshot(repo, session_id, Moment::Start)
+                    .map(|s| s.is_none())
+                    .unwrap_or(true);
+                if fresh {
+                    self.snapshot(repo, session_id, Moment::Start, now);
+                }
+                writes::record(repo, &entry(EntryKind::Start, None))
+            }
+            Hook::PostToolUse(call, Outcome::Passed) => {
+                let path = call
+                    .tool
+                    .as_deref()
+                    .filter(|t| hook_policy::EDIT_TOOLS.contains(t))
+                    .and(call.file_path.as_deref())
+                    .map(|p| classify::repo_relative(Some(repo), p))
+                    .filter(|p| !p.starts_with('/') && p.as_bytes().get(1) != Some(&b':'));
+                match path {
+                    Some(path) => {
+                        let reported = path.starts_with(&format!("{}/", report::REPORTS_DIR));
+                        let written = writes::record(repo, &entry(EntryKind::Write, Some(path)));
+                        if written.is_ok()
+                            && reported
+                            && self.snapshot(repo, session_id, Moment::End, now)
+                        {
+                            writes::record(repo, &entry(EntryKind::Snapshot, None))
+                        } else {
+                            written
+                        }
+                    }
+                    None => Ok(()),
+                }
+            }
+            Hook::SessionEnd { .. } => {
+                if self.snapshot(repo, session_id, Moment::End, now) {
+                    if let Err(err) = writes::record(repo, &entry(EntryKind::Snapshot, None)) {
+                        tracing::warn!(error = %err, "writes ledger not updated");
+                    }
+                }
+                writes::record(repo, &entry(EntryKind::End, None))
+            }
+            _ => Ok(()),
+        };
+        if let Err(err) = result {
+            tracing::warn!(agent_id = %post.agent_id, error = %err, "writes ledger not updated");
+        }
+    }
+
+    /// Takes and saves a snapshot; whether it was saved.
+    fn snapshot(&self, repo: &Path, session_id: &str, moment: Moment, now: u64) -> bool {
+        let saved = writes::take_snapshot(&self.git, repo, now)
+            .and_then(|snapshot| writes::save_snapshot(repo, session_id, moment, &snapshot));
+        match saved {
+            Ok(()) => {
+                tracing::info!(%session_id, ?moment, "file snapshot saved");
+                true
+            }
+            Err(err) => {
+                tracing::warn!(%session_id, ?moment, error = %err, "file snapshot not saved");
+                false
+            }
+        }
     }
 
     fn store(
