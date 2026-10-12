@@ -222,6 +222,12 @@ export const commands = {
 	 *  without text, `not_found` for an unknown conflict.
 	 */
 	resolveRoadmapConflict: (projectId: string, conflictId: string, ruling: ConflictRuling, addAsRule: boolean, expectedRevision: number | null) => typedError<ConflictResolved, AppError>(__TAURI_INVOKE("resolve_roadmap_conflict", { projectId, conflictId, ruling, addAsRule, expectedRevision })),
+	/**
+	 *  Clears a conflict's ruling and removes the rule it created (kept, unlinked, if it was
+	 *  edited since; just unlinked if it's gone). `ruleRequirementId` is always null. No ruling:
+	 *  nothing is written and the current plan is returned. `not_found` for an unknown conflict.
+	 */
+	unresolveRoadmapConflict: (projectId: string, conflictId: string, expectedRevision: number | null) => typedError<ConflictResolved, AppError>(__TAURI_INVOKE("unresolve_roadmap_conflict", { projectId, conflictId, expectedRevision })),
 	/**  The Role Handbook (seeded with the starter roles the first time). */
 	roleHandbookList: () => typedError<HandbookRole[], AppError>(__TAURI_INVOKE("role_handbook_list")),
 	roleHandbookAdd: (role: NewHandbookRole) => typedError<HandbookRole[], AppError>(__TAURI_INVOKE("role_handbook_add", { role })),
@@ -585,6 +591,17 @@ export type BakeryItem = {
 	h: Coord,
 	z: number,
 };
+
+export type BakeryNoteIssue = {
+	/**  The entry's id in `.foundry/bakery.json`. */
+	entryId: string,
+	/**  Its image file name in `docs/bakery/`. */
+	file: string,
+	missing: BakeryNoteMissing,
+};
+
+/**  Which of an entry's notes are empty. */
+export type BakeryNoteMissing = "take" | "skip" | "both";
 
 /**  Fields to change; `null` leaves a field as it is. */
 export type BakeryPatch = {
@@ -1165,6 +1182,11 @@ export type HandoffResult = {
 	path: string,
 	/**  Not refusals, e.g. unlabeled Bakery images. */
 	warnings: string[],
+	/**
+	 *  The Bakery entries in the hand-off with an empty Take or Skip: the
+	 *  `bakery_note_incomplete` warning's entries, structured. Empty when none.
+	 */
+	bakeryNoteIssues: BakeryNoteIssue[],
 };
 
 export type Headline = {
@@ -1804,6 +1826,11 @@ export type TaskPromptResult = {
 	/**  Names of the dependencies that weren't done (only ever non-empty with `force`). */
 	unfinishedDependencies: string[],
 	warnings: string[],
+	/**
+	 *  The Bakery entries that apply with an empty Take or Skip: the
+	 *  `bakery_note_incomplete` warning's entries, structured. Empty when none.
+	 */
+	bakeryNoteIssues: BakeryNoteIssue[],
 };
 
 export type Team = {

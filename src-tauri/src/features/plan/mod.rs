@@ -403,6 +403,20 @@ fn checked_dependencies(
     Ok(deps)
 }
 
+/// `stale_revision` unless `expected` is absent or the plan's revision.
+fn check_revision(plan: &PlanFile, expected: Option<u32>) -> Result<(), AppError> {
+    match expected {
+        Some(expected) if expected != plan.revision => Err(AppError::new(
+            ErrorCode::StaleRevision,
+            format!(
+                "the plan changed (revision {} now, {expected} expected): reload it",
+                plan.revision
+            ),
+        )),
+        _ => Ok(()),
+    }
+}
+
 /// Whether `excerpt` appears in the brain dump, whitespace-normalized.
 fn is_sourced(repo: &Path, excerpt: &str) -> Result<bool, AppError> {
     let excerpt = normalize_ws(excerpt);
@@ -546,17 +560,7 @@ impl PlanStore {
 
         let previous = repo_write::read_to_string(&repo, PLAN_FILE)?;
         let mut plan = Self::load(&repo)?;
-        if let Some(expected) = expected_revision {
-            if expected != plan.revision {
-                return Err(AppError::new(
-                    ErrorCode::StaleRevision,
-                    format!(
-                        "the plan changed (revision {} now, {expected} expected): reload it",
-                        plan.revision
-                    ),
-                ));
-            }
-        }
+        check_revision(&plan, expected_revision)?;
         let out = apply(&mut plan, &repo)?;
         plan.version = PLAN_VERSION;
         plan.revision = plan
@@ -1332,6 +1336,70 @@ impl PlanStore {
         Ok(ConflictResolved {
             conflict,
             rule_requirement_id: rule_id,
+            plan,
+        })
+    }
+
+    /// Clears the conflict's ruling and removes the rule it created, unless the human has
+    /// edited that rule since (then it stays, unlinked); a rule that's gone just loses its
+    /// link. A conflict with no ruling: nothing is written, the current plan is returned.
+    pub fn unresolve_conflict(
+        &self,
+        project_id: &str,
+        conflict_id: &str,
+        expected: Option<u32>,
+    ) -> Result<ConflictResolved, AppError> {
+        let find = |plan: &PlanFile| {
+            plan.conflicts
+                .iter()
+                .position(|c| c.id == conflict_id)
+                .ok_or_else(|| AppError::not_found(format!("no conflict with id {conflict_id}")))
+        };
+        {
+            let repo = self.repos.repo(project_id)?;
+            let guard = self.project_lock(project_id);
+            let _guard = lock(&guard);
+            let plan = Self::load(&repo)?;
+            check_revision(&plan, expected)?;
+            let conflict = &plan.conflicts[find(&plan)?];
+            if conflict.ruling.is_none() {
+                return Ok(ConflictResolved {
+                    conflict: conflict.clone(),
+                    rule_requirement_id: None,
+                    plan: view(&plan),
+                });
+            }
+        }
+        let ((conflict, removed), plan) = self.mutate(project_id, expected, |plan, _| {
+            let index = find(plan)?;
+            let mut conflict = plan.conflicts[index].clone();
+            let expected_text = rule_text(&conflict);
+            let mut removed = false;
+            if let Some(rule_id) = conflict.rule_requirement_id.take() {
+                let unedited = plan.requirements.iter().position(|r| {
+                    r.id == rule_id
+                        && r.text == expected_text
+                        && r.project_wide
+                        && r.kind == RequirementKind::Constraint
+                });
+                if let Some(at) = unedited {
+                    plan.requirements.remove(at);
+                    removed = true;
+                }
+            }
+            conflict.ruling = None;
+            plan.conflicts[index] = conflict.clone();
+            Ok((conflict, removed))
+        })?;
+        tracing::info!(
+            project_id,
+            conflict_id,
+            rule_removed = removed,
+            "roadmap conflict unresolved"
+        );
+        Ok(ConflictResolved {
+            conflict,
+            rule_requirement_id: None,
             plan,
         })
     }

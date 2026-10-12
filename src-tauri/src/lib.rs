@@ -94,6 +94,7 @@ pub fn specta_builder<R: Runtime>() -> tauri_specta::Builder<R> {
             plan::commands::load_roadmap,
             plan::commands::list_roadmap_conflicts,
             plan::commands::resolve_roadmap_conflict,
+            plan::commands::unresolve_roadmap_conflict,
             team::commands::role_handbook_list,
             team::commands::role_handbook_add,
             team::commands::role_handbook_add_from_paths,

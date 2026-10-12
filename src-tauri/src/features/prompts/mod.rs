@@ -54,6 +54,9 @@ pub struct HandoffResult {
     pub path: String,
     /// Not refusals, e.g. unlabeled Bakery images.
     pub warnings: Vec<String>,
+    /// The Bakery entries in the hand-off with an empty Take or Skip: the
+    /// `bakery_note_incomplete` warning's entries, structured. Empty when none.
+    pub bakery_note_issues: Vec<BakeryNoteIssue>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, Type)]
@@ -70,6 +73,28 @@ pub struct TaskPromptResult {
     /// Names of the dependencies that weren't done (only ever non-empty with `force`).
     pub unfinished_dependencies: Vec<String>,
     pub warnings: Vec<String>,
+    /// The Bakery entries that apply with an empty Take or Skip: the
+    /// `bakery_note_incomplete` warning's entries, structured. Empty when none.
+    pub bakery_note_issues: Vec<BakeryNoteIssue>,
+}
+
+/// Which of an entry's notes are empty.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum BakeryNoteMissing {
+    Take,
+    Skip,
+    Both,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct BakeryNoteIssue {
+    /// The entry's id in `.foundry/bakery.json`.
+    pub entry_id: String,
+    /// Its image file name in `docs/bakery/`.
+    pub file: String,
+    pub missing: BakeryNoteMissing,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -192,17 +217,37 @@ fn bakery_warnings(repo: &Path) -> Result<Vec<String>, AppError> {
     )])
 }
 
-/// `bakery_note_incomplete`, naming each referenced entry with an empty Take or Skip.
-fn incomplete_notes_warning(items: &[&disk::BakeryItem]) -> Option<String> {
-    let incomplete: Vec<String> = items
+/// Each referenced entry with an empty Take or Skip (whitespace counts as empty).
+fn bakery_note_issues(items: &[&disk::BakeryItem]) -> Vec<BakeryNoteIssue> {
+    items
         .iter()
         .filter_map(|item| {
-            let missing: Vec<&str> = [("Take", &item.take), ("Skip", &item.skip)]
-                .into_iter()
-                .filter(|(_, text)| text.trim().is_empty())
-                .map(|(name, _)| name)
-                .collect();
-            (!missing.is_empty()).then(|| format!("{} (no {})", item.file, missing.join(", no ")))
+            let missing = match (item.take.trim().is_empty(), item.skip.trim().is_empty()) {
+                (true, true) => BakeryNoteMissing::Both,
+                (true, false) => BakeryNoteMissing::Take,
+                (false, true) => BakeryNoteMissing::Skip,
+                (false, false) => return None,
+            };
+            Some(BakeryNoteIssue {
+                entry_id: item.id.clone(),
+                file: item.file.clone(),
+                missing,
+            })
+        })
+        .collect()
+}
+
+/// `bakery_note_incomplete`, naming each entry in `issues`.
+fn incomplete_notes_warning(issues: &[BakeryNoteIssue]) -> Option<String> {
+    let incomplete: Vec<String> = issues
+        .iter()
+        .map(|issue| {
+            let missing = match issue.missing {
+                BakeryNoteMissing::Take => "Take",
+                BakeryNoteMissing::Skip => "Skip",
+                BakeryNoteMissing::Both => "Take, no Skip",
+            };
+            format!("{} (no {missing})", issue.file)
         })
         .collect();
     (!incomplete.is_empty()).then(|| {
@@ -317,12 +362,14 @@ impl PromptsStore {
 
         let text = render::handoff(&scalars, &lists)?;
         let mut warnings = bakery_warnings(&repo)?;
-        warnings.extend(incomplete_notes_warning(&referenced));
+        let bakery_note_issues = bakery_note_issues(&referenced);
+        warnings.extend(incomplete_notes_warning(&bakery_note_issues));
         repo_write::write(&repo, HANDOFF_FILE, text)?;
         tracing::info!(project_id, "hand-off prompt generated");
         Ok(HandoffResult {
             path: HANDOFF_FILE.into(),
             warnings,
+            bakery_note_issues,
         })
     }
 
@@ -370,7 +417,8 @@ impl PromptsStore {
             references: &referenced,
         })?;
         let mut warnings = bakery_warnings(&repo)?;
-        warnings.extend(incomplete_notes_warning(&referenced));
+        let bakery_note_issues = bakery_note_issues(&referenced);
+        warnings.extend(incomplete_notes_warning(&bakery_note_issues));
         let path = task_file(slice_id, agent_id);
         repo_write::write(&repo, &path, text)?;
         tracing::info!(
@@ -384,6 +432,7 @@ impl PromptsStore {
             path,
             unfinished_dependencies: unfinished,
             warnings,
+            bakery_note_issues,
         })
     }
 

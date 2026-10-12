@@ -653,3 +653,14 @@ Additive. No new error codes, no new events. Hand-off and task prompt text chang
 | prompt | `generate_handoff` | the PROJECT RULES block is now always present and starts with that precedence line; a new `REFERENCES:` list (every Bakery entry, file and label, then its Take and Skip verbatim; `- (none)` without entries) | Was omitted when there were no project rules. |
 | prompt | `generate_task_prompt` | adds a `## References` section (after Design pointers) with the Take and Skip of each entry that applies; absent when none apply | An entry applies when `appliesTo` is empty or names the agent (id, display name, title) or the slice (id, name), ignoring case. |
 | warning | `HandoffResult.warnings` / `TaskPromptResult.warnings` | adds a warning starting `bakery_note_incomplete:` | Lists each referenced entry with an empty Take or Skip, e.g. `02-panels.png (no Skip)`. The existing unlabeled-images warning is unchanged. |
+
+## Undoing a conflict ruling; structured Bakery note issues
+
+Additive. No new error codes, no new events. The existing `warnings` strings are unchanged.
+
+| Kind | Name | Before → After | Why |
+| --- | --- | --- | --- |
+| command | `unresolve_roadmap_conflict` | — → `unresolveRoadmapConflict(projectId: string, conflictId: string, expectedRevision: number \| null): ConflictResolved` | Undo a ruling. Clears `ruling` and `ruleRequirementId`; removes the rule the ruling created unless it was edited since (text, kind or project-wide changed: kept, unlinked) or deleted (just unlinked). `unresolvedConflicts` goes back up. One plan mutation (`stale_revision`, `plan:changed`). A conflict with no ruling: nothing written, no event, the current plan returned (the revision is still checked). `ruleRequirementId` is always null. Errors: `stale_revision`, `not_found` (conflict or project), as `resolve_roadmap_conflict`. |
+| type | `HandoffResult` / `TaskPromptResult` | adds `bakeryNoteIssues: BakeryNoteIssue[]` | The `bakery_note_incomplete` warning's entries, structured for the UI: same entries, same rule (Take or Skip empty or only whitespace). Always present; empty when none. |
+| type | `BakeryNoteIssue` | — → `{ entryId: string, file: string, missing: BakeryNoteMissing }` | `entryId` is the entry's id in `.foundry/bakery.json` (empty if a hand-edited entry has none). |
+| type | `BakeryNoteMissing` | — → `"take" \| "skip" \| "both"` | |

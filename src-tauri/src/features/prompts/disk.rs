@@ -244,6 +244,9 @@ struct PlaceholdersFile {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BakeryItem {
+    /// Missing in hand-edited files: empty.
+    #[serde(default)]
+    pub id: String,
     pub file: String,
     #[serde(default)]
     pub label: String,

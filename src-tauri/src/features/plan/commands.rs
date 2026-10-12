@@ -429,3 +429,20 @@ pub async fn resolve_roadmap_conflict(
     })
     .await
 }
+
+/// Clears a conflict's ruling and removes the rule it created (kept, unlinked, if it was
+/// edited since; just unlinked if it's gone). `ruleRequirementId` is always null. No ruling:
+/// nothing is written and the current plan is returned. `not_found` for an unknown conflict.
+#[tauri::command]
+#[specta::specta]
+pub async fn unresolve_roadmap_conflict(
+    store: Store<'_>,
+    project_id: String,
+    conflict_id: String,
+    expected_revision: Option<u32>,
+) -> Result<ConflictResolved, AppError> {
+    blocking(&store, move |s| {
+        s.unresolve_conflict(&project_id, &conflict_id, expected_revision)
+    })
+    .await
+}

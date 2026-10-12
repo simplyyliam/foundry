@@ -2261,3 +2261,147 @@ fn reloading_the_roadmap_brings_its_conflicts_back_unresolved() {
     let reloaded = load(&env, true).unwrap().plan;
     assert_eq!(reloaded.unresolved_conflicts, 2);
 }
+
+// ---------- undoing a ruling ----------
+
+fn resolve_with_rule(env: &Env) -> String {
+    env.store
+        .resolve_conflict(
+            P,
+            "c-1",
+            ruling(RulingKind::ReferenceWins, None),
+            true,
+            None,
+        )
+        .unwrap()
+        .rule_requirement_id
+        .unwrap()
+}
+
+#[test]
+fn unresolve_clears_the_ruling_and_removes_the_rule_it_created() {
+    let env = Env::new();
+    load_with_conflicts(&env);
+    let rule_id = resolve_with_rule(&env);
+    let before = env.plan();
+    assert_eq!(before.unresolved_conflicts, 1);
+
+    let undone = env
+        .store
+        .unresolve_conflict(P, "c-1", Some(before.revision))
+        .unwrap();
+
+    assert_eq!(undone.rule_requirement_id, None);
+    assert_eq!(undone.conflict.ruling, None);
+    assert_eq!(undone.conflict.rule_requirement_id, None);
+    assert_eq!(
+        undone.plan.unresolved_conflicts, 2,
+        "the count goes back up"
+    );
+    assert_eq!(undone.plan.revision, before.revision + 1);
+    assert!(!undone.plan.requirements.iter().any(|r| r.id == rule_id));
+    let stored = &env.plan_json().conflicts[0];
+    assert!(stored.ruling.is_none() && stored.rule_requirement_id.is_none());
+}
+
+#[test]
+fn unresolve_keeps_an_edited_rule_unlinked_and_tolerates_a_deleted_one() {
+    // Edited since: kept, link cleared.
+    let env = Env::new();
+    load_with_conflicts(&env);
+    let rule_id = resolve_with_rule(&env);
+    env.store
+        .update_requirement(
+            P,
+            &rule_id,
+            RequirementPatch {
+                text: Some("Show a small minimap.".into()),
+                ..RequirementPatch::default()
+            },
+            None,
+        )
+        .unwrap();
+    let undone = env.store.unresolve_conflict(P, "c-1", None).unwrap();
+    assert_eq!(undone.conflict.ruling, None);
+    assert_eq!(undone.conflict.rule_requirement_id, None);
+    let kept = undone.plan.requirements.iter().find(|r| r.id == rule_id);
+    assert_eq!(kept.unwrap().text, "Show a small minimap.");
+
+    // Deleted since: still succeeds.
+    let env = Env::new();
+    load_with_conflicts(&env);
+    let rule_id = resolve_with_rule(&env);
+    env.store.remove_requirement(P, &rule_id, None).unwrap();
+    let undone = env.store.unresolve_conflict(P, "c-1", None).unwrap();
+    assert_eq!(undone.conflict.ruling, None);
+    assert_eq!(undone.conflict.rule_requirement_id, None);
+    assert_eq!(undone.plan.unresolved_conflicts, 2);
+}
+
+#[test]
+fn unresolve_refuses_a_stale_revision_and_an_unknown_id() {
+    let env = Env::new();
+    load_with_conflicts(&env);
+    resolve_with_rule(&env);
+    let plan = env.plan();
+    let (state, ..) = plan_state(&env);
+
+    let stale = env
+        .store
+        .unresolve_conflict(P, "c-1", Some(plan.revision - 1));
+    assert_eq!(stale.unwrap_err().code, ErrorCode::StaleRevision);
+    let unknown = env.store.unresolve_conflict(P, "c-9", None);
+    assert_eq!(unknown.unwrap_err().code, ErrorCode::NotFound);
+    assert_eq!(plan_state(&env).0, state, "nothing written");
+}
+
+#[test]
+fn unresolving_a_conflict_with_no_ruling_writes_nothing() {
+    let env = Env::new();
+    let plan = load_with_conflicts(&env);
+    let state = plan_state(&env);
+
+    let same = env
+        .store
+        .unresolve_conflict(P, "c-2", Some(plan.revision))
+        .unwrap();
+
+    assert_eq!(same.plan, plan);
+    assert_eq!(same.rule_requirement_id, None);
+    assert_eq!(same.conflict.id, "c-2");
+    assert_eq!(plan_state(&env), state, "no write, no plan:changed");
+}
+
+#[test]
+fn ruling_again_after_unresolve_creates_one_rule() {
+    let env = Env::new();
+    load_with_conflicts(&env);
+    resolve_with_rule(&env);
+    env.store.unresolve_conflict(P, "c-1", None).unwrap();
+
+    let again = env
+        .store
+        .resolve_conflict(
+            P,
+            "c-1",
+            ruling(RulingKind::BrainDumpWins, None),
+            true,
+            None,
+        )
+        .unwrap();
+
+    let rules: Vec<&Requirement> = again
+        .plan
+        .requirements
+        .iter()
+        .filter(|r| r.project_wide)
+        .collect();
+    assert_eq!(rules.len(), 1);
+    assert_eq!(Some(&rules[0].id), again.rule_requirement_id.as_ref());
+    assert!(
+        rules[0].text.contains("follow the brain dump"),
+        "{}",
+        rules[0].text
+    );
+    assert_eq!(again.plan.unresolved_conflicts, 1);
+}

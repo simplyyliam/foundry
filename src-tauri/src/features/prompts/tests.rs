@@ -1813,3 +1813,88 @@ fn a_conflict_ruling_added_as_a_rule_appears_in_the_handoff() {
     );
     assert!(text.contains(&expected), "{text}");
 }
+
+// ---------- structured Bakery note issues ----------
+
+#[test]
+fn bakery_note_issues_match_the_warning_on_both_prompt_types() {
+    let fix = Fix::ready();
+    fix.json(
+        ".foundry/bakery.json",
+        &json!({ "items": [
+            { "id": "e-1", "file": "01-fine.png", "label": "Fine", "take": "Spacing.", "skip": "Colour." },
+            { "id": "e-2", "file": "02-no-take.png", "label": "A", "take": " ", "skip": "Colour." },
+            { "id": "e-3", "file": "03-no-skip.png", "label": "B", "take": "Type.", "skip": "" },
+            { "id": "e-4", "file": "04-neither.png", "label": "C" }
+        ]}),
+    );
+    let expected = vec![
+        BakeryNoteIssue {
+            entry_id: "e-2".into(),
+            file: "02-no-take.png".into(),
+            missing: BakeryNoteMissing::Take,
+        },
+        BakeryNoteIssue {
+            entry_id: "e-3".into(),
+            file: "03-no-skip.png".into(),
+            missing: BakeryNoteMissing::Skip,
+        },
+        BakeryNoteIssue {
+            entry_id: "e-4".into(),
+            file: "04-neither.png".into(),
+            missing: BakeryNoteMissing::Both,
+        },
+    ];
+    let warning = "bakery_note_incomplete: 3 referenced Bakery entries have an empty Take or \
+                   Skip note: 02-no-take.png (no Take), 03-no-skip.png (no Skip), \
+                   04-neither.png (no Take, no Skip)";
+
+    let handoff = fix.store.generate_handoff(P).unwrap();
+    let task = fix.task("s-feed", "ada", true).unwrap();
+    for (issues, warnings) in [
+        (&handoff.bakery_note_issues, &handoff.warnings),
+        (&task.bakery_note_issues, &task.warnings),
+    ] {
+        assert_eq!(issues, &expected);
+        assert!(warnings.iter().any(|w| w == warning), "{warnings:?}");
+    }
+    // Serialized as the contract says.
+    let value = serde_json::to_value(&task).unwrap();
+    assert_eq!(
+        value["bakeryNoteIssues"][2],
+        json!({ "entryId": "e-4", "file": "04-neither.png", "missing": "both" })
+    );
+}
+
+#[test]
+fn bakery_note_issues_are_empty_when_every_note_is_there() {
+    let fix = Fix::ready();
+    let handoff = fix.store.generate_handoff(P).unwrap();
+    let task = fix.task("s-feed", "ada", true).unwrap();
+    assert!(handoff.bakery_note_issues.is_empty() && task.bakery_note_issues.is_empty());
+    assert_eq!(
+        serde_json::to_value(&handoff).unwrap()["bakeryNoteIssues"],
+        json!([]),
+        "always present"
+    );
+
+    fix.json(
+        ".foundry/bakery.json",
+        &json!({ "items": [
+            { "id": "e-1", "file": "01-fine.png", "label": "Fine", "take": "Spacing.", "skip": "Colour." },
+            // Applies to Lin only: not in Ada's prompt.
+            { "id": "e-2", "file": "02-lin.png", "label": "L", "take": "", "skip": "",
+              "appliesTo": ["lin"] }
+        ]}),
+    );
+    let task = fix.task("s-feed", "ada", true).unwrap();
+    assert!(
+        task.bakery_note_issues.is_empty(),
+        "{:?}",
+        task.bakery_note_issues
+    );
+    assert!(!task
+        .warnings
+        .iter()
+        .any(|w| w.starts_with(BAKERY_NOTE_INCOMPLETE)));
+}
